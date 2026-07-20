@@ -1,0 +1,19 @@
+[theme]
+base = "light"
+primaryColor = "#0B4F91"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F7FB"
+textColor = "#15243B"
+borderColor = "#C8D9EE"
+blueColor = "#155A96"
+greenColor = "#299049"
+orangeColor = "#B36A08"
+redColor = "#E13F3B"
+chartCategoricalColors = ["#153E75", "#2563EB", "#60A5FA", "#93C5FD", "#BFDBFE"]
+dataframeBorderColor = "#CBD9E8"
+dataframeHeaderBackgroundColor = "#EDF4FB"
+font = "sans-serif"
+baseFontSize = 14
+baseRadius = "8px"
+buttonRadius = "6px"
+showWidgetBorder = true

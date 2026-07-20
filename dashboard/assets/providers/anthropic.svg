@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" role="img" aria-labelledby="title">
+  <title id="title">Anthropic</title>
+  <rect width="280" height="64" rx="12" fill="none"/>
+  <g transform="translate(8 8)" fill="#102A43">
+    <path d="M3 45 18 3h12l15 42H34l-3-10H17l-3 10H3Zm17-19h8l-4-14-4 14Z"/>
+    <path d="M50 3h9v42h-9z" opacity=".72"/>
+  </g>
+  <text x="78" y="41" fill="#102A43" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="700">Anthropic</text>
+</svg>

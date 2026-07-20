@@ -1,0 +1,1 @@
+"""Automatic qa-observer collectors."""

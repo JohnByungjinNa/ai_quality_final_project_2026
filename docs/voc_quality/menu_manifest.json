@@ -1,0 +1,15 @@
+{
+  "top_menu": "VOC 품질진단",
+  "sidebar_menus": [
+    {"id": "dashboard", "label": "Dashboard"},
+    {"id": "agents", "label": "Agent 관리"},
+    {"id": "analysis", "label": "VOC 분석"},
+    {"id": "testcases", "label": "테스트케이스"},
+    {"id": "rubric", "label": "품질 평가 기준"},
+    {"id": "fault", "label": "장애·결함 관리"},
+    {"id": "a2a", "label": "A2A Trace"},
+    {"id": "reports", "label": "품질 보고서"},
+    {"id": "guide", "label": "사용자 가이드"},
+    {"id": "acceptance", "label": "최종 인수·시연"}
+  ]
+}

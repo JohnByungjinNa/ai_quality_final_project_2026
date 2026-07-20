@@ -1,0 +1,106 @@
+services:
+  qa-observer:
+    build:
+      context: .
+    container_name: ai-quality-2026-qa-observer
+    environment:
+      QA_OBSERVER_DATA_DIR: /app/data/qa_observer
+      QA_OBSERVER_LOG_DIR: /app/logs/qa_observer
+      QA_OBSERVER_REPORTS_DIR: /app/reports/test_runs
+      QA_OBSERVER_ENVIRONMENT: ${QA_OBSERVER_ENVIRONMENT:-local}
+      QA_OBSERVER_SERVICE_NAME: qa-observer
+      QA_OBSERVER_TARGET_SERVICE: ai-quality-chatbot
+      QA_OBSERVER_SYNC_INTERVAL_SECONDS: ${QA_OBSERVER_SYNC_INTERVAL_SECONDS:-30}
+      QA_OBSERVER_EVENT_RETENTION_DAYS: ${QA_OBSERVER_EVENT_RETENTION_DAYS:-90}
+      QA_OBSERVER_COLLECTOR_RETENTION_DAYS: ${QA_OBSERVER_COLLECTOR_RETENTION_DAYS:-30}
+      QA_OBSERVER_QUALITY_RETENTION_DAYS: ${QA_OBSERVER_QUALITY_RETENTION_DAYS:-365}
+      QA_OBSERVER_DEFECT_RETENTION_DAYS: ${QA_OBSERVER_DEFECT_RETENTION_DAYS:-730}
+      QA_OBSERVER_AGGREGATE_RETENTION_DAYS: ${QA_OBSERVER_AGGREGATE_RETENTION_DAYS:-730}
+      QA_OBSERVER_DAILY_BUDGET_KRW: ${QA_OBSERVER_DAILY_BUDGET_KRW:-50000}
+      QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN: ${QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN:-local-grafana-token}
+    command: python -m uvicorn qa_observer.app:app --host 0.0.0.0 --port 8010
+    ports:
+      - "127.0.0.1:8010:8010"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+    container_name: ai-quality-2026-api
+    env_file:
+      - .env
+    environment:
+      QA_OBSERVER_URL: http://qa-observer:8010
+      QA_OBSERVER_USD_KRW: ${QA_OBSERVER_USD_KRW:-}
+    command: python -m uvicorn api_app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  dashboard:
+    build:
+      context: .
+    container_name: ai-quality-2026-dashboard
+    env_file:
+      - .env
+    environment:
+      QA_OBSERVER_URL: http://qa-observer:8010
+      QA_OBSERVER_USD_KRW: ${QA_OBSERVER_USD_KRW:-}
+      PROMETHEUS_URL: http://prometheus:9090
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_DASHBOARD_URL: http://localhost:3000
+      K6_SUMMARY_FILE: reports/k6_summary.json
+    command: streamlit run dashboard/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: ai-quality-2026-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.listen-address=:9090"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: ai-quality-2026-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: light
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN: ${QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN:-local-grafana-token}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,53 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.pytest_tmp/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime data and generated output
+/data/
+/logs/
+/reports/
+*.log
+
+# Local documents and project backups
+/user_Docs/
+/backups/
+/_backups/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Embedded VOC quality runtime
+voc_quality_runtime/.env
+voc_quality_runtime/.runtime/
+voc_quality_runtime/quality_diagnosis/Reports/**
+!voc_quality_runtime/quality_diagnosis/Reports/README.md
