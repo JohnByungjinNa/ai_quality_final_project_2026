@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-07-15 13:25:06",
+  "files": [
+    {
+      "filename": "교육과정_개요.txt",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\교육과정_개요.txt",
+      "size": 1840,
+      "modified_at": 1784089466.5901473,
+      "sha256": "9dce742259e5b20fd9a45086a32510a75961ab1d80a4de5ae5c48732aef29a0f",
+      "characters": 773,
+      "chunks": 1
+    },
+    {
+      "filename": "교육과정_개요_v2.txt",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\교육과정_개요_v2.txt",
+      "size": 180,
+      "modified_at": 1784000492.6856034,
+      "sha256": "13883b11e8f8b0f8ddd228eec9d3ad274d515a189c694cb32d6d2ac04e809c2f",
+      "characters": 77,
+      "chunks": 1
+    },
+    {
+      "filename": "답변_원칙_및_예외_처리_가이드라인.md",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\답변_원칙_및_예외_처리_가이드라인.md",
+      "size": 611,
+      "modified_at": 1784089466.5911474,
+      "sha256": "f51570bd9a1290a4135aad23ef91d7ddb910fad0527c66b56bcd19e147a9e68c",
+      "characters": 260,
+      "chunks": 1
+    },
+    {
+      "filename": "답변_원칙_및_예외_처리_가이드라인.pdf",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\답변_원칙_및_예외_처리_가이드라인.pdf",
+      "size": 447604,
+      "modified_at": 1784089466.592146,
+      "sha256": "7eb9f90ab23553486771e1aeae0227d469aeb107b1354b689e312dafd6b10a81",
+      "characters": 1080,
+      "chunks": 2
+    },
+    {
+      "filename": "수료_기준.docx",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\수료_기준.docx",
+      "size": 12608,
+      "modified_at": 1784089466.5931609,
+      "sha256": "33d4a10172102d1644b2bc9a3b15f47e0cf0c1c2b4135437547fe40dcffb18dd",
+      "characters": 118,
+      "chunks": 1
+    },
+    {
+      "filename": "출결_및_감점_규정_v2.txt",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\출결_및_감점_규정_v2.txt",
+      "size": 209,
+      "modified_at": 1784000492.6865957,
+      "sha256": "967cff19f86557962870543a5322cdd8a2cdd995a0baf1ccfdd23d1640a2fb39",
+      "characters": 90,
+      "chunks": 1
+    },
+    {
+      "filename": "취업_지원_혜택.pdf",
+      "path": "C:\\qaeduc\\ai_quality_final_project_2026\\data\\knowledge\\uploads\\취업_지원_혜택.pdf",
+      "size": 308039,
+      "modified_at": 1784089466.595152,
+      "sha256": "7ea081a50ddc5ad41e0f2e6fe7da2ff52e7c2ba7c4298714ce52b9d4cdea8217",
+      "characters": 978,
+      "chunks": 2
+    }
+  ],
+  "total_chunks": 9
+}

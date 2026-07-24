@@ -1,0 +1,6 @@
+openai
+anthropic
+grpcio
+grpcio-tools
+protobuf==6.33.2
+mcp

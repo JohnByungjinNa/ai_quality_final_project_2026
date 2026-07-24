@@ -1,0 +1,43 @@
+{
+  "name": "VOC Improve Quality Runtime",
+  "version": "1.0",
+  "python": ">=3.12,<3.15",
+  "canonical_orchestrator": "Summarizer.RunPipeline",
+  "services": [
+    {"name": "Interpreter", "module": "agents.interpreter", "port": 6101, "model_provider": "OpenAI"},
+    {"name": "Retriever", "module": "agents.retriever", "port": 6102, "model_provider": "none"},
+    {"name": "Summarizer", "module": "agents.summarizer", "port": 6103, "model_provider": "OpenAI"},
+    {"name": "Evaluator", "module": "agents.evaluator", "port": 6104, "model_provider": "OpenAI"},
+    {"name": "Critic", "module": "agents.critic", "port": 6105, "model_provider": "OpenAI"},
+    {"name": "Improver", "module": "agents.improver", "port": 6106, "model_provider": "Anthropic"}
+  ],
+  "required_secrets": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+  "configured_but_currently_unused": ["TAVILY_API_KEY"],
+  "required_directories": [
+    "agents",
+    "llm_wrappers",
+    "utils",
+    "quality_diagnosis",
+    "scripts"
+  ],
+  "required_files": [
+    "grpc_server.py",
+    "main.py",
+    "voc.proto",
+    "voc_pb2.py",
+    "voc_pb2_grpc.py",
+    "voc.csv",
+    ".env.example",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "commands": {
+    "initialize": ".\\scripts\\agents.cmd init",
+    "start": ".\\scripts\\agents.cmd start",
+    "status": ".\\scripts\\agents.cmd status",
+    "stop": ".\\scripts\\agents.cmd stop",
+    "diagnose_all": ".\\scripts\\quality-diagnosis.cmd all"
+  },
+  "report_root": "quality_diagnosis/Reports",
+  "excluded_secrets_and_runtime": [".env", ".venv", ".runtime", "__pycache__"]
+}

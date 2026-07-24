@@ -1,0 +1,120 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "ai-qa-operational-alerts",
+      "folder": "AI QA Monitoring",
+      "interval": "60s",
+      "rules": [
+        {
+          "uid": "qa_observer_down",
+          "title": "QA Observer Down",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {"from": 300, "to": 0},
+              "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "qa_observer_up", "instant": true, "intervalMs": 1000, "legendFormat": "qa-observer", "maxDataPoints": 43200, "range": false, "refId": "A"}
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {"conditions": [{"evaluator": {"params": [1], "type": "lt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Alerting",
+          "for": "0s",
+          "annotations": {"summary": "qa-observer health metric is unavailable or down", "runbook_url": "http://localhost:8501", "runbook_id": "observer-down"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "critical", "alert_family": "collector"}
+        },
+        {
+          "uid": "qa_safety_violation",
+          "title": "Safety Violation Detected",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 600, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "sum(qa_dashboard_aggregate_value{metric=\"safety.violations\",aggregation=\"sum\"})", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [0], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "0s",
+          "annotations": {"summary": "one or more safety violations were detected", "runbook_url": "http://localhost:8501", "runbook_id": "safety-violation"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "critical", "alert_family": "safety"}
+        },
+        {
+          "uid": "qa_api_error_rate",
+          "title": "API Error Rate High",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 600, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "100 * sum(qa_dashboard_aggregate_value{metric=\"api.service_errors\",aggregation=\"sum\"}) / clamp_min(sum(qa_dashboard_aggregate_value{metric=\"api.requests\",aggregation=\"sum\"}), 1)", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [2], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "1m",
+          "annotations": {"summary": "API error rate exceeded 2 percent", "runbook_url": "http://localhost:8501", "runbook_id": "api-error-rate"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "critical", "alert_family": "performance"}
+        },
+        {
+          "uid": "qa_api_p95_latency",
+          "title": "API P95 Latency High",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 600, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_response_seconds_bucket[5m])))", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [5], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "2m",
+          "annotations": {"summary": "API p95 latency exceeded 5 seconds", "runbook_url": "http://localhost:8501", "runbook_id": "api-p95-latency"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "warning", "alert_family": "performance"}
+        },
+        {
+          "uid": "qa_test_pass_rate",
+          "title": "Test Pass Rate Low",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 86400, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "100 * sum(qa_dashboard_aggregate_value{metric=\"test.pass_count\",aggregation=\"sum\"}) / clamp_min(sum(qa_dashboard_aggregate_value{metric=\"test.total_count\",aggregation=\"sum\"}), 1)", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [95], "type": "lt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "1m",
+          "annotations": {"summary": "test pass rate fell below 95 percent", "runbook_url": "http://localhost:8501", "runbook_id": "test-pass-rate"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "warning", "alert_family": "quality"}
+        },
+        {
+          "uid": "qa_rag_no_result",
+          "title": "RAG No Result Rate High",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 3600, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "100 * sum(qa_dashboard_aggregate_value{metric=\"rag.no_result\",aggregation=\"sum\"}) / clamp_min(sum(qa_dashboard_aggregate_value{metric=\"rag.searches\",aggregation=\"sum\"}), 1)", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [5], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "2m",
+          "annotations": {"summary": "RAG no-result rate exceeded 5 percent", "runbook_url": "http://localhost:8501", "runbook_id": "rag-no-result"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "warning", "alert_family": "rag"}
+        },
+        {
+          "uid": "qa_llm_budget_warning",
+          "title": "LLM Daily Budget Warning",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 86400, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "sum(qa_dashboard_aggregate_value{metric=\"llm.cost_micros_krw\",aggregation=\"sum\"}) / 1000000", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [40000], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "1m",
+          "annotations": {"summary": "daily LLM cost exceeded 80 percent of the 50000 KRW budget", "runbook_url": "http://localhost:8501", "runbook_id": "llm-budget-warning"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "warning", "alert_family": "cost"}
+        },
+        {
+          "uid": "qa_llm_budget_critical",
+          "title": "LLM Daily Budget Exceeded",
+          "condition": "C",
+          "data": [
+            {"refId": "A", "datasourceUid": "prometheus", "relativeTimeRange": {"from": 86400, "to": 0}, "model": {"datasource": {"type": "prometheus", "uid": "prometheus"}, "editorMode": "code", "expr": "sum(qa_dashboard_aggregate_value{metric=\"llm.cost_micros_krw\",aggregation=\"sum\"}) / 1000000", "instant": true, "intervalMs": 1000, "maxDataPoints": 43200, "range": false, "refId": "A"}},
+            {"refId": "C", "datasourceUid": "__expr__", "model": {"conditions": [{"evaluator": {"params": [50000], "type": "gt"}, "operator": {"type": "and"}, "query": {"params": ["A"]}, "reducer": {"params": [], "type": "last"}, "type": "query"}], "datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "intervalMs": 1000, "maxDataPoints": 43200, "refId": "C", "type": "classic_conditions"}}
+          ],
+          "noDataState": "NoData", "execErrState": "Alerting", "for": "0s",
+          "annotations": {"summary": "daily LLM cost exceeded the 50000 KRW budget", "runbook_url": "http://localhost:8501", "runbook_id": "llm-budget-critical"},
+          "labels": {"team": "qa", "service": "ai-quality-chatbot", "severity": "critical", "alert_family": "cost"}
+        }
+      ]
+    }
+  ]
+}

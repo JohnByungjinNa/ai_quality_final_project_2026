@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "openai-standard-20260714",
+  "verified_at_utc": "2026-07-14T01:35:00Z",
+  "currency": "USD",
+  "unit_tokens": 1000000,
+  "source_url": "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+  "models": {
+    "gpt-4o-mini": {
+      "aliases": ["gpt-4o-mini-2024-07-18"],
+      "input_usd_per_unit": 0.15,
+      "cached_input_usd_per_unit": 0.075,
+      "output_usd_per_unit": 0.6
+    }
+  }
+}

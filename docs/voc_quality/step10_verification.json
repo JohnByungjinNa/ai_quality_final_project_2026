@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "verified_at": "2026-07-16T15:36:06+09:00",
+  "regression_command": ".venv\\Scripts\\python.exe -m pytest -q",
+  "regression_summary": "229 PASS / 기존 qa-observer Prometheus 집계 메트릭 6 FAIL / Step 10 신규 실패 0건",
+  "regression_passed": 229,
+  "known_failures": 6,
+  "new_failures": 0,
+  "regression_ok": true,
+  "voc_target_summary": "Step 10·VOC 대상 41 PASS",
+  "compileall": "PASS",
+  "dependency_check": "PASS",
+  "streamlit_health": "HTTP 200 ok",
+  "secret_pattern_count": 0,
+  "note": "기존 전체 회귀 실패 6건은 성공으로 간주하지 않으며 Step 10 최종 인수 HOLD의 운영 잔여 결함으로 유지한다."
+}

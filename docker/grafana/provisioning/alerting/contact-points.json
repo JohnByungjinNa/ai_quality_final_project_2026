@@ -1,0 +1,23 @@
+{
+  "apiVersion": 1,
+  "contactPoints": [
+    {
+      "orgId": 1,
+      "name": "qa-observer-local",
+      "receivers": [
+        {
+          "uid": "qa_observer_webhook",
+          "type": "webhook",
+          "disableResolveMessage": false,
+          "settings": {
+            "url": "http://qa-observer:8010/v1/alerts/grafana",
+            "httpMethod": "POST",
+            "authorization_scheme": "Bearer",
+            "authorization_credentials": "$QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN",
+            "maxAlerts": "50"
+          }
+        }
+      ]
+    }
+  ]
+}

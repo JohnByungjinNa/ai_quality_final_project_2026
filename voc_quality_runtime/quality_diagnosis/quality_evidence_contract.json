@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "contract_id": "VOC-QUALITY-EVIDENCE-V1",
+  "suite_id": "VOC-QA-35",
+  "execution_statuses": {
+    "PASS": "실행과 모든 필수 품질 기준을 충족",
+    "FAIL": "실행은 완료했으나 하나 이상의 품질 기준을 미충족",
+    "ERROR": "환경·Agent·API·timeout·파싱 오류로 유효한 판정을 생성하지 못함",
+    "NOT_RUN": "선택되지 않았거나 중단되어 실행하지 않음",
+    "REVIEW_REQUIRED": "자동 판정만으로 결론을 내릴 수 없어 사람 검토가 필요"
+  },
+  "run_types": ["MANUAL", "BATCH", "RETEST", "BASELINE"],
+  "run_lifecycle_statuses": ["RUNNING", "COMPLETED", "ERROR", "INTERRUPTED"],
+  "required_manifest_fields": [
+    "run_id",
+    "run_type",
+    "started_at",
+    "finished_at",
+    "suite_id",
+    "catalog_version",
+    "test_case_hash",
+    "selected_case_ids",
+    "rubric_versions",
+    "model_snapshot",
+    "judge_enabled",
+    "environment_fingerprint"
+  ],
+  "artifact_layout": {
+    "root": "reports/voc_quality_runs/<run_id>",
+    "required_run_files": ["manifest.json", "summary.json", "defects.json"],
+    "required_case_files": ["pipeline_result.json", "trace.json", "rule_result.json"],
+    "conditional_case_files": {
+      "judge_enabled": "judge_result.json",
+      "validity_reviewed": "validity_result.json"
+    },
+    "final_evidence_files": ["evidence/result.txt", "evidence/junit.xml", "evidence/report.html"]
+  },
+  "quality_report": {
+    "states": ["EVIDENCE_DRAFT", "FINAL"],
+    "release_decisions": ["NOT_APPROVED", "FORMAL_APPROVED"],
+    "shared_model": "evidence/report_model.json",
+    "manifest": "evidence/report_manifest.json",
+    "required_consistency": [
+      "TXT·JUnit XML·HTML은 동일 report model에서 생성한다.",
+      "report manifest에 세 파일의 SHA-256과 공통 상태 집계를 기록한다.",
+      "33 PASS / 2 FAIL과 35 PASS 연결 증적이 없으면 EVIDENCE_DRAFT와 NOT_APPROVED로 생성한다."
+    ]
+  },
+  "history_index_fields": [
+    "run_id",
+    "run_type",
+    "status",
+    "started_at",
+    "finished_at",
+    "suite_id",
+    "catalog_version",
+    "selected_case_ids",
+    "judge_enabled",
+    "validity_reviewed",
+    "validity_state",
+    "deployment_decision",
+    "counts",
+    "judge_counts"
+  ],
+  "baseline_comparison_rules": [
+    "suite_id가 같아야 한다.",
+    "catalog_version과 test_case_hash가 같아야 한다.",
+    "case_id 집합이 같아야 한다.",
+    "Rubric이 다르면 점수는 참고용으로만 비교하고 동일 기준 개선으로 확정하지 않는다.",
+    "33 PASS / 2 FAIL과 35 PASS 수치는 연결된 실행 ID가 있을 때만 보고서에 표시한다."
+  ],
+  "model_independence_grades": {
+    "A": "생성 모델 제공자와 Judge 제공자가 다름",
+    "B": "제공자는 같지만 모델·Prompt·호출 세션이 분리됨",
+    "C": "같은 모델 계열로 편향 위험이 높아 사람 검토 필수"
+  },
+  "release_gates": {
+    "TECHNICAL_PILOT": [
+      "필수 Agent와 A2A 구간 정상",
+      "장애를 성공으로 위장하지 않음",
+      "Critical 결함 없음"
+    ],
+    "FORMAL_QUALITY_APPROVAL": [
+      "TECHNICAL_PILOT 충족",
+      "독립 Judge PASS",
+      "개선안 타당성 AI_PASS",
+      "QA_REVIEWED",
+      "BUSINESS_APPROVED",
+      "미종결 High·Critical 결함 없음"
+    ]
+  },
+  "data_protection": {
+    "forbidden_in_indexes_and_metrics": [
+      "api_key",
+      "token_value",
+      "customer_personal_data",
+      "full_question",
+      "full_llm_response"
+    ],
+    "required_controls": [
+      "secret_redaction",
+      "minimum_evidence_retention",
+      "safe_path_validation",
+      "explicit_artifact_deletion"
+    ]
+  },
+  "retention_policy": {
+    "default_run_days": 180,
+    "formal_release_days": 1095,
+    "incomplete_run_days": 30,
+    "auto_delete_enabled": false,
+    "deletion_mode": "사용자 명시 삭제 시 Run 폴더와 index를 함께 갱신한다."
+  }
+}

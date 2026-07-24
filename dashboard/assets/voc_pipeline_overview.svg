@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="330" viewBox="0 0 1440 330" role="img" aria-labelledby="title desc">
+  <title id="title">VOC 분석 및 개선안 생성 6단계 파이프라인</title>
+  <desc id="desc">VOC 수집, 정제, 분석, 개선안 생성, AI Agent QA, 처리와 모니터링의 전체 흐름</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity=".14"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#244a86"/></marker>
+  </defs>
+  <rect width="1440" height="330" rx="18" fill="#f8fbff"/>
+  <text x="720" y="28" text-anchor="middle" font-family="Segoe UI,Malgun Gothic,sans-serif" font-size="20" font-weight="700" fill="#12233f">AI Agent QA 기반 VOC 분석 및 개선안 생성 Pipeline</text>
+  <g font-family="Segoe UI,Malgun Gothic,sans-serif" filter="url(#shadow)">
+    <g transform="translate(18 48)"><path d="M0 0H214L232 28 214 56H0Q-10 56-10 46V10Q-10 0 0 0" fill="#1957a5"/><text x="105" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">1. VOC 수집</text><text x="105" y="43" text-anchor="middle" fill="#e9f2ff" font-size="11">고객의 목소리 수집</text></g>
+    <g transform="translate(250 48)"><path d="M0 0H214L232 28 214 56H0L18 28Z" fill="#30914c"/><text x="116" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">2. 정제·전처리</text><text x="116" y="43" text-anchor="middle" fill="#effff2" font-size="11">분석 가능한 데이터 준비</text></g>
+    <g transform="translate(482 48)"><path d="M0 0H214L232 28 214 56H0L18 28Z" fill="#258fa0"/><text x="116" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">3. VOC 분석</text><text x="116" y="43" text-anchor="middle" fill="#effdff" font-size="11">이슈·원인 도출</text></g>
+    <g transform="translate(714 48)"><path d="M0 0H214L232 28 214 56H0L18 28Z" fill="#70439a"/><text x="116" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">4. 개선안 생성</text><text x="116" y="43" text-anchor="middle" fill="#fbf4ff" font-size="11">실행안 및 우선순위 제안</text></g>
+    <g transform="translate(946 48)"><path d="M0 0H214L232 28 214 56H0L18 28Z" fill="#ed7800"/><text x="116" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">5. 검증·평가</text><text x="116" y="43" text-anchor="middle" fill="#fff5e9" font-size="11">AI Agent QA 품질검증</text></g>
+    <g transform="translate(1178 48)"><path d="M0 0H232Q242 0 242 10V46Q242 56 232 56H0L18 28Z" fill="#123e78"/><text x="125" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700">6. 실행·모니터링</text><text x="125" y="43" text-anchor="middle" fill="#edf5ff" font-size="11">효과 측정 및 재수집</text></g>
+  </g>
+  <g font-family="Segoe UI,Malgun Gothic,sans-serif" font-size="13" fill="#22324b">
+    <g transform="translate(18 122)"><rect width="210" height="172" rx="12" fill="white" stroke="#9bbce4"/><text x="18" y="34" font-size="25">☎</text><text x="55" y="32" font-weight="700">채널 데이터</text><text x="18" y="66">• 전화·이메일·웹/앱</text><text x="18" y="92">• SNS·리뷰·설문</text><text x="18" y="118">• 원천 VOC 저장</text><text x="18" y="148" fill="#1957a5" font-weight="700">INPUT</text></g>
+    <g transform="translate(250 122)"><rect width="210" height="172" rx="12" fill="white" stroke="#a6d3af"/><text x="18" y="34" font-size="25">▦</text><text x="55" y="32" font-weight="700">정제된 VOC</text><text x="18" y="66">• 중복·노이즈 제거</text><text x="18" y="92">• 비식별화·정규화</text><text x="18" y="118">• 품질 및 형식 검사</text><text x="18" y="148" fill="#30914c" font-weight="700">CLEAN DATA</text></g>
+    <g transform="translate(482 122)"><rect width="210" height="172" rx="12" fill="white" stroke="#9bcfd7"/><text x="18" y="34" font-size="25">⌕</text><text x="55" y="32" font-weight="700">분석 결과</text><text x="18" y="66">• 의도·유형 분류</text><text x="18" y="92">• 관련 VOC 검색</text><text x="18" y="118">• 요약·원인 분석</text><text x="18" y="148" fill="#258fa0" font-weight="700">ANALYSIS</text></g>
+    <g transform="translate(714 122)"><rect width="210" height="172" rx="12" fill="white" stroke="#c3acd8"/><text x="18" y="34" font-size="25">♢</text><text x="55" y="32" font-weight="700">개선안 초안</text><text x="18" y="66">• 개선 아이디어</text><text x="18" y="92">• 실행계획·우선순위</text><text x="18" y="118">• 기대효과 정의</text><text x="18" y="148" fill="#70439a" font-weight="700">POLICY</text></g>
+    <g transform="translate(946 122)"><rect width="210" height="172" rx="12" fill="white" stroke="#f2bd83"/><text x="18" y="34" font-size="25">✓</text><text x="55" y="32" font-weight="700">QA 평가 결과</text><text x="18" y="66">• 정확성·충실성</text><text x="18" y="92">• 근거성·실행가능성</text><text x="18" y="118">• 위험·모순 검토</text><text x="18" y="148" fill="#ed7800" font-weight="700">QA GATE</text></g>
+    <g transform="translate(1178 122)"><rect width="242" height="172" rx="12" fill="white" stroke="#8eadd0"/><text x="18" y="34" font-size="25">⚙</text><text x="55" y="32" font-weight="700">실행 및 피드백</text><text x="18" y="66">• 승인·담당·일정 관리</text><text x="18" y="92">• 개선 실행·효과 측정</text><text x="18" y="118">• VOC 재수집·반영</text><text x="18" y="148" fill="#123e78" font-weight="700">FEEDBACK LOOP</text></g>
+  </g>
+  <g stroke="#244a86" stroke-width="3" marker-end="url(#arrow)"><path d="M228 208H246"/><path d="M460 208H478"/><path d="M692 208H710"/><path d="M924 208H942"/><path d="M1156 208H1174"/></g>
+  <text x="720" y="316" text-anchor="middle" font-family="Segoe UI,Malgun Gothic,sans-serif" font-size="12" fill="#60738e">아래 실시간 Agent Pipeline은 이 업무 흐름 중 분석·개선안·QA 단계를 실제 gRPC Trace로 보여줍니다.</text>
+</svg>
