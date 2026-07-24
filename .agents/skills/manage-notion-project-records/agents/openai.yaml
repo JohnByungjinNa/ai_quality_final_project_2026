@@ -1,0 +1,13 @@
+interface:
+  display_name: "Notion 프로젝트 기록 관리"
+  short_description: "프로젝트 기록을 인덱스·DB·Archive 구조로 관리"
+  default_prompt: "Use $manage-notion-project-records to set up or update a structured Notion project work journal."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "notion"
+      description: "Read and update project journals in the user's Notion workspace."
+
+policy:
+  allow_implicit_invocation: true
