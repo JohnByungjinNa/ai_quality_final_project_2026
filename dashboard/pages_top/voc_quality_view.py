@@ -4033,55 +4033,50 @@ def render_testcases():
             height=190,
         key="voc_testcase_metrics",
     ):
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.markdown("#### :material/target: 실행 대상 요약")
-            with st.container(horizontal=True, horizontal_alignment="right"):
-                st.download_button(
-                    "TC Download",
-                    data=json.dumps(catalog, ensure_ascii=False, indent=2),
-                    file_name="quality_test_catalog.json",
-                    mime="application/json",
-                    icon=":material/download:",
-                    type="primary",
-                    width="content",
-                    key="voc_testcase_catalog_download",
+        st.markdown("#### :material/target: 실행 대상 요약")
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            st.download_button(
+                "TC Download",
+                data=json.dumps(catalog, ensure_ascii=False, indent=2),
+                file_name="quality_test_catalog.json",
+                mime="application/json",
+                icon=":material/download:",
+                type="primary",
+                width="content",
+                key="voc_testcase_catalog_download",
+            )
+            with st.popover(
+                "TC Upload",
+                icon=":material/upload_file:",
+                width="content",
+            ):
+                uploaded_catalog = st.file_uploader(
+                    "통합 테스트케이스 JSON",
+                    type=["json"],
+                    key="voc_testcase_catalog_upload",
                 )
-                with st.popover(
-                    "TC Upload",
-                    icon=":material/upload_file:",
-                    width="content",
-                ):
-                    uploaded_catalog = st.file_uploader(
-                        "통합 테스트케이스 JSON",
-                        type=["json"],
-                        key="voc_testcase_catalog_upload",
-                    )
-                    if uploaded_catalog is not None:
-                        try:
-                            uploaded_payload = json.loads(
-                                uploaded_catalog.getvalue().decode("utf-8-sig")
-                            )
-                            upload_errors = validate_quality_test_catalog(uploaded_payload)
-                        except Exception as exc:
-                            uploaded_payload = None
-                            upload_errors = [f"JSON 파일을 해석할 수 없습니다: {exc}"]
-                        if upload_errors:
-                            for error in upload_errors:
-                                st.error(error)
-                        elif st.button(
-                            "검증 완료 · 적용",
-                            type="primary",
-                            key="voc_testcase_catalog_apply_upload",
-                        ):
-                            result = save_quality_test_catalog(uploaded_payload, source="json_upload")
-                            st.success(
-                                f"통합 테스트케이스 {result.get('total_cases', 0)}건을 저장했습니다."
-                            )
-                            st.rerun()
+                if uploaded_catalog is not None:
+                    try:
+                        uploaded_payload = json.loads(
+                            uploaded_catalog.getvalue().decode("utf-8-sig")
+                        )
+                        upload_errors = validate_quality_test_catalog(uploaded_payload)
+                    except Exception as exc:
+                        uploaded_payload = None
+                        upload_errors = [f"JSON 파일을 해석할 수 없습니다: {exc}"]
+                    if upload_errors:
+                        for error in upload_errors:
+                            st.error(error)
+                    elif st.button(
+                        "검증 완료 · 적용",
+                        type="primary",
+                        key="voc_testcase_catalog_apply_upload",
+                    ):
+                        result = save_quality_test_catalog(uploaded_payload, source="json_upload")
+                        st.success(
+                            f"통합 테스트케이스 {result.get('total_cases', 0)}건을 저장했습니다."
+                        )
+                        st.rerun()
         metric_row = st.columns(4, gap="small")
         metric_row[0].metric("전체 실행 대상", f"{len(cases)}건", border=True)
         metric_row[1].metric("VOC 질문형", f"{voc_count}건", border=True)
