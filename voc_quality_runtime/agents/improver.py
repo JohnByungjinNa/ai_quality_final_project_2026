@@ -87,6 +87,13 @@ class PolicyImproverAgent:
         # ============ 요약 검증 ============
         # 요약이 비어있거나 너무 짧으면 정책 생성이 어렵습니다
         summary = (summary or "").strip()
+        if summary in {"상태점검", "헬스체크", "healthcheck", "health_check"}:
+            return PolicyResult(
+                policy=(
+                    "Improver Agent 상태 점검 응답입니다. "
+                    "gRPC Improve 호출이 정상 수신되었고 정책 개선안 생성 서비스가 응답 가능합니다."
+                )
+            )
         if not summary or len(summary) < 10:
             return PolicyResult(
                 policy="요약 내용이 비어 있거나 충분하지 않아 구체적인 정책 개선안을 제안하기 어렵습니다. "

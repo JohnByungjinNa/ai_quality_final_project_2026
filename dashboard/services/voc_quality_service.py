@@ -325,7 +325,7 @@ def test_agent_rpc(agent_name: str, port: int, *, timeout: float = 12.0) -> dict
         if "DEADLINE_EXCEEDED" in error_text or "Deadline Exceeded" in error_text:
             error_text = (
                 "응답 시간 초과 · Agent 프로세스는 RUNNING이지만 실제 처리 또는 외부 LLM 응답이 "
-                "제한 시간 안에 끝나지 않았습니다."
+                "제한 시간 안에 끝나지 않았습니다. 최신 헬스체크 코드 반영을 위해 Agent 재시작 후 다시 시도하세요."
             )
         return {
             "ok": False,
