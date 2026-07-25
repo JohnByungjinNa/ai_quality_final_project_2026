@@ -2283,7 +2283,13 @@ def _render_goal_testcase_result(selected_case_id: str):
         return
 
     executed_case = test_execution.get("case", {})
-    st.markdown(f"#### 수행 결과 · {executed_case.get('case_id', '-')}")
+    result_title = (
+        executed_case.get("question")
+        or executed_case.get("name")
+        or executed_case.get("case_id")
+        or "-"
+    )
+    st.markdown(f"#### {result_title}")
     if test_execution.get("run_id"):
         st.caption(
             f"Run ID: {test_execution['run_id']} · 증적 상태: "
@@ -3033,7 +3039,7 @@ def render_batch_execution():
         st.warning("quality_test_catalog.json에 실행할 Case가 없습니다.")
         return
 
-    all_mode_label = f"전체 {len(cases)}건"
+    all_mode_label = f"전체 실행 대상 {len(cases)}건"
     mode = st.segmented_control(
         "선택 방식",
         [all_mode_label, "그룹 선택", "개별 선택"],
@@ -3101,7 +3107,12 @@ def render_batch_execution():
     active = False
     if active_run_id:
         active = get_batch_run_progress(active_run_id).get("status") == "RUNNING"
-    run_button_label = "진행 화면 열기" if active else f"선택 {len(selected_ids)}건 백그라운드 실행"
+    if active:
+        run_button_label = "진행 화면 열기"
+    elif mode == all_mode_label:
+        run_button_label = f"전체 실행 대상 {len(selected_ids)}건 일괄 실행"
+    else:
+        run_button_label = f"선택 {len(selected_ids)}건 일괄 실행"
     if st.button(
         run_button_label,
         icon=":material/open_in_new:" if active else ":material/play_arrow:",
