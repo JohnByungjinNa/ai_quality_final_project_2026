@@ -4535,6 +4535,18 @@ def _rubric_save_state_pill(label: str, *, tone: str) -> str:
     )
 
 
+def _rubric_save_hint_slot(message: str = "", *, tone: str = "muted") -> str:
+    color = "#b42318" if tone == "red" else "#7d8da1"
+    visibility = "visible" if message else "hidden"
+    return (
+        "<div style=\""
+        "height:17px;min-height:17px;margin-top:2px;font-size:10px;font-weight:700;"
+        f"line-height:17px;color:{color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        f"visibility:{visibility};"
+        f"\">{escape(message or 'placeholder')}</div>"
+    )
+
+
 def _highlight_rubric_version_input(rubric_type: str) -> None:
     widget_class = f"st-key-rubric_edit_{rubric_type}_widget_version"
     st.markdown(
@@ -5348,16 +5360,22 @@ def _render_rubric_management(stage: str):
         with save_col:
             if needs_version_change:
                 st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
-                st.caption("Rubric 버전을 변경해야 저장할 수 있습니다.")
+                st.markdown(
+                    _rubric_save_hint_slot("Rubric 버전을 변경해야 저장할 수 있습니다.", tone="red"),
+                    unsafe_allow_html=True,
+                )
             elif has_rubric_changes:
                 st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
+                st.markdown(_rubric_save_hint_slot(), unsafe_allow_html=True)
             elif (
                 st.session_state.get(f"voc_rubric_last_save_message_{rubric_type}") == "변경완료"
                 and saved_signature == draft_signature
             ):
                 st.markdown(_rubric_save_state_pill("변경완료", tone="gray"), unsafe_allow_html=True)
+                st.markdown(_rubric_save_hint_slot(), unsafe_allow_html=True)
             else:
                 st.markdown(_rubric_save_state_pill("변경없음", tone="gray"), unsafe_allow_html=True)
+                st.markdown(_rubric_save_hint_slot(), unsafe_allow_html=True)
             if st.button(
                 "평가 기준 저장",
                 type="primary",
