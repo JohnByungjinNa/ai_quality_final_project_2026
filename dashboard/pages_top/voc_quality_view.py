@@ -939,6 +939,7 @@ def _trace_display_events(events: list[dict]) -> list[dict]:
 def _pipeline_run_summary(snapshot: dict, *, running: bool) -> dict:
     events = _trace_display_events(snapshot.get("events", []))
     result = st.session_state.get("goal_testcase_result") or {}
+    selected_case_id = st.session_state.get("goal_testcase_selected_case_id", "")
     started_at = st.session_state.get("goal_testcase_started_at", "")
     completed_at = st.session_state.get("goal_testcase_completed_at", "")
 
@@ -1002,7 +1003,7 @@ def _pipeline_run_summary(snapshot: dict, *, running: bool) -> dict:
     return {
         "state": state,
         "label": label,
-        "case_id": result.get("case", {}).get("case_id") or st.session_state.get("goal_testcase_running_case_id", "-"),
+        "case_id": selected_case_id or result.get("case", {}).get("case_id") or st.session_state.get("goal_testcase_running_case_id", "-"),
         "steps": len(events),
         "successes": successes,
         "failures": failures,
@@ -2581,6 +2582,68 @@ def _selected_goal_testcase() -> dict | None:
     )
 
 
+def _latest_goal_testcase_artifacts(selected_case: dict) -> dict:
+    case_id = selected_case.get("case_id", "")
+    if not case_id:
+        return {}
+    for run in list_voc_run_history():
+        if case_id not in run.get("selected_case_ids", []):
+            continue
+        artifacts = load_voc_case_history_detail(run.get("run_id", ""), case_id)
+        pipeline_result = artifacts.get("pipeline_result")
+        if not pipeline_result:
+            continue
+        trace = artifacts.get("trace") or {}
+        case_result = next(
+            (
+                item
+                for item in run.get("case_results", [])
+                if item.get("case_id") == case_id
+            ),
+            {},
+        )
+        restored = {
+            **pipeline_result,
+            "case": {**selected_case, **pipeline_result.get("case", {})},
+            "trace": trace,
+            "run_id": pipeline_result.get("run_id") or run.get("run_id", ""),
+            "run_dir": run.get("run_dir", ""),
+            "evidence_status": case_result.get("status")
+            or artifacts.get("rule_result", {}).get("status")
+            or pipeline_result.get("evidence_status", "-"),
+        }
+        if artifacts.get("judge_result"):
+            restored["judge_result"] = artifacts["judge_result"]
+        return {
+            "result": restored,
+            "trace_id": trace.get("trace_id", ""),
+            "started_at": case_result.get("started_at", ""),
+            "completed_at": case_result.get("finished_at", ""),
+            "run_id": run.get("run_id", ""),
+        }
+    return {}
+
+
+def _sync_goal_testcase_recent_artifacts(selected_case: dict) -> None:
+    if st.session_state.get("goal_testcase_job_id"):
+        return
+    selected_case_id = selected_case.get("case_id", "")
+    current_result = st.session_state.get("goal_testcase_result") or {}
+    if current_result.get("case", {}).get("case_id") == selected_case_id:
+        return
+    latest = _latest_goal_testcase_artifacts(selected_case)
+    if not latest:
+        st.session_state.pop("goal_testcase_result", None)
+        st.session_state.pop("goal_testcase_started_at", None)
+        st.session_state.pop("goal_testcase_completed_at", None)
+        st.session_state.pop("goal_testcase_trace_id", None)
+        return
+    st.session_state["goal_testcase_result"] = latest["result"]
+    st.session_state["goal_testcase_trace_id"] = latest.get("trace_id", "")
+    st.session_state["goal_testcase_started_at"] = latest.get("started_at", "")
+    st.session_state["goal_testcase_completed_at"] = latest.get("completed_at", "")
+
+
 def _ensure_goal_testcase_selection() -> dict | None:
     cases = load_test_cases().get("cases", [])
     if not cases:
@@ -2688,6 +2751,8 @@ def render_goal_monitor():
     _goal_testcase_selector()
 
     selected_case = _selected_goal_testcase()
+    if selected_case:
+        _sync_goal_testcase_recent_artifacts(selected_case)
 
     with st.container(
         horizontal=True,

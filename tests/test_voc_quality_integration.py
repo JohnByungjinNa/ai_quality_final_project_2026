@@ -743,6 +743,71 @@ def test_pipeline_run_summary_exposes_completed_status_and_run_metrics(monkeypat
     }
 
 
+def test_pipeline_run_summary_uses_selected_case_for_recent_trace(monkeypatch):
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "session_state",
+        {
+            "goal_testcase_selected_case_id": "TC-16",
+            "goal_testcase_result": {
+                "mode": "voc",
+                "case": {"case_id": "TC-14"},
+                "execution": {"ok": True, "result": {"ok": True}},
+            },
+        },
+    )
+
+    summary = voc_quality_view._pipeline_run_summary({"events": []}, running=False)
+
+    assert summary["case_id"] == "TC-16"
+
+
+def test_sync_goal_testcase_recent_artifacts_restores_selected_case_result(monkeypatch):
+    state = {}
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "list_voc_run_history",
+        lambda: [
+            {
+                "run_id": "RUN-1",
+                "run_dir": "reports/voc_quality_runs/RUN-1",
+                "selected_case_ids": ["TC-16"],
+                "case_results": [
+                    {
+                        "case_id": "TC-16",
+                        "status": "REVIEW_REQUIRED",
+                        "started_at": "2026-07-17T10:00:00+09:00",
+                        "finished_at": "2026-07-17T10:00:04+09:00",
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "load_voc_case_history_detail",
+        lambda run_id, case_id: {
+            "pipeline_result": {
+                "run_id": run_id,
+                "case_id": case_id,
+                "mode": "voc",
+                "execution": {"ok": True, "result": {"ok": True}},
+            },
+            "trace": {"trace_id": "trace-16", "events": []},
+        },
+    )
+
+    voc_quality_view._sync_goal_testcase_recent_artifacts(
+        {"case_id": "TC-16", "question": "TC-16 ??? ??"}
+    )
+
+    assert state["goal_testcase_result"]["case"]["case_id"] == "TC-16"
+    assert state["goal_testcase_result"]["case"]["question"] == "TC-16 ??? ??"
+    assert state["goal_testcase_trace_id"] == "trace-16"
+    assert state["goal_testcase_started_at"] == "2026-07-17T10:00:00+09:00"
+
+
 def test_manual_pipeline_timeline_starts_with_active_preparation_card(monkeypatch):
     rendered = []
     monkeypatch.setattr(
