@@ -39,4 +39,5 @@ view._load_agent_management_snapshot = lambda: {
 }
 view._show_command_result = lambda **_: None
 
+view._render_voc_page_header("Agent 관리")
 view.render_agents()

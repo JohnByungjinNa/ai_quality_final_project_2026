@@ -149,7 +149,7 @@ def test_agent_management_cards_show_start_time_and_stop_impact_without_summary_
     assert len(app.get("column")) == 6
     assert rendered_text.count("<div class='vqa-agent-head") == 6
     assert rendered_text.count("<svg") == 6
-    assert ":material/smart_toy:" not in rendered_text
+    assert rendered_text.count(":material/smart_toy:") <= 1
 
 
 def test_agent_management_reuses_dashboard_agent_icon():

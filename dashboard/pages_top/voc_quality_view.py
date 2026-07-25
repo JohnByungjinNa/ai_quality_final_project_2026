@@ -391,14 +391,38 @@ def _render_voc_page_header(sub_menu: str) -> None:
                 st.session_state["voc_dashboard_filter_submitted"] = bool(submitted)
                 st.session_state["voc_dashboard_filter_refresh_requested"] = bool(refresh_requested)
         else:
-            st.markdown(f"## :material/{meta['icon']}: {meta['title']}")
-            st.caption(meta["description"])
-            st.markdown(
-                " ".join(
-                    f":blue-badge[{item}]"
-                    for item in meta.get("flow", ())
+            if sub_menu == "Agent 관리":
+                with st.container(
+                    horizontal=True,
+                    horizontal_alignment="distribute",
+                    vertical_alignment="center",
+                    gap="small",
+                ):
+                    st.markdown(f"## :material/{meta['icon']}: {meta['title']}")
+                    if st.button(
+                        "상태 새로고침",
+                        type="primary",
+                        width="content",
+                        icon=":material/refresh:",
+                        key="agent_header_refresh",
+                    ):
+                        _load_agent_management_snapshot.clear()
+                        _load_goal_monitor_snapshot.clear()
+                        st.rerun()
+                st.caption(
+                    f"{meta['description']} 전체 시작은 Interpreter 등 6개 Agent 프로세스만 기동하며 "
+                    "Test Case나 VOC 품질진단을 실행하지 않습니다. 전체 또는 개별 제어는 관리 스크립트가 "
+                    "생성한 PID만 대상으로 하며, 외부 프로세스가 점유한 포트는 종료하지 않습니다."
                 )
-            )
+            else:
+                st.markdown(f"## :material/{meta['icon']}: {meta['title']}")
+                st.caption(meta["description"])
+                st.markdown(
+                    " ".join(
+                        f":blue-badge[{item}]"
+                        for item in meta.get("flow", ())
+                    )
+                )
 
 
 def _new_manual_preparation_progress() -> dict:
@@ -1973,21 +1997,6 @@ def render_agents():
         </style>
         """,
         unsafe_allow_html=True,
-    )
-    with st.container(
-        horizontal=True,
-        horizontal_alignment="distribute",
-        vertical_alignment="center",
-    ):
-        st.markdown("### Agent별 상태 및 제어")
-        if st.button("상태 새로고침", type="primary", width="content", icon=":material/refresh:"):
-            _load_agent_management_snapshot.clear()
-            _load_goal_monitor_snapshot.clear()
-            st.rerun()
-
-    st.caption(
-        "전체 시작은 Interpreter 등 6개 Agent 프로세스만 기동하며 Test Case나 VOC 품질진단을 실행하지 않습니다. "
-        "전체 또는 개별 제어는 관리 스크립트가 생성한 PID만 대상으로 하며, 외부 프로세스가 점유한 포트는 종료하지 않습니다."
     )
     with st.container(border=True):
         confirmed = st.checkbox("Agent 프로세스 상태 변경")
