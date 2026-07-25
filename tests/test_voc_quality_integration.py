@@ -1522,7 +1522,7 @@ def test_rubric_total_summary_only_shows_score_and_adjustment_guidance():
     assert any("배점 조정 필요" in item.value for item in app.markdown)
     assert any(
         "100점까지 +1점 조정이 필요합니다." in item.value
-        for item in app.caption
+        for item in app.markdown
     )
     assert all(
         "평가 항목 합계 점수" not in item.value

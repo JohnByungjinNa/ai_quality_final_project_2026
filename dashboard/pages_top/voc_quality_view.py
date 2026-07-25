@@ -5134,23 +5134,35 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
 def _render_rubric_total_summary(draft: dict, spec: dict):
     total = _rubric_total(draft.get(spec["items_key"], {}))
     complete = abs(total - 100.0) < 0.001
-    with st.container(
-        horizontal=True,
-        horizontal_alignment="right",
-        vertical_alignment="center",
-        width="content",
-        gap="xsmall",
-    ):
-        color = "primary" if complete else "red"
-        st.markdown(
-            f":{color}[**{total:g} / 100점**]",
-        )
-        if complete:
-            st.badge("배점 구성 완료", color="blue", icon=":material/check_circle:")
-        else:
-            with st.container(horizontal=True, vertical_alignment="center"):
-                st.badge("배점 조정 필요", color="red", icon=":material/error:")
-                st.caption(f":red[100점까지 {100 - total:+g}점 조정이 필요합니다.]")
+    if complete:
+        first_line = f"{total:g} / 100점 배점 구성 완료"
+        second_line = "저장 가능한 배점 구성입니다."
+        accent = "#155a96"
+        background = "#f3f8fd"
+        border = "#b9cee2"
+    else:
+        first_line = f"{total:g} / 100점 배점 조정 필요"
+        second_line = f"100점까지 {100 - total:+g}점 조정이 필요합니다."
+        accent = "#b42318"
+        background = "#fff7f6"
+        border = "#f2b8b5"
+    st.markdown(
+        f"""
+        <div style="
+            display:flex;flex-direction:column;align-items:flex-end;justify-content:center;
+            min-width:190px;max-width:260px;padding:5px 9px;border:1px solid {border};
+            border-radius:10px;background:{background};box-sizing:border-box;line-height:1.25;
+        ">
+            <div style="font-size:12px;font-weight:850;color:{accent};white-space:nowrap;">
+                {escape(first_line)}
+            </div>
+            <div style="font-size:10px;font-weight:700;color:{accent};opacity:.82;white-space:nowrap;margin-top:2px;">
+                {escape(second_line)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.dialog(
