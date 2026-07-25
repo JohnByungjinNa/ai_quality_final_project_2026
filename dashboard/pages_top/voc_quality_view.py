@@ -3984,7 +3984,7 @@ def _build_testcase_group_chart(group_rows: pd.DataFrame) -> alt.Chart:
                 alt.Tooltip("Case 수:Q", title="Case 수", format="d"),
             ],
         )
-        .properties(height=120)
+        .properties(height=130)
         .configure_view(strokeWidth=0)
     )
 
@@ -4022,7 +4022,7 @@ def render_testcases():
         """
         <style>
         .st-key-voc_testcase_metrics [data-testid="stMetric"]{
-            height:86px!important;min-height:86px!important;padding:7px 9px!important;
+            height:130px!important;min-height:130px!important;padding:11px 10px!important;
         }
         .st-key-voc_testcase_metrics [data-testid="stMetricLabel"] p{
             font-size:.72rem!important;line-height:1.2!important;
@@ -4035,6 +4035,12 @@ def render_testcases():
         }
         .st-key-voc_testcase_metrics>div[data-testid="stVerticalBlock"]{
             gap:.45rem!important;
+        }
+        .st-key-voc_testcase_metrics_header h4{
+            margin:0!important;padding:0!important;line-height:1.25!important;
+        }
+        .st-key-voc_testcase_metrics_header button{
+            min-height:32px!important;margin-top:0!important;
         }
         .st-key-voc_testcase_search>div[data-testid="stVerticalBlock"],
         .st-key-voc_testcase_browser>div[data-testid="stVerticalBlock"],
@@ -4057,7 +4063,7 @@ def render_testcases():
     )
     with overview_columns[0].container(
         border=True,
-            height=220,
+            height=210,
         key="voc_testcase_metrics",
     ):
         with st.container(
@@ -4065,6 +4071,7 @@ def render_testcases():
             horizontal_alignment="distribute",
             vertical_alignment="center",
             gap="small",
+            key="voc_testcase_metrics_header",
         ):
             st.markdown("#### :material/target: 실행 대상 요약")
             with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
@@ -4123,7 +4130,7 @@ def render_testcases():
     )
     with overview_columns[1].container(
         border=True,
-            height=220,
+            height=210,
         key="voc_testcase_group_chart",
     ):
         st.markdown("#### :material/bar_chart: 검증 영역별 Case 구성")
@@ -5113,9 +5120,10 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
                 for item_id, item in items.items()
             ]
         )
-        item_score_max = max([100.0, *item_frame["배점"].astype(float).tolist()])
-        if not item_frame.empty:
-            item_score_max = max(item_frame["배점"].astype(float).max(), 1.0)
+        score_column = item_frame.columns[-1]
+        item_scores = item_frame[score_column].astype(float).tolist()
+        item_score_max = max(item_scores, default=1.0)
+        item_score_max = max(item_score_max, 1.0)
         default_row = item_ids.index(selected_id)
         table_key = f"rubric_edit_{rubric_type}_widget_item_table"
         st.dataframe(
