@@ -366,7 +366,6 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
 
     assert render_order == [
         "selector",
-        "pipeline-action:TC-01",
         "pipeline",
         "result:TC-01",
         "judge-select:TC-01",
@@ -380,7 +379,8 @@ def test_goal_testcase_selector_uses_user_facing_title():
     source = inspect.getsource(voc_quality_view._goal_testcase_selector.__wrapped__)
 
     assert 'st.markdown("### Test Case 선택 실행")' in source
-    assert 'st.caption("읽기 전용 · 행 클릭으로 선택")' in source
+    assert "?? ?? ? ? ???? ??" not in source
+    assert 'st.button(\n            "Agent Pipeline ??"' in source
     assert "읽기 전용 목록입니다." not in source
     assert "horizontal=True" in source
     assert 'st.markdown("### test_cases.json 선택 실행")' not in source
@@ -392,7 +392,7 @@ def test_goal_pipeline_uses_compact_inline_guide():
     source = inspect.getsource(voc_quality_view.render_goal_monitor)
 
     assert 'st.markdown("### 실시간 Agent Pipeline")' in source
-    assert 'st.caption("실행 중 2초 갱신 · 종료 후 최근 Trace 유지")' in source
+    assert "?? ? 2? ?? ? ?? ? ?? Trace ??" not in source
     assert "실행 중에는 현재 흐름을 2초 간격으로 확인하고" not in source
     assert "horizontal=True" in source
 

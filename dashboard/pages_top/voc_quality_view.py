@@ -2456,7 +2456,6 @@ def _goal_testcase_selector():
         key="goal_testcase_compact_header",
     ):
         st.markdown("### Test Case 선택 실행")
-        st.caption("읽기 전용 · 행 클릭으로 선택")
     cases = load_test_cases().get("cases", [])
     if not cases:
         st.warning("test_cases.json에 실행할 테스트케이스가 없습니다.")
@@ -2515,6 +2514,7 @@ def _goal_testcase_selector():
     selected_case_id = selected_case["case_id"]
     _set_goal_testcase_selection(selected_case_id)
     is_fault_case = selected_case.get("category") == "fault_condition"
+    test_running = bool(st.session_state.get("goal_testcase_job_id"))
 
     with detail_column.container(border=True):
         st.markdown(f"**선택: {selected_case.get('case_id')}**")
@@ -2528,6 +2528,16 @@ def _goal_testcase_selector():
                 f"필수 출력: {', '.join(selected_case.get('required_output', [])) or '-'}  \n"
                 f"금지 출력: {', '.join(selected_case.get('prohibited_output', [])) or '-'}"
             )
+        st.button(
+            "Agent Pipeline ??",
+            icon=":material/play_arrow:",
+            type="primary",
+            disabled=test_running or bool(st.session_state.get("goal_judge_job_id")),
+            width="stretch",
+            key=f"goal_execute_{selected_case_id}",
+            on_click=_start_goal_testcase_pipeline,
+            args=(selected_case_id,),
+        )
         if is_fault_case:
             st.info(
                 "이 케이스는 운영 Agent를 변경하지 않는 격리 장애 시험으로 실행합니다: "
@@ -2663,8 +2673,6 @@ def render_goal_monitor():
     _goal_testcase_selector()
 
     selected_case = _selected_goal_testcase()
-    if selected_case:
-        _render_goal_execution_step(selected_case)
 
     with st.container(
         horizontal=True,
@@ -2674,7 +2682,6 @@ def render_goal_monitor():
         key="goal_pipeline_compact_header",
     ):
         st.markdown("### 실시간 Agent Pipeline")
-        st.caption("실행 중 2초 갱신 · 종료 후 최근 Trace 유지")
     active_job_id = st.session_state.get("goal_testcase_job_id")
     if active_job_id:
         _live_testcase_pipeline()
