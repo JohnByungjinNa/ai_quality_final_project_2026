@@ -4570,11 +4570,49 @@ def _rubric_save_state_pill(label: str, *, tone: str) -> str:
     )
 
 
+def _stabilize_rubric_header_layout(rubric_type: str) -> None:
+    widget_keys = (
+        f"rubric_edit_{rubric_type}_widget_version",
+        f"rubric_edit_{rubric_type}_widget_title",
+        f"rubric_edit_{rubric_type}_widget_provider",
+    )
+    selectors = ",\n".join(
+        f".st-key-{widget_key} [data-testid='stTextInput'], "
+        f".st-key-{widget_key} [data-testid='stSelectbox']"
+        for widget_key in widget_keys
+    )
+    st.markdown(
+        f"""
+        <style>
+        {selectors} {{
+            min-height:72px!important;
+        }}
+        .st-key-rubric_edit_{rubric_type}_save_state {{
+            min-height:29px!important;
+            display:flex!important;
+            align-items:center!important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _highlight_rubric_version_input(rubric_type: str) -> None:
     widget_class = f"st-key-rubric_edit_{rubric_type}_widget_version"
     st.markdown(
         f"""
         <style>
+        .st-key-rubric_header_{rubric_type}>div[data-testid="stVerticalBlock"] {{
+            gap:.35rem!important;
+        }}
+        .st-key-rubric_header_{rubric_type} [data-testid="stTextInput"],
+        .st-key-rubric_header_{rubric_type} [data-testid="stSelectbox"] {{
+            min-height:72px!important;
+        }}
+        .st-key-rubric_header_{rubric_type} [data-testid="stElementContainer"] {{
+            margin-bottom:0!important;
+        }}
         .{widget_class} input {{
             border-color:#d83f36!important;
             box-shadow:0 0 0 2px rgba(216,63,54,.14)!important;
@@ -4583,6 +4621,7 @@ def _highlight_rubric_version_input(rubric_type: str) -> None:
         .{widget_class} label p {{
             color:#b42318!important;
             font-weight:800!important;
+            line-height:1.2!important;
         }}
         </style>
         """,
@@ -5299,6 +5338,7 @@ def _render_rubric_management(stage: str):
     spec = QUALITY_RUBRIC_SPECS[rubric_type]
     payload = load_quality_rubric(rubric_type)
     draft = _rubric_draft(payload, rubric_type)
+    _stabilize_rubric_header_layout(rubric_type)
 
     version_col, title_col, provider_col, action_col = st.columns(
         [1.0, 1.8, 1.4, 2.6],
@@ -5390,17 +5430,18 @@ def _render_rubric_management(stage: str):
             else "변경된 평가 기준을 저장합니다."
         )
         with save_col:
-            if needs_version_change:
-                st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
-            elif has_rubric_changes:
-                st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
-            elif (
-                st.session_state.get(f"voc_rubric_last_save_message_{rubric_type}") == "변경완료"
-                and saved_signature == draft_signature
-            ):
-                st.markdown(_rubric_save_state_pill("변경완료", tone="gray"), unsafe_allow_html=True)
-            else:
-                st.markdown(_rubric_save_state_pill("변경없음", tone="gray"), unsafe_allow_html=True)
+            with st.container(key=f"rubric_edit_{rubric_type}_save_state"):
+                if needs_version_change:
+                    st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
+                elif has_rubric_changes:
+                    st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
+                elif (
+                    st.session_state.get(f"voc_rubric_last_save_message_{rubric_type}") == "변경완료"
+                    and saved_signature == draft_signature
+                ):
+                    st.markdown(_rubric_save_state_pill("변경완료", tone="gray"), unsafe_allow_html=True)
+                else:
+                    st.markdown(_rubric_save_state_pill("변경없음", tone="gray"), unsafe_allow_html=True)
             if st.button(
                 "평가 기준 저장",
                 type="primary",
