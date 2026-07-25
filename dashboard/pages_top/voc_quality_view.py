@@ -4472,12 +4472,20 @@ def _build_edited_rubric(
     return edited
 
 
-def _show_rubric_save_result(result: dict):
+def _show_rubric_save_result(rubric_type: str, result: dict, saved_payload: dict):
     if not result.get("ok"):
         for error in result.get("errors", ["품질 평가 기준을 저장하지 못했습니다."]):
             st.error(error)
-        return
-    st.session_state.voc_rubric_last_save_message = "변경완료"
+        return False
+    if result.get("changed", True):
+        saved_signature = _rubric_signature(saved_payload)
+        st.session_state[f"voc_rubric_last_save_message_{rubric_type}"] = "변경완료"
+        st.session_state[f"voc_rubric_last_saved_signature_{rubric_type}"] = saved_signature
+        st.session_state[f"rubric_edit_{rubric_type}_draft"] = deepcopy(saved_payload)
+        st.session_state[f"rubric_edit_{rubric_type}_source"] = saved_signature
+    else:
+        st.session_state[f"voc_rubric_last_save_message_{rubric_type}"] = "변경없음"
+    return True
 
 
 def _rubric_signature(payload: dict) -> str:
@@ -4613,10 +4621,11 @@ def _render_rubric_transfer_tools(
             width="stretch",
         ):
             result = save_quality_rubric(rubric_type, uploaded_payload, source="json_upload")
-            _show_rubric_save_result(result)
-            if result.get("ok"):
+            saved = _show_rubric_save_result(rubric_type, result, uploaded_payload)
+            if saved:
                 draft.clear()
                 draft.update(deepcopy(uploaded_payload))
+                st.rerun()
 
 
 RUBRIC_CRITERION_KO_LABELS = {
@@ -5239,7 +5248,12 @@ def _render_rubric_management(stage: str):
             rubric_type,
             draft,
         )
-        has_rubric_changes = _rubric_signature(draft) != _rubric_signature(payload)
+        draft_signature = _rubric_signature(draft)
+        payload_signature = _rubric_signature(payload)
+        saved_signature = st.session_state.get(
+            f"voc_rubric_last_saved_signature_{rubric_type}"
+        )
+        has_rubric_changes = draft_signature != payload_signature
         needs_version_change = has_rubric_changes and draft.get("version", "") == original_version
         with save_col:
             if needs_version_change:
@@ -5247,7 +5261,10 @@ def _render_rubric_management(stage: str):
                 st.caption("Rubric 버전을 변경해야 저장할 수 있습니다.")
             elif has_rubric_changes:
                 st.markdown(":red-badge[변경발생]")
-            elif st.session_state.get("voc_rubric_last_save_message") == "변경완료":
+            elif (
+                st.session_state.get(f"voc_rubric_last_save_message_{rubric_type}") == "변경완료"
+                and saved_signature == draft_signature
+            ):
                 st.markdown(":gray-badge[변경완료]")
             else:
                 st.markdown(":gray-badge[변경없음]")
@@ -5259,13 +5276,18 @@ def _render_rubric_management(stage: str):
                 width="stretch",
                 disabled=bool(header_validation_errors) or not has_rubric_changes or needs_version_change,
             ):
-                _show_rubric_save_result(
+                saved_payload = deepcopy(draft)
+                saved = _show_rubric_save_result(
+                    rubric_type,
                     save_quality_rubric(
                         rubric_type,
-                        deepcopy(draft),
+                        saved_payload,
                         source="screen_editor",
-                    )
+                    ),
+                    saved_payload,
                 )
+                if saved:
+                    st.rerun()
 
     score_col, decision_col = st.columns(
         2,
