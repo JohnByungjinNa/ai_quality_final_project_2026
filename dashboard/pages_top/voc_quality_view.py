@@ -4553,17 +4553,9 @@ def _rubric_criterion_range(
     total_budget: int = 100,
 ) -> tuple[int, int]:
     """Return a score range that cannot push the full rubric over its budget."""
-    item = items[item_id]
-    criteria = item.get("criteria", {})
-    other_item_scores = sum(
-        float(value or 0)
-        for key, value in criteria.items()
-        if key != criterion_id
-    )
-    maximum = max(
-        0,
-        int(round(float(item.get("max_points", total_budget)) - other_item_scores)),
-    )
+    current_score = float(items[item_id].get("criteria", {}).get(criterion_id, 0))
+    other_scores = _rubric_total(items) - current_score
+    maximum = max(0, int(round(total_budget - other_scores)))
     return 0, maximum
 
 
