@@ -3957,7 +3957,7 @@ def _build_testcase_group_chart(group_rows: pd.DataFrame) -> alt.Chart:
                 alt.Tooltip("Case 수:Q", title="Case 수", format="d"),
             ],
         )
-        .properties(height=155)
+        .properties(height=138)
         .configure_view(strokeWidth=0)
     )
 
@@ -3995,7 +3995,7 @@ def render_testcases():
         """
         <style>
         .st-key-voc_testcase_metrics [data-testid="stMetric"]{
-            height:112px!important;min-height:112px!important;padding:10px 11px!important;
+            height:96px!important;min-height:96px!important;padding:8px 10px!important;
         }
         .st-key-voc_testcase_metrics [data-testid="stMetricLabel"] p{
             font-size:.72rem!important;line-height:1.2!important;
@@ -4030,7 +4030,7 @@ def render_testcases():
     )
     with overview_columns[0].container(
         border=True,
-        height=230,
+            height=210,
         key="voc_testcase_metrics",
     ):
         with st.container(
@@ -4095,7 +4095,7 @@ def render_testcases():
     )
     with overview_columns[1].container(
         border=True,
-        height=230,
+            height=210,
         key="voc_testcase_group_chart",
     ):
         st.markdown("#### :material/bar_chart: 검증 영역별 Case 구성")
