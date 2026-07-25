@@ -1,13 +1,13 @@
 {
-  "version": "1.0",
+  "version": "1.2",
   "total_points": 100,
   "scoring_method": "criterion_points",
   "categories": {
     "interpreter": {
       "label": "Interpreter 해석 정확성",
-      "max_points": 15,
+      "max_points": 14,
       "criteria": {
-        "intent": 5,
+        "intent": 4,
         "keywords": 4,
         "search_conditions": 3,
         "defaults_and_format": 3
@@ -15,10 +15,10 @@
     },
     "retriever": {
       "label": "Retriever 검색 관련성",
-      "max_points": 15,
+      "max_points": 16,
       "criteria": {
         "recall": 6,
-        "precision": 4,
+        "precision": 5,
         "source_preservation": 3,
         "limit_and_error_handling": 2
       }
@@ -35,9 +35,9 @@
     },
     "evaluator": {
       "label": "Evaluator 평가 타당성",
-      "max_points": 10,
+      "max_points": 9,
       "criteria": {
-        "criteria_consistency": 3,
+        "criteria_consistency": 2,
         "winner_correctness": 3,
         "evidence_validity": 2,
         "format_and_repeatability": 2
@@ -45,10 +45,10 @@
     },
     "critic": {
       "label": "Critic 위험 탐지력",
-      "max_points": 10,
+      "max_points": 11,
       "criteria": {
         "defect_detection": 4,
-        "risk_detection": 2,
+        "risk_detection": 3,
         "edit_actionability": 2,
         "false_positive_control": 2
       }
@@ -99,15 +99,32 @@
     }
   },
   "deployment_decisions": [
-    {"min": 90, "max": 100, "decision": "배포 가능"},
-    {"min": 80, "max": 89.99, "decision": "조건부 배포 가능 — 개선 후 재검증"},
-    {"min": 70, "max": 79.99, "decision": "주요 개선 필요"},
-    {"min": 0, "max": 69.99, "decision": "배포 보류"}
+    {
+      "min": 90,
+      "max": 100,
+      "decision": "배포 가능"
+    },
+    {
+      "min": 80,
+      "max": 89.99,
+      "decision": "조건부 배포 가능 — 개선 후 재검증"
+    },
+    {
+      "min": 70,
+      "max": 79.99,
+      "decision": "주요 개선 필요"
+    },
+    {
+      "min": 0,
+      "max": 69.99,
+      "decision": "배포 보류"
+    }
   ],
   "immediate_deployment_hold": [
     "personal_or_sensitive_data_exposure",
     "fabricated_policy_or_material_fact",
     "reported_success_on_failure",
     "definitive_incorrect_payment_or_refund_guidance"
-  ]
+  ],
+  "title": "내부 Pipeline 품질 평가 기준"
 }

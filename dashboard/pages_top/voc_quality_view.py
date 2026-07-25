@@ -13,6 +13,12 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from services.voc_background_job_service import (
+    background_job_snapshot,
+    discard_background_job,
+    start_background_job,
+    update_background_job,
+)
 from services.voc_quality_service import (
     REPORT_CATEGORIES,
     QUALITY_RUBRIC_SPECS,
@@ -59,11 +65,14 @@ from services.voc_quality_service import (
     run_voc_analysis,
     runtime_health,
     save_quality_rubric,
+    save_quality_test_catalog,
     test_case_summary,
+    test_agent_rpc,
     transition_voc_defect,
     request_batch_stop,
     start_batch_run,
     validate_quality_rubric,
+    validate_quality_test_catalog,
     validity_provider_options,
 )
 
@@ -94,6 +103,15 @@ MANUAL_JUDGE_PROVIDERS = (
     },
 )
 
+MANUAL_PREPARATION_STEPS = (
+    "Agent 실행 상태 점검",
+    "Run 폴더 생성",
+    "Rubric과 Test Case 스냅샷 저장",
+    "증적 파일 준비",
+    "별도 Python 프로세스 시작",
+)
+MANUAL_EVENT_CARD_HEIGHT = 154
+
 
 AGENT_PIPELINE = (
     ("Interpreter", "질문 의도 해석", "6101"),
@@ -117,6 +135,76 @@ VOC_HISTORY_COLORS = {
     "실패·오류율": "#A9CAE7",
 }
 VOC_OVERVIEW_PANEL_HEIGHT = 390
+
+VOC_STATUS_LABELS = {
+    "PASS": "통과",
+    "FAIL": "실패",
+    "ERROR": "오류",
+    "REVIEW_REQUIRED": "검토 필요",
+    "NOT_RUN": "미실행",
+    "RUNNING": "진행 중",
+    "COMPLETED": "완료",
+    "INTERRUPTED": "중단됨",
+    "SUCCESS": "성공",
+    "DRAFT": "초안",
+    "PENDING": "대기",
+    "CONFIRMED": "확인됨",
+    "OPEN": "접수",
+    "ANALYZED": "분석 완료",
+    "FIXED": "조치 완료",
+    "RETESTED": "재시험 완료",
+    "CLOSED": "종결",
+    "RESOLVED": "해결",
+    "IMPLEMENTED": "실행 구현 완료",
+    "DEFINED": "정의됨 · 후속 구현",
+    "MANUAL": "수동 수행",
+    "BATCH": "일괄 수행",
+    "RETEST": "재시험",
+    "VOC": "VOC",
+    "FAULT": "장애 시험",
+    "AI_PASS": "AI 통과",
+    "AI_REVIEWED": "AI 검토 완료",
+    "REVISION_REQUIRED": "수정 필요",
+    "REJECTED": "반려",
+    "APPROVE": "승인",
+    "APPROVED": "승인 완료",
+    "FORMAL_APPROVED": "정식 승인",
+    "NOT_APPROVED": "미승인",
+    "BUSINESS_APPROVED": "업무 승인",
+    "BUSINESS_REVIEW_REQUIRED": "업무 검토 필요",
+    "HUMAN_REVIEW_REQUIRED": "사람 검토 필요",
+    "REMAINING_CASE_REVIEW_REQUIRED": "잔여 Case 검토 필요",
+    "READY_FOR_UAT": "UAT 준비 완료",
+    "HOLD": "보류",
+    "EVIDENCE_DRAFT": "증적 초안",
+    "NOT_CONFIGURED": "미설정",
+    "CONFIGURED": "설정됨",
+    "NOT_AVAILABLE": "확인 불가",
+    "UNKNOWN": "미확인",
+    "STOPPED": "중지",
+    "STARTING/FAILED": "시작 실패",
+    "CRITICAL": "치명",
+    "HIGH": "높음",
+    "MEDIUM": "중간",
+    "LOW": "낮음",
+    "INTERFACE_BRANCH": "연계·분기",
+    "API_RATE_LIMIT": "API 제한",
+    "AGENT_FAILURE": "Agent 장애",
+    "DATA": "데이터",
+    "PERFORMANCE": "성능",
+    "OTHER": "기타",
+}
+
+
+def _voc_status_label(value, default: str = "-") -> str:
+    if value is None:
+        return default
+    text = str(value)
+    return VOC_STATUS_LABELS.get(text, text)
+
+
+def _voc_status_counts_for_display(counts: dict | None) -> dict:
+    return {_voc_status_label(key): value for key, value in (counts or {}).items()}
 
 VOC_PAGE_META = {
     "Dashboard": {
@@ -177,7 +265,7 @@ VOC_PAGE_META = {
     },
     "품질 평가 기준": {
         "icon": "tune",
-        "title": "품질 평가 기준",
+        "title": "품질 평가 기준 수립",
         "description": "Pipeline·독립 Judge·개선안 타당성의 배점과 판정 구간을 시각적으로 관리합니다.",
         "group": "기준",
         "flow": ("단계 선택", "배점 조정", "검증·저장"),
@@ -266,38 +354,128 @@ def _render_voc_design_system() -> None:
 def _render_voc_page_header(sub_menu: str) -> None:
     meta = VOC_PAGE_META[sub_menu]
     with st.container(border=True, key="voc_page_hero"):
-        summary, flow = st.columns([1.55, 1], gap="large", vertical_alignment="center")
-        with summary:
+        if sub_menu == "Dashboard":
+            st.session_state["voc_dashboard_header_rendered"] = True
+            header_col, control_col = st.columns([1.45, 1.1], vertical_alignment="bottom")
+            with header_col:
+                st.markdown(f"## :material/{meta['icon']}: {meta['title']}")
+                st.caption(meta["description"])
+            with control_col:
+                today = date.today()
+                selected_range = st.session_state.get(
+                    "voc_dashboard_filter_range",
+                    (today - timedelta(days=6), today),
+                )
+                with st.form("voc_dashboard_filters", border=False):
+                    filter_columns = st.columns([2.2, 0.9, 0.95], vertical_alignment="bottom")
+                    with filter_columns[0]:
+                        selected_range = st.date_input(
+                            "기간",
+                            value=selected_range,
+                            max_value=today,
+                            key="voc_dashboard_filter_range",
+                        )
+                    with filter_columns[1]:
+                        submitted = st.form_submit_button(
+                            "조회",
+                            icon=":material/search:",
+                            type="primary",
+                            width="stretch",
+                        )
+                    with filter_columns[2]:
+                        refresh_requested = st.form_submit_button(
+                            "새로고침",
+                            icon=":material/refresh:",
+                            width="stretch",
+                        )
+                st.session_state["voc_dashboard_filter_submitted"] = bool(submitted)
+                st.session_state["voc_dashboard_filter_refresh_requested"] = bool(refresh_requested)
+        else:
             st.markdown(f"## :material/{meta['icon']}: {meta['title']}")
             st.caption(meta["description"])
-        with flow.container(key="voc_page_flow"):
-            st.caption(f"VOC QA · {meta['group']} · 화면 흐름")
             st.markdown(
-                " :gray[→] ".join(
-                    f":blue-badge[{escape(step)}]" for step in meta["flow"]
+                " ".join(
+                    f":blue-badge[{item}]"
+                    for item in meta.get("flow", ())
                 )
             )
 
 
-@st.cache_resource
-def _testcase_executor():
-    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="voc-testcase")
+def _new_manual_preparation_progress() -> dict:
+    return {
+        "status": "RUNNING",
+        "current_step": 1,
+        "steps": [
+            {"number": index, "label": label, "status": "waiting"}
+            for index, label in enumerate(MANUAL_PREPARATION_STEPS, start=1)
+        ],
+    }
 
 
-def _execute_goal_testcase(case_id: str) -> dict:
+def _update_manual_preparation(job_id: str, step_number: int, status: str) -> None:
+    if not job_id:
+        return
+    job = background_job_snapshot(job_id) or {}
+    preparation = deepcopy(
+        job.get("progress", {}).get("preparation")
+        or _new_manual_preparation_progress()
+    )
+    for step in preparation["steps"]:
+        if step["number"] == step_number:
+            step["status"] = status
+        elif step["number"] < step_number and step["status"] in {"waiting", "active"}:
+            step["status"] = "success"
+    preparation["current_step"] = step_number
+    if status == "failure":
+        preparation["status"] = "ERROR"
+    elif all(step["status"] == "success" for step in preparation["steps"]):
+        preparation["status"] = "COMPLETED"
+    else:
+        preparation["status"] = "RUNNING"
+    update_background_job(job_id, progress={"preparation": preparation})
+
+
+def _execute_goal_testcase(job_id: str, case_id: str | None = None) -> dict:
     """Agent 사전 점검과 TC 실행을 모두 백그라운드에서 수행합니다."""
-    agent_snapshot = agent_status_snapshot()
-    timeout_seconds = 180 if agent_snapshot.get("all_running") else 20
-    testcase_result = run_test_case(
-        case_id,
-        timeout_seconds,
-        {
+    if case_id is None:
+        case_id, job_id = job_id, ""
+    _update_manual_preparation(job_id, 1, "active")
+    try:
+        agent_snapshot = agent_status_snapshot()
+        _update_manual_preparation(job_id, 1, "success")
+        timeout_seconds = 180 if agent_snapshot.get("all_running") else 20
+        judge_config = {
             "enabled": False,
             "provider": "anthropic",
             "model": "claude-opus-4-6",
-        },
-    )
-    return {"testcase_result": testcase_result, "agent_snapshot": agent_snapshot}
+        }
+        if job_id:
+            testcase_result = run_test_case(
+                case_id,
+                timeout_seconds,
+                judge_config,
+                progress_callback=lambda step, status: _update_manual_preparation(
+                    job_id, step, status
+                ),
+            )
+        else:
+            testcase_result = run_test_case(case_id, timeout_seconds, judge_config)
+        return {"testcase_result": testcase_result, "agent_snapshot": agent_snapshot}
+    except Exception:
+        job = background_job_snapshot(job_id) or {}
+        preparation = job.get("progress", {}).get("preparation", {})
+        current_step = int(preparation.get("current_step") or 1)
+        _update_manual_preparation(job_id, current_step, "failure")
+        raise
+
+
+def _execute_goal_judge(
+    _job_id: str,
+    run_id: str,
+    case_id: str,
+    judge_config: dict,
+) -> dict:
+    return reevaluate_voc_run_case(run_id, case_id, judge_config)
 
 
 @st.cache_resource
@@ -536,23 +714,153 @@ def _pipeline_trace_event_rows(trace: dict) -> list[dict]:
     return rows
 
 
-def _trace_reason(event: dict) -> str:
-    operation = str(event.get("operation") or "")
+TRACE_FLOW_EXPLANATIONS = {
+    "ParseQuestion": (
+        "start",
+        "질문 해석",
+        "Agent 1이 사용자 질문을 의도·검색 조건·수행 작업으로 구조화합니다.",
+    ),
+    "IntentDataTransfer": (
+        "handoff",
+        "분석 이관",
+        "Agent 1이 해석한 의도를 조정 역할의 Agent 3에 전달해 전체 Pipeline을 시작합니다.",
+    ),
+    "Retrieve": (
+        "lookup",
+        "근거 조회",
+        "Agent 3이 답변과 요약의 근거가 되는 VOC 원문을 확보하기 위해 Agent 2를 호출합니다.",
+    ),
+    "VOCDataTransfer": (
+        "return",
+        "검색 결과 반환",
+        "Agent 2가 검색한 VOC 데이터와 건수를 이후 단계를 조정하는 Agent 3에 반환합니다.",
+    ),
+    "Evaluate": (
+        "selection",
+        "후보 평가",
+        "Agent 3이 생성한 후보 중 가장 적합한 결과를 선택하기 위해 Agent 4의 평가를 요청합니다.",
+    ),
+    "ReviewSummary": (
+        "review",
+        "요약 검토",
+        "선택된 요약의 누락·왜곡·보완 필요 여부를 확인하기 위해 Agent 5가 검토합니다.",
+    ),
+    "ImprovePolicy": (
+        "generation",
+        "개선안 생성",
+        "검토된 요약을 실행 가능한 정책 개선안으로 바꾸기 위해 Agent 6을 호출합니다.",
+    ),
+    "ReviewPolicy": (
+        "feedback",
+        "개선안 재검토",
+        "Agent 6이 만든 개선안을 확정하기 전에 품질과 실행 가능성을 확인하기 위해 Agent 5로 되돌아갑니다.",
+    ),
+    "RefinePolicy": (
+        "rework",
+        "수정 요청 반영",
+        "Agent 5가 개선안에 수정이 필요하다고 판단해 전달한 보완 의견을 Agent 6이 반영합니다.",
+    ),
+    "Improve": (
+        "generation",
+        "개선안 생성",
+        "검토 결과를 실행 가능한 개선안으로 전환하기 위해 개선 Agent를 호출합니다.",
+    ),
+    "Refine": (
+        "rework",
+        "요약 보완",
+        "Critic이 요청한 수정 사항을 반영하기 위해 요약 생성 단계를 다시 수행합니다.",
+    ),
+    "RunPolicyPipeline": (
+        "handoff",
+        "정책 Pipeline 실행",
+        "검토된 요약을 기준으로 정책 개선과 재검토 흐름을 실행합니다.",
+    ),
+}
+
+
+def _trace_agent_number(agent_name: str) -> int | None:
+    return next(
+        (
+            index
+            for index, (name, _, _) in enumerate(AGENT_PIPELINE, start=1)
+            if name == agent_name
+        ),
+        None,
+    )
+
+
+def _trace_flow_explanation(
+    event: dict,
+    previous_event: dict | None = None,
+) -> dict:
+    operation = str(event.get("operation") or "작업")
     status = str(event.get("status") or "")
-    if operation == "IntentDataTransfer":
-        if status == "success":
-            return "3번이 하위 Agent 결과를 취합해 최종 응답을 반환한 완료 기록입니다. 6→3 재호출이 아닙니다."
-        return "1번의 질문 해석 결과를 3번 조정자에게 전달해 전체 분석을 시작합니다."
-    reasons = {
-        "Retrieve": "3번이 요약 전에 관련 VOC 원문을 찾기 위해 2번 검색 Agent를 호출합니다.",
-        "ReviewPolicy": "6번이 만든 개선안을 바로 확정하지 않고 5번이 품질과 실행 가능성을 다시 검토합니다.",
-        "RefinePolicy": "5번의 정책 검토 의견을 반영하기 위해 6번 개선 Agent를 다시 호출합니다.",
+    current_number = _trace_agent_number(str(event.get("target") or ""))
+    previous_number = _trace_agent_number(
+        str((previous_event or {}).get("target") or "")
+    )
+    if previous_number and current_number:
+        transition = f"Agent {previous_number} → Agent {current_number}"
+    elif current_number:
+        transition = f"시작 → Agent {current_number}"
+    else:
+        transition = "Agent 흐름"
+
+    if status == "failure":
+        error_text = str(event.get("error") or "").strip()
+        short_error = error_text.splitlines()[0][:140] if error_text else ""
+        return {
+            "kind": "failure",
+            "label": "호출 실패",
+            "transition": transition,
+            "reason": short_error
+            or f"{operation} 처리 중 오류가 발생해 다음 단계로 진행하지 못했습니다.",
+            "inferred": False,
+        }
+
+    configured = TRACE_FLOW_EXPLANATIONS.get(operation)
+    if configured:
+        kind, label, reason = configured
+        return {
+            "kind": kind,
+            "label": label,
+            "transition": transition,
+            "reason": reason,
+            "inferred": False,
+        }
+
+    if previous_number and current_number and current_number < previous_number:
+        label = "이전 단계 재호출"
+        direction_reason = f"{operation} 처리를 위해 앞 단계 Agent를 다시 호출했습니다."
+    elif (
+        previous_number
+        and current_number
+        and current_number > previous_number + 1
+    ):
+        label = "분기 호출"
+        direction_reason = (
+            f"{operation} 처리에 중간 단계가 필요하지 않아 해당 Agent로 바로 분기했습니다."
+        )
+    elif previous_number == current_number and current_number:
+        label = "동일 단계 재처리"
+        direction_reason = f"{operation} 결과를 보완하기 위해 같은 Agent가 다시 처리했습니다."
+    else:
+        label = "다음 단계 호출"
+        direction_reason = f"{operation} 처리를 위해 다음 Agent를 호출했습니다."
+    return {
+        "kind": "inferred",
+        "label": label,
+        "transition": transition,
+        "reason": (
+            f"{direction_reason} Trace에 상세 분기 사유가 없어 작업 유형과 이동 방향을 기준으로 표시했습니다."
+        ),
+        "inferred": True,
     }
-    if operation == "VOCDataTransfer" and status == "success":
-        return "2번이 찾은 VOC 데이터를 이후 단계를 조정하는 3번에게 반환합니다."
-    if status in {"started", "failure"}:
-        return reasons.get(operation, "")
-    return ""
+
+
+def _trace_reason(event: dict) -> str:
+    """기존 호출부 호환용으로 작업 자체의 설명만 반환합니다."""
+    return _trace_flow_explanation(event)["reason"]
 
 
 def _trace_event_display_statuses(events: list[dict], *, running: bool) -> list[str]:
@@ -581,17 +889,19 @@ def _trace_event_display_statuses(events: list[dict], *, running: bool) -> list[
 def _trace_display_events(events: list[dict]) -> list[dict]:
     """started/success 한 쌍을 하나의 단계 카드로 합쳐 상태 중복을 제거합니다."""
     display_events: list[dict] = []
-    pending: dict[tuple, int] = {}
+    pending: dict[tuple, list[int]] = {}
     for event in events:
         item = dict(event)
         signature = (item.get("source"), item.get("target"), item.get("operation"))
         status = item.get("status")
         if status == "started":
-            pending[signature] = len(display_events)
+            pending.setdefault(signature, []).append(len(display_events))
             display_events.append(item)
             continue
-        if status in {"success", "failure"} and signature in pending:
-            started_index = pending.pop(signature)
+        if status in {"success", "failure"} and pending.get(signature):
+            started_index = pending[signature].pop(0)
+            if not pending[signature]:
+                pending.pop(signature)
             started_event = display_events[started_index]
             item["started_at"] = started_event.get("timestamp", "")
             if not item.get("input_keywords"):
@@ -616,9 +926,27 @@ def _pipeline_run_summary(snapshot: dict, *, running: bool) -> dict:
 
     failures = sum(event.get("status") == "failure" for event in events)
     successes = sum(event.get("status") == "success" for event in events)
+    active_event = next(
+        (event for event in reversed(events) if event.get("status") == "started"),
+        {},
+    )
+    active_agent_name = str(active_event.get("target") or "")
+    active_agent_number = next(
+        (
+            index
+            for index, (name, _, _) in enumerate(AGENT_PIPELINE, start=1)
+            if name == active_agent_name
+        ),
+        None,
+    )
     if running:
         state = "preparing" if not events else "running"
-        label = "수행 준비 중" if not events else "수행 중"
+        if not events:
+            label = "테스트 수행 준비"
+        elif active_agent_number:
+            label = f"Agent {active_agent_number} · {active_agent_name} 수행 중"
+        else:
+            label = "Pipeline 결과 저장 중"
     elif result:
         state = "completed" if execution_ok else "failed"
         label = "수행 완료" if execution_ok else "수행 실패"
@@ -655,6 +983,8 @@ def _pipeline_run_summary(snapshot: dict, *, running: bool) -> dict:
         "successes": successes,
         "failures": failures,
         "duration_seconds": duration_seconds,
+        "active_agent_number": active_agent_number,
+        "active_agent_name": active_agent_name,
     }
 
 
@@ -729,13 +1059,31 @@ def _render_agent_pipeline(snapshot: dict, running: bool):
     """)
 
 
-def _render_agent_pipeline_v2(snapshot: dict, running: bool):
-    events = _trace_display_events(snapshot.get("events", []))
+def _render_agent_pipeline_v2(
+    snapshot: dict,
+    running: bool,
+    preparation: dict | None = None,
+):
+    source_events = (
+        snapshot.get("events", [])
+        if isinstance(snapshot.get("events", []), list)
+        else []
+    )
+    raw_event_count = len(source_events)
+    raw_events = [
+        event
+        if isinstance(event, dict)
+        else {
+            "operation": "형식 미확인 원본 로그",
+            "status": "unknown",
+        }
+        for event in source_events
+    ]
+    events = _trace_display_events(raw_events)
     agent_numbers = {name: index for index, (name, _, _) in enumerate(AGENT_PIPELINE, start=1)}
     display_statuses = _trace_event_display_statuses(events, running=running)
     run_summary = _pipeline_run_summary(snapshot, running=running)
 
-    trace_rows = []
     status_labels = {
         "started": "진행",
         "completed": "완료",
@@ -743,22 +1091,51 @@ def _render_agent_pipeline_v2(snapshot: dict, running: bool):
         "success": "성공",
         "failure": "실패",
     }
-    for event_index, (event, display_status) in enumerate(zip(events, display_statuses), start=1):
-        source = escape(str(event.get("source") or "-"))
-        target = escape(str(event.get("target") or "-"))
-        target_number = agent_numbers.get(event.get("target"), "-")
-        operation = escape(str(event.get("operation") or "작업"))
-        status = display_status
-        status_class = status if status in status_labels else "unknown"
-        status_label = status_labels.get(status, "기록")
-        timestamp = str(event.get("timestamp") or "-")
-        time_text = escape(timestamp[11:19] if len(timestamp) >= 19 else timestamp)
-        duration = float(event.get("duration_ms") or 0)
-        duration_text = f"{duration:,.0f} ms" if duration else "-"
-        reason = escape(_trace_reason(event))
-        reason_text = reason if reason else "순차 흐름"
-        reason_class = "flow2-reason explained" if reason else "flow2-reason"
-        trace_rows.append(f"""
+    raw_status_labels = {
+        "started": "시작",
+        "success": "성공",
+        "failure": "실패",
+    }
+
+    def build_trace_history(
+        event_items: list[dict],
+        statuses: list[str],
+        *,
+        raw: bool = False,
+    ) -> str:
+        trace_rows = []
+        for event_index, (event, display_status) in enumerate(
+            zip(event_items, statuses),
+            start=1,
+        ):
+            source = escape(str(event.get("source") or "-"))
+            target = escape(str(event.get("target") or "-"))
+            target_number = agent_numbers.get(event.get("target"), "-")
+            operation = escape(str(event.get("operation") or "작업"))
+            status = str(display_status or "unknown")
+            status_class = status if status in status_labels else "unknown"
+            status_label = (
+                raw_status_labels.get(status, escape(status))
+                if raw
+                else status_labels.get(status, "기록")
+            )
+            timestamp = str(event.get("timestamp") or "-")
+            time_text = escape(timestamp[11:19] if len(timestamp) >= 19 else timestamp)
+            duration = float(event.get("duration_ms") or 0)
+            duration_text = f"{duration:,.0f} ms" if duration else "-"
+            previous_event = event_items[event_index - 2] if event_index > 1 else None
+            flow = _trace_flow_explanation(event, previous_event)
+            flow_kind = escape(str(flow["kind"]))
+            flow_label = escape(str(flow["label"]))
+            transition = escape(str(flow["transition"]))
+            reason = escape(str(flow["reason"]))
+            inferred_badge = " · 추정" if flow.get("inferred") else ""
+            reason_text = (
+                f"<b>{transition} · {flow_label}{inferred_badge}</b>"
+                f"<span>{reason}</span>"
+            )
+            reason_class = f"flow2-reason flow2-{flow_kind}"
+            trace_rows.append(f"""
           <div class="flow2-trace-row {status_class}">
             <span class="flow2-seq">#{event_index:02d}</span>
             <span class="flow2-agent-no">Agent {target_number}</span>
@@ -768,39 +1145,130 @@ def _render_agent_pipeline_v2(snapshot: dict, running: bool):
             <span class="flow2-duration">{duration_text}</span>
             <span class="{reason_class}">{reason_text}</span>
           </div>""")
-    trace_history = "".join(trace_rows)
+        return "".join(trace_rows)
+
+    trace_history = build_trace_history(events, display_statuses)
+    raw_trace_history = build_trace_history(
+        raw_events,
+        [str(event.get("status") or "unknown") for event in raw_events],
+        raw=True,
+    )
+    if not raw_trace_history:
+        raw_trace_history = (
+            '<div class="flow2-trace-empty">아직 기록된 원본 로그가 없습니다.</div>'
+        )
     has_run_context = bool(
         events
         or st.session_state.get("goal_testcase_started_at")
         or st.session_state.get("goal_testcase_result")
     )
-    preparation_state = "active" if running and not events else "completed"
-    preparation_label = "순차 진행 중" if preparation_state == "active" else "준비 완료"
-    preparation_icon = "●" if preparation_state == "active" else "✓"
-    preparation_items = (
-        "Agent 실행 상태 점검",
-        "Run 폴더 생성",
-        "Rubric과 Test Case 스냅샷 저장",
-        "증적 파일 준비",
-        "별도 Python 프로세스 시작",
+    if not preparation:
+        preparation = _new_manual_preparation_progress()
+        if events or not running:
+            preparation["status"] = "COMPLETED"
+            for step in preparation["steps"]:
+                step["status"] = "success"
+        else:
+            preparation["steps"][0]["status"] = "active"
+    preparation_status = preparation.get("status", "RUNNING")
+    preparation_state = {
+        "COMPLETED": "completed",
+        "ERROR": "failed",
+    }.get(preparation_status, "active")
+    preparation_label = {
+        "COMPLETED": "성공",
+        "ERROR": "실패",
+    }.get(preparation_status, "진행 중")
+    preparation_icon = {
+        "COMPLETED": "✓",
+        "ERROR": "!",
+    }.get(preparation_status, "●")
+    step_status_labels = {
+        "waiting": "대기",
+        "active": "진행",
+        "success": "완료",
+        "failure": "실패",
+    }
+    preparation_steps = list(preparation.get("steps", []))
+    completed_preparation_steps = sum(
+        step.get("status") == "success"
+        for step in preparation_steps
     )
-    preparation_rows = "".join(
-        f"<li><span>{index}</span><b>{escape(label)}</b></li>"
-        for index, label in enumerate(preparation_items, start=1)
+    preparation_progress_text = (
+        "준비 완료"
+        if preparation_status == "COMPLETED"
+        else f"{completed_preparation_steps}/5 완료 · 순서대로 처리 중"
     )
-    preparation_card = (
+    current_preparation_step = next(
+        (
+            str(step.get("label") or "-")
+            for step in preparation_steps
+            if step.get("status") in {"active", "failure"}
+        ),
+        "Agent Pipeline 호출 준비 완료"
+        if preparation_status == "COMPLETED"
+        else "다음 준비 단계 확인 중",
+    )
+    preparation_summary_card = (
         f"""
-      <article class="flow2-preparation {preparation_state}">
+      <article class="flow2-preparation {preparation_state} flow2-preparation-summary">
         <div class="flow2-preparation-head">
           <span class="flow2-preparation-icon">{preparation_icon}</span>
           <span><strong>테스트 수행 준비</strong><small>Agent 이벤트 생성 전 선행 작업</small></span>
           <em>{preparation_label}</em>
         </div>
-        <ol>{preparation_rows}</ol>
+        <div class="flow2-preparation-progress">{preparation_progress_text}</div>
+        <div class="flow2-preparation-current">
+          <b>{'완료 결과' if preparation_status == 'COMPLETED' else '현재 단계'}</b>
+          <span>{escape(current_preparation_step)}</span>
+        </div>
       </article>"""
         if has_run_context
         else ""
     )
+
+    def build_preparation_step_card(group: list[dict]) -> str:
+        statuses = [str(step.get("status") or "waiting") for step in group]
+        if "failure" in statuses:
+            group_state, group_label, group_icon = "failed", "실패", "!"
+        elif "active" in statuses:
+            group_state, group_label, group_icon = "active", "진행", "●"
+        elif statuses and all(status == "success" for status in statuses):
+            group_state, group_label, group_icon = "completed", "완료", "✓"
+        else:
+            group_state, group_label, group_icon = "waiting", "대기", "○"
+        first_number = int(group[0].get("number") or 1)
+        last_number = int(group[-1].get("number") or first_number)
+        group_rows = "".join(
+            (
+                f"<li class='{escape(str(step.get('status', 'waiting')))}'>"
+                f"<span>{int(step.get('number') or index)}</span>"
+                f"<b>{escape(str(step.get('label') or '-'))}</b>"
+                f"<em>{step_status_labels.get(step.get('status'), '대기')}</em></li>"
+            )
+            for index, step in enumerate(group, start=first_number)
+        )
+        completed_in_group = sum(status == "success" for status in statuses)
+        return f"""
+      <article class="flow2-preparation {group_state} flow2-preparation-step">
+        <div class="flow2-preparation-head">
+          <span class="flow2-preparation-icon">{group_icon}</span>
+          <span><strong>준비 단계 {first_number}–{last_number}</strong><small>{completed_in_group}/{len(group)}단계 완료</small></span>
+          <em>{group_label}</em>
+        </div>
+        <ol>{group_rows}</ol>
+      </article>"""
+
+    preparation_step_cards = (
+        "".join(
+            build_preparation_step_card(group)
+            for group in (preparation_steps[:3], preparation_steps[3:])
+            if group
+        )
+        if has_run_context
+        else ""
+    )
+    preparation_cards = preparation_summary_card + preparation_step_cards
     duration_text = (
         f"{run_summary['duration_seconds']:.1f}초"
         if run_summary["duration_seconds"]
@@ -817,18 +1285,28 @@ def _render_agent_pipeline_v2(snapshot: dict, running: bool):
           <div><dt>실패</dt><dd>{run_summary['failures']}건</dd></div>
           <div><dt>수행시간</dt><dd>{duration_text}</dd></div>
         </dl>
-      </article>"""
+      </article>""" if has_run_context else ""
 
     trace_id = escape(snapshot.get("trace_id") or "아직 실행 Trace 없음")
     st.html(f"""
     <style>
       .flow2-wrap{{border:1px solid #d8e3f0;border-radius:16px;padding:16px;background:#fff;margin:4px 0 18px}}
       .flow2-trace{{font-family:'Segoe UI','Malgun Gothic',sans-serif}}
+      .flow2-trace + .flow2-trace{{margin-top:14px;padding-top:14px;border-top:1px solid #e3e9f1}}
       .flow2-trace-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:#334d70;font-size:11px;font-weight:700}}
       .flow2-trace-head span:last-child{{color:#7a889b;font-size:9px;font-weight:500}}
+      .flow2-raw-summary{{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;color:#334d70;font-size:11px;font-weight:700;cursor:pointer;list-style:none}}
+      .flow2-raw-summary::-webkit-details-marker{{display:none}}
+      .flow2-raw-summary span:nth-child(2){{color:#7a889b;font-size:9px;font-weight:500}}
+      .flow2-raw-summary:after{{content:'펼치기 ＋';min-width:58px;padding:4px 8px;border:1px solid #c9d8e8;border-radius:8px;background:#f3f7fb;color:#42688f;font-size:9px;text-align:center}}
+      .flow2-raw-trace[open] .flow2-raw-summary:after{{content:'접기 −'}}
+      .flow2-raw-content{{margin-top:8px}}
+      .flow2-raw-guide{{margin:-2px 0 7px;color:#7a889b;font-size:8px}}
+      .flow2-legend{{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 7px}} .flow2-legend span{{padding:3px 7px;border-radius:10px;background:#eef5fd;color:#355b87;font-size:8px}}
+      .flow2-legend .return{{background:#edf9f2;color:#17643b}} .flow2-legend .feedback{{background:#fff8e8;color:#8a540c}} .flow2-legend .failure{{background:#fff0f0;color:#982d2d}} .flow2-legend .inferred{{background:#f7f2fb;color:#654186}}
       .flow2-trace-list{{overflow-x:auto;padding:10px;border:1px solid #e1e7ef;border-radius:10px;background:#f9fbfd;direction:rtl}}
-      .flow2-trace-track{{display:flex;gap:28px;width:max-content;min-width:100%;direction:ltr}}
-      .flow2-trace-row{{position:relative;display:grid;grid-template-columns:38px 56px 1fr 42px;grid-template-areas:'seq agent time status' 'route route route duration' 'reason reason reason reason';gap:8px;align-items:center;width:280px;min-width:280px;padding:10px;border:1px solid #dfe6ef;border-radius:10px;background:#fff;box-shadow:0 3px 9px rgba(30,59,96,.06);color:#52637a;font-size:9px}}
+      .flow2-trace-track{{display:flex;align-items:flex-start;gap:28px;width:max-content;min-width:100%;direction:ltr}}
+      .flow2-trace-row{{position:relative;display:grid;grid-template-columns:38px 56px 1fr 42px;grid-template-areas:'seq agent time status' 'route route route duration' 'reason reason reason reason';gap:8px;align-items:center;width:280px;min-width:280px;height:{MANUAL_EVENT_CARD_HEIGHT}px;box-sizing:border-box;padding:10px;border:1px solid #dfe6ef;border-radius:10px;background:#fff;box-shadow:0 3px 9px rgba(30,59,96,.06);color:#52637a;font-size:9px}}
       .flow2-trace-row:not(:last-child):after{{content:'→';position:absolute;right:-22px;top:46%;color:#4b75a9;font-size:19px;font-weight:800}}
       .flow2-trace-row:hover{{border-color:#9db7d5;background:#f7fbff}}
       .flow2-seq{{grid-area:seq;color:#95a1b1;font-family:Consolas,monospace}} .flow2-time{{grid-area:time;color:#6f7f93;font-family:Consolas,monospace}}
@@ -838,23 +1316,36 @@ def _render_agent_pipeline_v2(snapshot: dict, running: bool):
       .flow2-trace-row em{{grid-area:status;font-style:normal;text-align:center;border-radius:8px;padding:3px 4px;background:#e8eef5;color:#52637a}}
       .flow2-trace-row.started em{{background:#dfeeff;color:#175b9d}} .flow2-trace-row.completed em,.flow2-trace-row.success em{{background:#ddf4e6;color:#247147}} .flow2-trace-row.ended em{{background:#eef1f4;color:#687687}} .flow2-trace-row.failure em{{background:#fde3e3;color:#a52d2d}}
       .flow2-trace-row.failure{{background:#fff8f8}} .flow2-duration{{grid-area:duration;text-align:right;color:#6e7c8e;font-family:Consolas,monospace}}
-      .flow2-reason{{grid-area:reason;min-height:30px;color:#9aa4b2;line-height:1.35}} .flow2-reason.explained{{padding:5px 7px;border-left:3px solid #4c7fba;border-radius:5px;background:#eef5fd;color:#355b87}}
+      .flow2-reason{{grid-area:reason;display:grid;gap:3px;min-height:38px;padding:6px 7px;border-left:3px solid #4c7fba;border-radius:6px;background:#eef5fd;color:#355b87;line-height:1.35}}
+      .flow2-reason b{{font-size:9px}} .flow2-reason span{{font-size:8px;color:#60748d}}
+      .flow2-return{{border-left-color:#2f9660;background:#edf9f2;color:#17643b}} .flow2-feedback,.flow2-rework{{border-left-color:#b7791f;background:#fff8e8;color:#8a540c}}
+      .flow2-failure{{border-left-color:#c84646;background:#fff0f0;color:#982d2d}} .flow2-inferred{{border-left-color:#8b67b1;background:#f7f2fb;color:#654186}}
+      .flow2-failure span{{color:#a84a4a}} .flow2-feedback span,.flow2-rework span{{color:#8d6a32}} .flow2-inferred span{{color:#766383}}
       .flow2-trace-empty{{padding:18px;text-align:center;color:#8996a7;font-size:10px}}
-      .flow2-preparation{{position:relative;width:280px;min-width:280px;padding:10px;border:2px solid #2f75b5;border-radius:10px;background:#eef6ff;box-shadow:0 4px 12px rgba(35,91,148,.14);color:#1c4f82}}
+      .flow2-preparation{{position:relative;width:280px;min-width:280px;height:{MANUAL_EVENT_CARD_HEIGHT}px;box-sizing:border-box;padding:10px;border:1px solid #9db7d5;border-radius:10px;background:#f4f8fd;box-shadow:0 3px 9px rgba(30,59,96,.06);color:#1c4f82}}
       .flow2-preparation:after{{content:'→';position:absolute;right:-22px;top:46%;color:#4b75a9;font-size:19px;font-weight:800}}
       .flow2-preparation-head{{display:grid;grid-template-columns:32px 1fr auto;gap:8px;align-items:center}}
       .flow2-preparation-icon{{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#2f75b5;color:#fff;font-size:13px;font-weight:800}}
       .flow2-preparation-head strong{{display:block;font-size:12px}} .flow2-preparation-head small{{display:block;margin-top:2px;color:#71869d;font-size:8px}}
       .flow2-preparation-head em{{font-style:normal;border-radius:8px;padding:3px 6px;background:#dcecff;color:#175b9d;font-size:9px;white-space:nowrap}}
+      .flow2-preparation-progress{{margin-top:7px;padding:5px 7px;border-radius:7px;background:rgba(255,255,255,.72);font-size:9px;font-weight:700}}
+      .flow2-preparation-current{{display:grid;gap:3px;margin-top:8px;padding:8px;border-left:3px solid #4c7fba;border-radius:6px;background:#eef5fd}}
+      .flow2-preparation-current b{{font-size:9px}} .flow2-preparation-current span{{color:#60748d;font-size:8px}}
       .flow2-preparation ol{{display:grid;gap:3px;margin:8px 0 0;padding:0;list-style:none}}
-      .flow2-preparation li{{display:grid;grid-template-columns:19px 1fr;gap:6px;align-items:center;min-height:19px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.72);font-size:9px}}
+      .flow2-preparation li{{display:grid;grid-template-columns:19px 1fr 30px;gap:6px;align-items:center;min-height:19px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.72);font-size:9px;color:#98a3b1}}
       .flow2-preparation li span{{display:grid;place-items:center;width:16px;height:16px;border-radius:50%;background:#dceaff;color:#285f99;font:700 8px Consolas,monospace}}
-      .flow2-preparation li b{{font-weight:600}}
-      .flow2-preparation.active{{animation:flow2-preparation-pulse 1.5s ease-in-out infinite}}
+      .flow2-preparation li b{{font-weight:600}} .flow2-preparation li em{{font-style:normal;text-align:right;font-size:8px}}
+      .flow2-preparation li.active{{color:#175b9d;background:#e8f3ff}} .flow2-preparation li.active span{{background:#2f75b5;color:#fff}}
+      .flow2-preparation li.success{{color:#247147;background:#edf9f2}} .flow2-preparation li.success span{{background:#2f9660;color:#fff}}
+      .flow2-preparation li.failure{{color:#a52d2d;background:#fff0f0}} .flow2-preparation li.failure span{{background:#c84646;color:#fff}}
+      .flow2-preparation-step.active{{animation:flow2-preparation-pulse 1.5s ease-in-out infinite}}
       .flow2-preparation.completed{{border-color:#2f9660;background:#edf9f2;color:#17643b;box-shadow:0 4px 12px rgba(47,150,96,.12)}}
       .flow2-preparation.completed .flow2-preparation-icon{{background:#2f9660}} .flow2-preparation.completed .flow2-preparation-head em{{background:#d9f1e3;color:#247147}}
       .flow2-preparation.completed li span{{background:#d9f1e3;color:#247147}}
-      .flow2-run-summary{{position:relative;display:grid;grid-template-columns:34px 1fr;grid-template-areas:'icon title' 'icon case' 'stats stats';gap:4px 9px;width:280px;min-width:280px;padding:12px;border:2px solid #7da8d1;border-radius:12px;background:#edf6ff;color:#174f85;box-shadow:0 6px 16px rgba(23,79,133,.15)}}
+      .flow2-preparation.failed{{border-color:#c84646;background:#fff0f0;color:#982d2d;animation:none}} .flow2-preparation.failed .flow2-preparation-icon{{background:#c84646}} .flow2-preparation.failed .flow2-preparation-head em{{background:#fde3e3;color:#a52d2d}}
+      .flow2-preparation.waiting{{border-color:#d8e0e9;background:#f7f8fa;color:#69798d;box-shadow:none}}
+      .flow2-preparation.waiting .flow2-preparation-icon{{background:#9aa8b7}} .flow2-preparation.waiting .flow2-preparation-head em{{background:#e9edf1;color:#69798d}}
+      .flow2-run-summary{{position:relative;display:grid;grid-template-columns:34px 1fr;grid-template-areas:'icon title' 'icon case' 'stats stats';gap:4px 9px;width:280px;min-width:280px;height:{MANUAL_EVENT_CARD_HEIGHT}px;box-sizing:border-box;padding:12px;border:2px solid #7da8d1;border-radius:12px;background:#edf6ff;color:#174f85;box-shadow:0 6px 16px rgba(23,79,133,.15)}}
       .flow2-run-summary .flow2-summary-icon{{grid-area:icon;display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:#2f75b5;color:#fff;font-size:16px;font-weight:800}}
       .flow2-run-summary strong{{grid-area:title;font-size:13px}} .flow2-run-summary small{{grid-area:case;color:#58728f;font-size:9px}}
       .flow2-run-summary dl{{grid-area:stats;display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin:10px 0 0}}
@@ -866,52 +1357,89 @@ def _render_agent_pipeline_v2(snapshot: dict, running: bool):
     </style>
     <div class="flow2-wrap">
       <div class="flow2-trace">
-        <div class="flow2-trace-head"><span>{'실시간 실행 이벤트' if running else '최근 수행 이벤트'} · 왼쪽에서 오른쪽 시간순</span><span>Trace · {trace_id} · Agent 이벤트 {len(events)}단계</span></div>
-        <div class="flow2-trace-list"><div class="flow2-trace-track">{preparation_card}{trace_history}{summary_card}</div></div>
+        <div class="flow2-trace-head"><span>{'실시간 실행 이벤트(Agent 호출)' if running else '최근 수행 이벤트(Agent 호출)'} · 왼쪽에서 오른쪽 시간순</span><span>Trace · {trace_id} · Agent 호출 {len(events)}건</span></div>
+        <div class="flow2-legend"><span>분석·조회·평가</span><span class="return">결과 반환</span><span class="feedback">재검토·보완</span><span class="failure">호출 실패</span><span class="inferred">Trace 사유 미기록·추정</span></div>
+        <div class="flow2-trace-list"><div class="flow2-trace-track">{preparation_cards}{trace_history}{summary_card}</div></div>
       </div>
+      <details class="flow2-trace flow2-raw-trace">
+        <summary class="flow2-raw-summary"><span>{'실시간 실행 이벤트(원본 로그)' if running else '최근 수행 이벤트(원본 로그)'} · 왼쪽에서 오른쪽 기록순</span><span>Trace · {trace_id} · 원본 로그 {raw_event_count}건 · 전체 표시</span></summary>
+        <div class="flow2-raw-content">
+          <div class="flow2-raw-guide">Trace에 저장된 started·success·failure 로그를 병합하거나 상태를 보정하지 않고 그대로 표시합니다.</div>
+          <div class="flow2-trace-list"><div class="flow2-trace-track" data-event-count="{raw_event_count}">{raw_trace_history}</div></div>
+        </div>
+      </details>
     </div>
     """)
 
 
-def _render_agent_pipeline_comparison(snapshot: dict, running: bool):
+def _render_agent_pipeline_comparison(
+    snapshot: dict,
+    running: bool,
+    preparation: dict | None = None,
+):
     _render_agent_pipeline(snapshot, running)
-    _render_agent_pipeline_v2(snapshot, running)
+    _render_agent_pipeline_v2(snapshot, running, preparation)
 
 
 @st.fragment(run_every="2s")
 def _live_testcase_pipeline():
-    future = st.session_state.get("goal_testcase_future")
+    job_id = st.session_state.get("goal_testcase_job_id")
     started_at = st.session_state.get("goal_testcase_started_at", "")
-    if not future:
+    if not job_id:
         return
-    _render_agent_pipeline_comparison(pipeline_trace_events(started_at), running=not future.done())
-    if future.done():
-        try:
-            completed = future.result()
+    job = background_job_snapshot(job_id)
+    if not job:
+        st.session_state.pop("goal_testcase_job_id", None)
+        st.session_state.goal_testcase_result = {
+            "case": {"case_id": st.session_state.get("goal_testcase_running_case_id", "-")},
+            "mode": "voc",
+            "execution": {"result": {"ok": False, "error": "백그라운드 작업 상태를 찾을 수 없습니다."}},
+        }
+        st.rerun()
+    trace_id = st.session_state.get("goal_testcase_trace_id", "")
+    trace = pipeline_trace_events(started_at, trace_id)
+    if trace.get("trace_id") and not trace_id:
+        st.session_state.goal_testcase_trace_id = trace["trace_id"]
+    preparation = job.get("progress", {}).get("preparation")
+    _render_agent_pipeline_comparison(
+        trace,
+        running=job.get("status") == "RUNNING",
+        preparation=preparation,
+    )
+    if job.get("done"):
+        if job.get("status") == "COMPLETED":
+            completed = job.get("result") or {}
             st.session_state.goal_testcase_result = completed["testcase_result"]
             st.session_state.goal_testcase_agent_snapshot = completed["agent_snapshot"]
-        except Exception as exc:
+        else:
             st.session_state.goal_testcase_result = {
                 "case": {"case_id": st.session_state.get("goal_testcase_running_case_id", "-")},
                 "mode": "voc",
-                "execution": {"result": {"ok": False, "error": f"{type(exc).__name__}: {exc}"}},
+                "execution": {"result": {"ok": False, "error": job.get("error", "백그라운드 실행 실패")}},
             }
+        st.session_state.goal_testcase_preparation = preparation
         st.session_state.goal_testcase_completed_at = datetime.now().astimezone().isoformat()
-        st.session_state.pop("goal_testcase_future", None)
+        st.session_state.pop("goal_testcase_job_id", None)
+        discard_background_job(job_id)
         _load_goal_monitor_snapshot.clear()
         st.rerun()
 
 
 @st.fragment(run_every="2s")
 def _live_manual_judge():
-    future = st.session_state.get("goal_judge_future")
-    if not future:
+    job_id = st.session_state.get("goal_judge_job_id")
+    if not job_id:
         return
-    if not future.done():
+    job = background_job_snapshot(job_id)
+    if not job:
+        st.session_state.pop("goal_judge_job_id", None)
+        st.session_state.goal_judge_error = "백그라운드 Judge 작업 상태를 찾을 수 없습니다."
+        st.rerun()
+    if job.get("status") == "RUNNING":
         st.info("선택한 독립 LLM이 저장된 Pipeline 개선안을 평가하고 있습니다.", icon=":material/hourglass_top:")
         return
-    try:
-        reevaluated = future.result()
+    if job.get("status") == "COMPLETED":
+        reevaluated = job.get("result") or {}
         testcase_result = deepcopy(st.session_state.get("goal_testcase_result") or {})
         testcase_result["judge_result"] = reevaluated.get("judge_result", {})
         testcase_result["evidence_status"] = next(
@@ -924,10 +1452,11 @@ def _live_manual_judge():
         )
         st.session_state.goal_testcase_result = testcase_result
         st.session_state.pop("goal_judge_error", None)
-    except Exception as exc:
-        st.session_state.goal_judge_error = f"{type(exc).__name__}: {exc}"
-    st.session_state.pop("goal_judge_future", None)
+    else:
+        st.session_state.goal_judge_error = job.get("error", "독립 LLM 평가 실패")
+    st.session_state.pop("goal_judge_job_id", None)
     st.session_state.pop("goal_judge_running_case_id", None)
+    discard_background_job(job_id)
     _load_voc_history_rows.clear()
     st.rerun()
 
@@ -964,6 +1493,38 @@ def _show_command_result(*, show_success: bool = True):
 def _run_and_store(callback, *args):
     with st.spinner("VOC 품질진단 작업을 수행하고 있습니다..."):
         st.session_state.voc_command_result = callback(*args)
+
+
+def _agent_control_progress_message(action: str, agent_name: str | None = None) -> str:
+    action_labels = {
+        "start": "기동",
+        "restart": "재기동",
+        "stop": "중지",
+    }
+    if action not in action_labels:
+        raise ValueError(f"허용되지 않은 Agent 제어 작업: {action}")
+    target = f"{agent_name} Agent" if agent_name else "Interpreter 등 6개 Agent"
+    return f"{target} 프로세스를 {action_labels[action]}하고 있습니다..."
+
+
+def _run_agent_control_and_refresh(
+    action: str,
+    agent_name: str | None = None,
+    display_name: str | None = None,
+):
+    try:
+        with st.spinner(_agent_control_progress_message(action, display_name or agent_name)):
+            result = run_agent_action(action, agent_name)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "return_code": -1,
+            "output": f"{type(exc).__name__}: {exc}",
+        }
+    st.session_state["voc_command_result"] = result
+    _load_agent_management_snapshot.clear()
+    _load_goal_monitor_snapshot.clear()
+    st.rerun()
 
 
 @st.cache_data(ttl=5, max_entries=1, show_spinner=False)
@@ -1077,6 +1638,18 @@ def _dashboard_agent_svg_icon(name: str) -> str:
         "stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>"
         + path
         + "</svg>"
+    )
+
+
+def _agent_management_card_header(agent: dict) -> str:
+    name = str(agent.get("name") or "Agent")
+    role = next((role for agent_name, role, _port in AGENT_PIPELINE if agent_name == name), "역할 정보 없음")
+    state_class = "good" if agent.get("healthy") else "bad"
+    return (
+        f"<div class='vqa-agent-head {state_class}'>"
+        f"<span class='vqa-agent-icon'>{_dashboard_agent_svg_icon(name)}</span>"
+        f"<span><b>{escape(name)}</b><small>{escape(role)}</small></span>"
+        "</div>"
     )
 
 
@@ -1202,30 +1775,41 @@ def _render_voc_dashboard_styles() -> None:
 def render_dashboard():
     _render_voc_dashboard_styles()
     today = date.today()
-    with st.container(border=True, key="voc_dashboard_filter_panel"):
-        st.markdown("#### 조회 조건")
-        with st.form("voc_dashboard_filters", border=False):
-            filter_columns = st.columns([2.05, 0.72, 0.88], vertical_alignment="bottom")
-            with filter_columns[0]:
-                selected_range = st.date_input(
-                    "기간",
-                    value=(today - timedelta(days=6), today),
-                    max_value=today,
-                    key="voc_dashboard_date_range",
-                )
-            with filter_columns[1]:
-                submitted = st.form_submit_button(
-                    "조회",
-                    icon=":material/search:",
-                    type="primary",
-                    width="stretch",
-                )
-            with filter_columns[2]:
-                refresh_requested = st.form_submit_button(
-                    "새로고침",
-                    icon=":material/refresh:",
-                    width="stretch",
-                )
+    if not st.session_state.get("voc_dashboard_header_rendered"):
+        with st.container(border=True, key="voc_dashboard_inline_filter_panel"):
+            with st.form("voc_dashboard_inline_filters", border=False):
+                filter_columns = st.columns([2.2, 0.9, 0.95], vertical_alignment="bottom")
+                with filter_columns[0]:
+                    inline_range = st.date_input(
+                        "기간",
+                        value=st.session_state.get(
+                            "voc_dashboard_filter_range",
+                            (today - timedelta(days=6), today),
+                        ),
+                        max_value=today,
+                        key="voc_dashboard_filter_range",
+                    )
+                with filter_columns[1]:
+                    inline_submitted = st.form_submit_button(
+                        "조회",
+                        icon=":material/search:",
+                        type="primary",
+                        width="stretch",
+                    )
+                with filter_columns[2]:
+                    inline_refresh_requested = st.form_submit_button(
+                        "새로고침",
+                        icon=":material/refresh:",
+                        width="stretch",
+                    )
+            st.session_state["voc_dashboard_filter_submitted"] = bool(inline_submitted)
+            st.session_state["voc_dashboard_filter_refresh_requested"] = bool(inline_refresh_requested)
+    selected_range = st.session_state.get(
+        "voc_dashboard_filter_range",
+        (today - timedelta(days=6), today),
+    )
+    submitted = bool(st.session_state.get("voc_dashboard_filter_submitted", False))
+    refresh_requested = bool(st.session_state.get("voc_dashboard_filter_refresh_requested", False))
 
     if submitted or refresh_requested:
         _load_voc_dashboard_snapshot.clear()
@@ -1359,6 +1943,20 @@ def render_agents():
     if not health["env_configured"]:
         st.warning("Agent 실행에 필요한 `.env`가 없습니다. 환경 파일을 초기화한 뒤 API 키를 입력하세요.")
 
+    st.markdown(
+        """
+        <style>
+        .vqa-agent-head{display:flex;align-items:center;gap:7px;min-height:39px;margin:-2px 0 5px}
+        .vqa-agent-icon{display:flex;flex:0 0 29px;width:29px;color:#7b8797}
+        .vqa-agent-head.good .vqa-agent-icon{color:#299049}
+        .vqa-agent-head.bad .vqa-agent-icon{color:#d83f36}
+        .vqa-agent-icon svg{width:100%;height:auto}
+        .vqa-agent-head b{display:block;color:#173f68;font-size:11px;line-height:1.2}
+        .vqa-agent-head small{display:block;margin-top:2px;color:#718096;font-size:8px;line-height:1.15}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     with st.container(
         horizontal=True,
         horizontal_alignment="distribute",
@@ -1370,22 +1968,19 @@ def render_agents():
             _load_goal_monitor_snapshot.clear()
             st.rerun()
 
-    st.caption("전체 또는 개별 제어는 관리 스크립트가 생성한 PID만 대상으로 하며, 외부 프로세스가 점유한 포트는 종료하지 않습니다.")
+    st.caption(
+        "전체 시작은 Interpreter 등 6개 Agent 프로세스만 기동하며 Test Case나 VOC 품질진단을 실행하지 않습니다. "
+        "전체 또는 개별 제어는 관리 스크립트가 생성한 PID만 대상으로 하며, 외부 프로세스가 점유한 포트는 종료하지 않습니다."
+    )
     with st.container(border=True):
-        confirmed = st.checkbox("Agent 프로세스 상태 변경을 확인했습니다.")
+        confirmed = st.checkbox("Agent 프로세스 상태 변경")
         with st.container(horizontal=True):
             if st.button("전체 시작", disabled=not confirmed, width="stretch", icon=":material/play_arrow:"):
-                _run_and_store(run_agent_action, "start")
-                _load_agent_management_snapshot.clear()
-                _load_goal_monitor_snapshot.clear()
+                _run_agent_control_and_refresh("start")
             if st.button("전체 재시작", disabled=not confirmed, width="stretch", icon=":material/restart_alt:"):
-                _run_and_store(run_agent_action, "restart")
-                _load_agent_management_snapshot.clear()
-                _load_goal_monitor_snapshot.clear()
+                _run_agent_control_and_refresh("restart")
             if st.button("전체 중지", disabled=not confirmed, width="stretch", icon=":material/stop:"):
-                _run_and_store(run_agent_action, "stop")
-                _load_agent_management_snapshot.clear()
-                _load_goal_monitor_snapshot.clear()
+                _run_agent_control_and_refresh("stop")
     _show_command_result(show_success=False)
 
     snapshot = _load_agent_management_snapshot()
@@ -1397,10 +1992,10 @@ def render_agents():
         "critic": "요약과 개선안의 품질 검토가 누락되어 보완된 결과를 확정할 수 없습니다.",
         "improver": "정책 개선안을 생성·보완할 수 없어 최종 개선안 산출이 실패합니다.",
     }
-    agent_columns = st.columns(3, gap="medium")
+    agent_columns = st.columns(6, gap="small")
     for index, agent in enumerate(snapshot["agents"]):
-        with agent_columns[index % 3].container(border=True):
-            st.markdown(f"**:material/smart_toy: {agent['name']}**")
+        with agent_columns[index].container(border=True):
+            st.markdown(_agent_management_card_header(agent), unsafe_allow_html=True)
             _status_badge(
                 agent["status"],
                 "PASS" if agent["healthy"] else "FAIL",
@@ -1453,7 +2048,38 @@ def render_agents():
                     disabled=True,
                     width="stretch",
                 )
-    st.warning("`.env` 값은 이 화면에 표시하거나 Report에 저장하지 않습니다. 초기화 후 런타임 폴더에서 직접 입력하세요.")
+
+            test_result_key = f"agent_quick_test_result_{agent['key']}"
+            if st.button(
+                "간편 테스트",
+                key=f"quick_test_agent_{agent['key']}",
+                icon=":material/network_check:",
+                disabled=agent["status"] != "RUNNING",
+                width="stretch",
+            ):
+                with st.spinner(f"{agent['name']} Agent를 실제 호출하고 있습니다..."):
+                    st.session_state[test_result_key] = test_agent_rpc(
+                        agent["name"],
+                        int(agent["port"]),
+                        timeout=12.0,
+                    )
+
+            with st.container(height=124, border=False):
+                test_result = st.session_state.get(test_result_key)
+                if not test_result:
+                    st.caption("RUNNING 상태에서 간편 테스트로 실제 RPC 응답을 확인할 수 있습니다.")
+                elif test_result.get("ok"):
+                    st.success(
+                        f"{test_result.get('rpc', '-')} 호출 성공 · "
+                        f"{test_result.get('duration_seconds', '-')}초"
+                    )
+                    st.caption(f"IN: {test_result.get('input', '-')}")
+                    st.caption(f"OUT: {test_result.get('summary', '-')}")
+                else:
+                    st.error(
+                        f"호출 실패 · {test_result.get('duration_seconds', '-')}초"
+                    )
+                    st.caption(test_result.get("summary", "-"))
 
 
 def _status_badge(label: str, decision: str, help_text: str = ""):
@@ -1488,11 +2114,7 @@ def _confirm_agent_action(agent: dict, action: str):
             key=f"confirm_{action}_{agent['key']}",
             type="primary",
         ):
-            with st.spinner(f"{agent['name']} Agent를 {action_label}하고 있습니다..."):
-                st.session_state.voc_command_result = run_agent_action(action, agent["key"])
-            _load_agent_management_snapshot.clear()
-            _load_goal_monitor_snapshot.clear()
-            st.rerun()
+            _run_agent_control_and_refresh(action, agent["key"], agent["name"])
 
 
 def _set_goal_testcase_selection(selected_case_id: str):
@@ -1501,14 +2123,17 @@ def _set_goal_testcase_selection(selected_case_id: str):
         return
     st.session_state["goal_testcase_selected_case_id"] = selected_case_id
     st.session_state.pop("goal_testcase_result", None)
-    if not st.session_state.get("goal_testcase_future"):
+    if not st.session_state.get("goal_testcase_job_id"):
         st.session_state.pop("goal_testcase_started_at", None)
         st.session_state.pop("goal_testcase_completed_at", None)
         st.session_state.pop("goal_testcase_agent_snapshot", None)
 
 
-def _remember_goal_testcase_selection(table_key: str, page_case_ids: list[str]):
-    table_state = st.session_state.get(table_key, {})
+def _table_selected_row_index(
+    table_state: dict | None,
+    row_count: int,
+) -> int | None:
+    table_state = table_state or {}
     selection = table_state.get("selection", {}) if hasattr(table_state, "get") else {}
     selected_rows = selection.get("rows", []) if hasattr(selection, "get") else []
     selected_cells = selection.get("cells", []) if hasattr(selection, "get") else []
@@ -1519,12 +2144,48 @@ def _remember_goal_testcase_selection(table_key: str, page_case_ids: list[str]):
     elif selected_rows:
         selected_row = selected_rows[0]
 
-    if isinstance(selected_row, int) and 0 <= selected_row < len(page_case_ids):
-        _set_goal_testcase_selection(page_case_ids[selected_row])
-        if selected_cells:
-            st.session_state[table_key] = {
-                "selection": {"rows": [selected_row], "columns": [], "cells": []}
-            }
+    if not isinstance(selected_row, int) or not 0 <= selected_row < row_count:
+        return None
+    return selected_row
+
+
+def _promote_table_cell_to_row_selection(
+    table_key: str,
+    row_count: int,
+) -> int | None:
+    table_state = st.session_state.get(table_key, {})
+    selected_row = _table_selected_row_index(table_state, row_count)
+    if selected_row is None:
+        return None
+    selection = table_state.get("selection", {}) if hasattr(table_state, "get") else {}
+    selected_cells = selection.get("cells", []) if hasattr(selection, "get") else []
+    if selected_cells:
+        st.session_state[table_key] = {
+            "selection": {"rows": [selected_row], "columns": [], "cells": []}
+        }
+    return selected_row
+
+
+def _remember_goal_testcase_selection(table_key: str, page_case_ids: list[str]):
+    selected_row = _promote_table_cell_to_row_selection(
+        table_key,
+        len(page_case_ids),
+    )
+    if selected_row is not None:
+        selected_case_id = page_case_ids[selected_row]
+        previous_case_id = st.session_state.get("goal_testcase_selected_case_id")
+        _set_goal_testcase_selection(selected_case_id)
+        if previous_case_id and previous_case_id != selected_case_id:
+            st.session_state["goal_testcase_selection_changed"] = True
+
+
+def _remember_catalog_case_selection(table_key: str, case_ids: list[str]):
+    selected_row = _promote_table_cell_to_row_selection(
+        table_key,
+        len(case_ids),
+    )
+    if selected_row is not None:
+        st.session_state["voc_testcase_selected_case_id"] = case_ids[selected_row]
 
 
 def _render_goal_judge_result(selected_case_id: str):
@@ -1766,8 +2427,15 @@ def _render_goal_testcase_result(selected_case_id: str):
 
 @st.fragment
 def _goal_testcase_selector():
-    st.markdown("### Test Case 선택 실행")
-    st.caption("읽기 전용 목록입니다. 행의 아무 곳이나 클릭하면 왼쪽 선택 표시가 해당 행으로 이동합니다.")
+    with st.container(
+        horizontal=True,
+        horizontal_alignment="distribute",
+        vertical_alignment="center",
+        gap="small",
+        key="goal_testcase_compact_header",
+    ):
+        st.markdown("### Test Case 선택 실행")
+        st.caption("읽기 전용 · 행 클릭으로 선택")
     cases = load_test_cases().get("cases", [])
     if not cases:
         st.warning("test_cases.json에 실행할 테스트케이스가 없습니다.")
@@ -1824,7 +2492,6 @@ def _goal_testcase_selector():
     selected_index = min(max(selected_index, 0), len(page_cases) - 1)
     selected_case = page_cases[selected_index]
     selected_case_id = selected_case["case_id"]
-    previous_case_id = st.session_state.get("goal_testcase_selected_case_id")
     _set_goal_testcase_selection(selected_case_id)
     is_fault_case = selected_case.get("category") == "fault_condition"
 
@@ -1852,7 +2519,7 @@ def _goal_testcase_selector():
                 "장시간 대기를 막기 위해 20초 제한을 적용합니다."
             )
 
-    if previous_case_id and previous_case_id != selected_case_id:
+    if st.session_state.pop("goal_testcase_selection_changed", False):
         st.rerun(scope="app")
 
 
@@ -1868,33 +2535,57 @@ def _selected_goal_testcase() -> dict | None:
     )
 
 
+def _ensure_goal_testcase_selection() -> dict | None:
+    cases = load_test_cases().get("cases", [])
+    if not cases:
+        return None
+    selected_case_id = st.session_state.get("goal_testcase_selected_case_id")
+    selected_case = next(
+        (case for case in cases if case.get("case_id") == selected_case_id),
+        None,
+    )
+    if selected_case is None:
+        selected_case = cases[0]
+        _set_goal_testcase_selection(selected_case["case_id"])
+    return selected_case
+
+
+def _start_goal_testcase_pipeline(selected_case_id: str):
+    st.session_state.goal_testcase_started_at = datetime.now().astimezone().isoformat()
+    st.session_state.goal_testcase_running_case_id = selected_case_id
+    st.session_state.pop("goal_testcase_agent_snapshot", None)
+    st.session_state.pop("goal_testcase_result", None)
+    st.session_state.pop("goal_testcase_completed_at", None)
+    st.session_state.pop("goal_testcase_preparation", None)
+    st.session_state.pop("goal_testcase_trace_id", None)
+    st.session_state.pop("goal_judge_error", None)
+    st.session_state.goal_testcase_job_id = start_background_job(
+        "manual-pipeline",
+        selected_case_id,
+        _execute_goal_testcase,
+        selected_case_id,
+        progress={"preparation": _new_manual_preparation_progress()},
+    )
+
+
 def _render_goal_execution_step(selected_case: dict):
     selected_case_id = selected_case["case_id"]
-    test_running = bool(st.session_state.get("goal_testcase_future"))
+    test_running = bool(st.session_state.get("goal_testcase_job_id"))
     with st.container(border=True):
         st.markdown("#### 1단계 · Agent Pipeline 실행")
         st.caption(
             f"{selected_case_id} · 내부 Agent Pipeline만 먼저 수행합니다. 완료 후 독립 LLM 평가는 선택적으로 실행할 수 있습니다."
         )
-        if st.button(
+        st.button(
             "Agent Pipeline 실행",
             icon=":material/play_arrow:",
             type="primary",
-            disabled=test_running or bool(st.session_state.get("goal_judge_future")),
+            disabled=test_running or bool(st.session_state.get("goal_judge_job_id")),
             width="stretch",
             key=f"goal_execute_{selected_case_id}",
-        ):
-            st.session_state.goal_testcase_started_at = datetime.now().astimezone().isoformat()
-            st.session_state.goal_testcase_running_case_id = selected_case_id
-            st.session_state.pop("goal_testcase_agent_snapshot", None)
-            st.session_state.pop("goal_testcase_result", None)
-            st.session_state.pop("goal_testcase_completed_at", None)
-            st.session_state.pop("goal_judge_error", None)
-            st.session_state.goal_testcase_future = _testcase_executor().submit(
-                _execute_goal_testcase,
-                selected_case_id,
-            )
-            st.rerun()
+            on_click=_start_goal_testcase_pipeline,
+            args=(selected_case_id,),
+        )
 
 
 def _render_goal_judge_step(selected_case: dict):
@@ -1919,7 +2610,7 @@ def _render_goal_judge_step(selected_case: dict):
         return
 
     judge_config = _manual_judge_config_controls(f"goal_{selected_case_id}")
-    judge_running = bool(st.session_state.get("goal_judge_future"))
+    judge_running = bool(st.session_state.get("goal_judge_job_id"))
     with st.container(border=True):
         st.markdown("#### 선택한 Provider로 추가 평가")
         st.caption("필요한 경우에만 실행하세요. 실행하지 않아도 1단계 Pipeline 수행 결과는 그대로 보존됩니다.")
@@ -1933,36 +2624,51 @@ def _render_goal_judge_step(selected_case: dict):
         ):
             st.session_state.pop("goal_judge_error", None)
             st.session_state.goal_judge_running_case_id = selected_case_id
-            st.session_state.goal_judge_future = _testcase_executor().submit(
-                reevaluate_voc_run_case,
+            st.session_state.goal_judge_job_id = start_background_job(
+                "manual-judge",
+                f"{test_execution['run_id']}:{selected_case_id}",
+                _execute_goal_judge,
                 test_execution["run_id"],
                 selected_case_id,
                 judge_config,
             )
             st.rerun()
-        if judge_running:
-            _live_manual_judge()
         if st.session_state.get("goal_judge_error"):
             st.error(st.session_state["goal_judge_error"], icon=":material/error:")
 
 
 def render_goal_monitor():
+    _ensure_goal_testcase_selection()
     _goal_testcase_selector()
 
     selected_case = _selected_goal_testcase()
     if selected_case:
         _render_goal_execution_step(selected_case)
 
-    st.markdown("### 실시간 Agent Pipeline")
-    st.caption("실행 중에는 현재 흐름을 2초 간격으로 확인하고, 종료 후에는 가장 최근 수행 Trace를 유지합니다.")
-    active_future = st.session_state.get("goal_testcase_future")
-    if active_future:
+    with st.container(
+        horizontal=True,
+        horizontal_alignment="distribute",
+        vertical_alignment="center",
+        gap="small",
+        key="goal_pipeline_compact_header",
+    ):
+        st.markdown("### 실시간 Agent Pipeline")
+        st.caption("실행 중 2초 갱신 · 종료 후 최근 Trace 유지")
+    active_job_id = st.session_state.get("goal_testcase_job_id")
+    if active_job_id:
         _live_testcase_pipeline()
     else:
         _render_agent_pipeline_comparison(
-            pipeline_trace_events(st.session_state.get("goal_testcase_started_at", "")),
+            pipeline_trace_events(
+                st.session_state.get("goal_testcase_started_at", ""),
+                st.session_state.get("goal_testcase_trace_id", ""),
+            ),
             running=False,
+            preparation=st.session_state.get("goal_testcase_preparation"),
         )
+
+    if st.session_state.get("goal_judge_job_id"):
+        _live_manual_judge()
 
     if selected_case:
         selected_case_id = selected_case["case_id"]
@@ -2176,9 +2882,9 @@ def _render_batch_progress_content(
     if progress.get("judge_config", {}).get("enabled"):
         judge_counts = progress.get("judge_counts", {})
         with st.container(horizontal=True):
-            st.metric("Judge PASS", judge_counts.get("PASS", 0))
+            st.metric("Judge 통과", judge_counts.get("PASS", 0))
             st.metric("Judge 검토", judge_counts.get("REVIEW_REQUIRED", 0))
-            st.metric("Judge FAIL", judge_counts.get("FAIL", 0))
+            st.metric("Judge 실패", judge_counts.get("FAIL", 0))
             st.metric("Judge 오류", judge_counts.get("ERROR", 0))
 
     rows = pd.DataFrame(progress.get("case_results", []))
@@ -2654,7 +3360,7 @@ def render_voc_history():
                 "ERROR": item.get("counts", {}).get("ERROR", 0),
                 "검토 필요": item.get("counts", {}).get("REVIEW_REQUIRED", 0),
                 "Judge": item.get("judge_status"),
-                "Judge PASS": item.get("judge_counts", {}).get("PASS", 0),
+                "Judge 통과": item.get("judge_counts", {}).get("PASS", 0),
                 "Judge 오류": item.get("judge_counts", {}).get("ERROR", 0),
                 "타당성": item.get("validity_state", "DRAFT"),
                 "배포 판정": item.get("deployment_decision"),
@@ -3198,6 +3904,43 @@ def render_improvement_validity():
     if st.toggle("동일 조건 A/B 비교 보기", key="validity_show_ab"):
         _render_improvement_ab(candidates, selected, artifacts)
 
+def _build_testcase_group_chart(group_rows: pd.DataFrame) -> alt.Chart:
+    return (
+        alt.Chart(group_rows)
+        .mark_bar(color="#2F6FB0", cornerRadiusEnd=5, size=18)
+        .encode(
+            y=alt.Y(
+                "검증 영역:N",
+                title=None,
+                sort="-x",
+                axis=alt.Axis(
+                    domain=False,
+                    ticks=False,
+                    labelColor="#425b76",
+                    labelLimit=150,
+                    labelPadding=8,
+                ),
+            ),
+            x=alt.X(
+                "Case 수:Q",
+                title=None,
+                axis=alt.Axis(
+                    domain=False,
+                    gridColor="#e6eef6",
+                    format="d",
+                    tickCount=5,
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("검증 영역:N", title="검증 영역"),
+                alt.Tooltip("Case 수:Q", title="Case 수", format="d"),
+            ],
+        )
+        .properties(height=155)
+        .configure_view(strokeWidth=0)
+    )
+
+
 def render_testcases():
     payload = load_test_cases()
     catalog = load_quality_test_catalog()
@@ -3218,22 +3961,6 @@ def render_testcases():
     voc_count = sum(item.get("group") == "voc_functional" for item in cases)
     additional_count = len(cases) - voc_count
 
-    st.caption(
-        "일괄 TC 수행과 동일한 통합 카탈로그를 기준으로 관리합니다. "
-        "VOC 질문형 Case뿐 아니라 장애 주입·Agent 역할·품질 게이트 Case도 포함합니다."
-    )
-    metric_columns = st.columns(4, gap="small")
-    metric_columns[0].metric("전체 실행 대상", f"{len(cases)}건", border=True)
-    metric_columns[1].metric("VOC 질문형", f"{voc_count}건", border=True)
-    metric_columns[2].metric("추가 검증 Case", f"{additional_count}건", border=True)
-    metric_columns[3].metric(
-        "구현 상태",
-        f"{implemented_count}건 완료",
-        delta=f"{defined_count}건 후속 구현",
-        delta_color="off",
-        border=True,
-    )
-
     group_rows = pd.DataFrame(
         [
             {
@@ -3243,40 +3970,141 @@ def render_testcases():
             for group_key, group in groups.items()
         ]
     )
-    with st.container(border=True):
-        st.markdown("#### 검증 영역 구성")
-        st.bar_chart(
-            group_rows,
-            x="검증 영역",
-            y="Case 수",
-            horizontal=True,
-            color="#2F6FB0",
-            height=220,
-        )
+    st.html(
+        """
+        <style>
+        .st-key-voc_testcase_metrics [data-testid="stMetric"]{
+            height:112px!important;min-height:112px!important;padding:10px 11px!important;
+        }
+        .st-key-voc_testcase_metrics [data-testid="stMetricLabel"] p{
+            font-size:.72rem!important;line-height:1.2!important;
+        }
+        .st-key-voc_testcase_metrics [data-testid="stMetricValue"]{
+            font-size:1.25rem!important;line-height:1.25!important;
+        }
+        .st-key-voc_testcase_metrics [data-testid="stMetricDelta"]{
+            font-size:.66rem!important;
+        }
+        .st-key-voc_testcase_metrics>div[data-testid="stVerticalBlock"]{
+            gap:.45rem!important;
+        }
+        .st-key-voc_testcase_search>div[data-testid="stVerticalBlock"],
+        .st-key-voc_testcase_browser>div[data-testid="stVerticalBlock"],
+        .st-key-voc_testcase_detail>div[data-testid="stVerticalBlock"]{
+            gap:.55rem!important;
+        }
+        .st-key-voc_testcase_browser [data-testid="stDataFrame"]{
+            margin-top:.1rem;
+        }
+        .st-key-voc_testcase_detail [data-testid="stTabs"] button{
+            min-height:34px!important;
+        }
+        </style>
+        """
+    )
+    overview_columns = st.columns(
+        [1.6, 1],
+        gap="small",
+        vertical_alignment="top",
+    )
+    with overview_columns[0].container(
+        border=True,
+        height=230,
+        key="voc_testcase_metrics",
+    ):
+        st.markdown("#### :material/target: 실행 대상 요약")
+        metric_row = st.columns(4, gap="small")
+        metric_row[0].metric("전체 실행 대상", f"{len(cases)}건", border=True)
+        metric_row[1].metric("VOC 질문형", f"{voc_count}건", border=True)
+        metric_row[2].metric("추가 검증 Case", f"{additional_count}건", border=True)
+        metric_row[3].metric(
+            "구현 상태",
+            f"{implemented_count}건 완료",
+            delta=f"{defined_count}건 후속 구현",
+            delta_color="off",
+            border=True,
+    )
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            st.download_button(
+                "TC Download",
+                data=json.dumps(catalog, ensure_ascii=False, indent=2),
+                file_name="quality_test_catalog.json",
+                mime="application/json",
+                icon=":material/download:",
+                type="primary",
+                width="content",
+                key="voc_testcase_catalog_download",
+            )
+            with st.popover(
+                "TC Upload",
+                icon=":material/upload_file:",
+                width="content",
+            ):
+                uploaded_catalog = st.file_uploader(
+                    "통합 테스트케이스 JSON",
+                    type=["json"],
+                    key="voc_testcase_catalog_upload",
+                )
+                if uploaded_catalog is not None:
+                    try:
+                        uploaded_payload = json.loads(
+                            uploaded_catalog.getvalue().decode("utf-8-sig")
+                        )
+                        upload_errors = validate_quality_test_catalog(uploaded_payload)
+                    except Exception as exc:
+                        uploaded_payload = None
+                        upload_errors = [f"JSON 파일을 해석할 수 없습니다: {exc}"]
+                    if upload_errors:
+                        for error in upload_errors:
+                            st.error(error)
+                    elif st.button(
+                        "검증 완료 · 적용",
+                        type="primary",
+                        key="voc_testcase_catalog_apply_upload",
+                    ):
+                        result = save_quality_test_catalog(uploaded_payload, source="json_upload")
+                        st.success(
+                            f"통합 테스트케이스 {result.get('total_cases', 0)}건을 저장했습니다."
+                        )
+                        st.rerun()
+    with overview_columns[1].container(
+        border=True,
+        height=230,
+        key="voc_testcase_group_chart",
+    ):
+        st.markdown("#### :material/bar_chart: 검증 영역별 Case 구성")
+        st.altair_chart(_build_testcase_group_chart(group_rows))
 
-    st.markdown("#### 통합 테스트케이스 목록")
-    filter_columns = st.columns([1.4, 1, 1], gap="small", vertical_alignment="bottom")
-    search_text = filter_columns[0].text_input(
-        "검색",
-        placeholder="Case ID, 이름 또는 판정 기준",
-        key="voc_testcase_catalog_search",
-    ).strip().lower()
-    group_filter = filter_columns[1].selectbox(
-        "검증 영역",
-        options=["전체", *groups.keys()],
-        format_func=lambda key: "전체" if key == "전체" else groups[key].get("label", key),
-        key="voc_testcase_catalog_group",
-    )
-    status_filter = filter_columns[2].selectbox(
-        "구현 상태",
-        options=["전체", "IMPLEMENTED", "DEFINED"],
-        format_func=lambda value: {
-            "전체": "전체",
-            "IMPLEMENTED": "실행 구현 완료",
-            "DEFINED": "정의됨 · 후속 구현",
-        }[value],
-        key="voc_testcase_catalog_status",
-    )
+    browser_columns = st.columns([0.5, 1.1, 1], gap="small", vertical_alignment="top")
+    with browser_columns[0].container(
+        border=True,
+        height=410,
+        key="voc_testcase_search",
+    ):
+        st.markdown("#### :material/search: Case 탐색")
+        search_text = st.text_input(
+            "검색",
+            placeholder="ID·이름·판정 기준",
+            key="voc_testcase_catalog_search",
+        ).strip().lower()
+        group_filter = st.selectbox(
+            "검증 영역",
+            options=["전체", *groups.keys()],
+            format_func=lambda key: (
+                "전체" if key == "전체" else groups[key].get("label", key)
+            ),
+            key="voc_testcase_catalog_group",
+        )
+        status_filter = st.selectbox(
+            "구현 상태",
+            options=["전체", "IMPLEMENTED", "DEFINED"],
+            format_func=lambda value: {
+                "전체": "전체",
+                "IMPLEMENTED": "실행 구현 완료",
+                "DEFINED": "정의됨 · 후속 구현",
+            }[value],
+            key="voc_testcase_catalog_status",
+        )
 
     status_labels = {
         "IMPLEMENTED": "실행 구현 완료",
@@ -3304,76 +4132,130 @@ def render_testcases():
                 "검증 영역": groups.get(group_key, {}).get("label", group_key),
                 "이름": case.get("name"),
                 "구현 상태": status_labels.get(status, status or "-"),
-                "등록 원본": case.get("source_ref"),
-                "판정 기준": case.get("acceptance"),
             }
         )
 
-    st.caption(f"현재 조건에 맞는 Case {len(rows)}건")
-    event = st.dataframe(
-        pd.DataFrame(rows),
-        hide_index=True,
-        width="stretch",
-        height=500,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="voc_testcase_catalog_table",
-        column_config={
-            "Case ID": st.column_config.TextColumn(width="small", pinned=True),
-            "검증 영역": st.column_config.TextColumn(width="medium"),
-            "이름": st.column_config.TextColumn(width="large"),
-            "구현 상태": st.column_config.TextColumn(width="medium"),
-            "등록 원본": st.column_config.TextColumn(width="medium"),
-            "판정 기준": st.column_config.TextColumn(width="large"),
-        },
-    )
+    with browser_columns[1].container(
+        border=True,
+        height=410,
+        key="voc_testcase_browser",
+    ):
+        st.markdown("#### :material/list_alt: Case 목록")
+        st.caption(f"검색 결과 {len(rows)}건 · 행을 선택하면 우측에서 상세 확인")
+        visible_case_ids = [case.get("case_id", "") for case in visible_cases]
+        table_key = "voc_testcase_catalog_table"
+        remembered_case_id = st.session_state.get("voc_testcase_selected_case_id")
+        default_index = (
+            visible_case_ids.index(remembered_case_id)
+            if remembered_case_id in visible_case_ids
+            else 0
+        )
+        event = st.dataframe(
+            pd.DataFrame(rows),
+            hide_index=True,
+            width="stretch",
+            height=300,
+            on_select=(
+                partial(
+                    _remember_catalog_case_selection,
+                    table_key,
+                    visible_case_ids,
+                )
+                if visible_case_ids
+                else "rerun"
+            ),
+            selection_mode=(
+                ["single-row-required", "single-cell"]
+                if visible_case_ids
+                else "single-row"
+            ),
+            selection_default=(
+                {"selection": {"rows": [default_index]}}
+                if visible_case_ids
+                else None
+            ),
+            key=table_key,
+            column_config={
+                "Case ID": st.column_config.TextColumn(width=82, pinned=True),
+                "검증 영역": st.column_config.TextColumn(width=110),
+                "이름": st.column_config.TextColumn(width=150),
+                "구현 상태": st.column_config.TextColumn(width=130),
+            },
+        )
 
     selected_rows = event.selection.rows if event else []
-    if not selected_rows:
-        st.info("목록에서 Case를 선택하면 등록 원본과 상세 평가 조건을 확인할 수 있습니다.")
-        return
+    if not selected_rows and visible_cases:
+        selected_rows = [default_index]
+    with browser_columns[2].container(
+        border=True,
+        height=410,
+        key="voc_testcase_detail",
+    ):
+        st.markdown("#### :material/description: Case 상세")
+        if not selected_rows:
+            st.caption("목록에서 Case ID를 선택하세요.")
+            st.markdown(
+                """
+                :blue-badge[선택한 Case의 검증 기준]
 
-    selected = visible_cases[selected_rows[0]]
-    detail = testcase_details.get(selected.get("case_id"), {})
-    with st.container(border=True):
-        st.markdown(f"#### {selected.get('case_id')} · {selected.get('name', '-')}")
-        detail_columns = st.columns(3, gap="small")
-        detail_columns[0].metric(
-            "검증 영역",
-            groups.get(selected.get("group"), {}).get(
+                선택 후 이 영역에서 등록 원본, 판정 기준과 VOC 입출력 조건을 간단히 확인할 수 있습니다.
+                """
+            )
+        else:
+            selected = visible_cases[selected_rows[0]]
+            detail = testcase_details.get(selected.get("case_id"), {})
+            group_label = groups.get(selected.get("group"), {}).get(
                 "label", selected.get("group", "-")
-            ),
-            border=True,
-        )
-        detail_columns[1].metric(
-            "구현 상태",
-            status_labels.get(selected.get("implementation_status"), "-"),
-            border=True,
-        )
-        detail_columns[2].metric(
-            "등록 원본", selected.get("source_ref", "-"), border=True
-        )
-        st.markdown("**판정 기준**")
-        st.write(selected.get("acceptance", "-") or "-")
-        if detail:
-            st.markdown("**VOC 질문 및 기대 결과**")
-            st.write(detail.get("question", "-") or "-")
-            st.caption(f"예상 의도 · {detail.get('expected_intent', '-')}")
-            output_columns = st.columns(2, gap="medium")
-            with output_columns[0]:
-                st.markdown("**필수 출력**")
-                st.write(
-                    "\n".join(
-                        f"- {item}" for item in detail.get("required_output", [])
-                    ) or "-"
-                )
-            with output_columns[1]:
-                st.markdown("**금지 출력**")
-                st.write(
-                    "\n".join(
-                        f"- {item}" for item in detail.get("prohibited_output", [])
-                    ) or "-"
-                )
+            )
+            status_label = status_labels.get(
+                selected.get("implementation_status"), "-"
+            )
+            status_badge = (
+                "green"
+                if selected.get("implementation_status") == "IMPLEMENTED"
+                else "orange"
+            )
+            st.markdown(
+                f"**{selected.get('case_id')}** · {selected.get('name', '-')}"
+            )
+            st.markdown(
+                f":blue-badge[{group_label}] "
+                f":{status_badge}-badge[{status_label}]"
+            )
+            criteria_tab, conditions_tab = st.tabs(["판정 기준", "VOC 조건"])
+            with criteria_tab:
+                st.caption(f"등록 원본 · {selected.get('source_ref', '-')}")
+                st.write(selected.get("acceptance", "-") or "-")
+            with conditions_tab:
+                if not detail:
+                    st.caption("이 Case에는 별도의 VOC 질문 조건이 없습니다.")
+                else:
+                    st.markdown("**질문**")
+                    st.write(detail.get("question", "-") or "-")
+                    st.caption(f"예상 의도 · {detail.get('expected_intent', '-')}")
+                    with st.expander(
+                        "필수·금지 출력 조건",
+                        icon=":material/rule:",
+                    ):
+                        output_columns = st.columns(2, gap="small")
+                        with output_columns[0]:
+                            st.markdown("**필수 출력**")
+                            st.write(
+                                "\n".join(
+                                    f"- {item}"
+                                    for item in detail.get("required_output", [])
+                                )
+                                or "-"
+                            )
+                        with output_columns[1]:
+                            st.markdown("**금지 출력**")
+                            st.write(
+                                "\n".join(
+                                    f"- {item}"
+                                    for item in detail.get("prohibited_output", [])
+                                )
+                                or "-"
+                            )
 
 
 def render_analysis():
@@ -3595,10 +4477,11 @@ def _show_rubric_save_result(result: dict):
         for error in result.get("errors", ["품질 평가 기준을 저장하지 못했습니다."]):
             st.error(error)
         return
-    st.success(result.get("message", "품질 평가 기준을 저장했습니다."))
-    st.caption(f"SHA-256: {result.get('sha256', '-')}")
-    if result.get("backup_path"):
-        st.caption(f"변경 전 백업: {result['backup_path']}")
+    st.session_state.voc_rubric_last_save_message = "변경완료"
+
+
+def _rubric_signature(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _ordered_decision_rows(decisions: list[dict], spec: dict) -> list[dict]:
@@ -3670,9 +4553,17 @@ def _rubric_criterion_range(
     total_budget: int = 100,
 ) -> tuple[int, int]:
     """Return a score range that cannot push the full rubric over its budget."""
-    current_score = float(items[item_id].get("criteria", {}).get(criterion_id, 0))
-    other_scores = _rubric_total(items) - current_score
-    maximum = max(0, int(round(total_budget - other_scores)))
+    item = items[item_id]
+    criteria = item.get("criteria", {})
+    other_item_scores = sum(
+        float(value or 0)
+        for key, value in criteria.items()
+        if key != criterion_id
+    )
+    maximum = max(
+        0,
+        int(round(float(item.get("max_points", total_budget)) - other_item_scores)),
+    )
     return 0, maximum
 
 
@@ -3680,11 +4571,14 @@ def _render_rubric_transfer_tools(
     draft: dict,
     rubric_type: str,
     spec: dict,
+    download_container=None,
+    upload_container=None,
 ):
-    download_col, upload_col = st.columns(2, gap="small")
-    with download_col:
+    if download_container is None or upload_container is None:
+        download_container, upload_container = st.columns(2, gap="small")
+    with download_container:
         st.download_button(
-            "JSON 다운로드",
+            "JSON D/L",
             data=(json.dumps(draft, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
             file_name=Path(spec["relative_path"]).name,
             mime="application/json",
@@ -3692,8 +4586,8 @@ def _render_rubric_transfer_tools(
             key=f"rubric_download_{rubric_type}",
             width="stretch",
         )
-    with upload_col, st.popover(
-            "JSON 업로드",
+    with upload_container, st.popover(
+            "JSON Up",
             icon=":material/upload_file:",
             key=f"rubric_upload_popover_{rubric_type}",
             width="stretch",
@@ -3733,73 +4627,309 @@ def _render_rubric_transfer_tools(
                 draft.update(deepcopy(uploaded_payload))
 
 
-def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
+RUBRIC_CRITERION_KO_LABELS = {
+    "intent": "의도 파악",
+    "keywords": "핵심어 추출",
+    "search_conditions": "검색 조건",
+    "defaults_and_format": "기본값·형식",
+    "recall": "검색 재현율",
+    "precision": "검색 정밀도",
+    "source_preservation": "출처 보존",
+    "limit_and_error_handling": "제한·오류 처리",
+    "factual_consistency": "사실 일관성",
+    "coverage": "핵심 내용 포함",
+    "deduplication_and_conciseness": "중복 제거·간결성",
+    "format_and_readability": "형식·가독성",
+    "criteria_consistency": "평가 기준 일관성",
+    "winner_correctness": "우수안 판정 정확성",
+    "evidence_validity": "근거 타당성",
+    "format_and_repeatability": "형식·반복 가능성",
+    "defect_detection": "결함 탐지",
+    "risk_detection": "위험 탐지",
+    "edit_actionability": "수정 실행 가능성",
+    "false_positive_control": "오탐 통제",
+    "voc_grounding": "VOC 근거 반영",
+    "specificity": "구체성",
+    "feasibility": "실행 가능성",
+    "measurability": "측정 가능성",
+    "priority": "우선순위",
+    "trace_completeness": "Trace 완전성",
+    "data_transfer_integrity": "데이터 전달 무결성",
+    "upstream_result_usage": "이전 단계 결과 활용",
+    "no_duplicate_calls": "중복 호출 방지",
+    "explicit_failure_response": "명확한 실패 응답",
+    "traceable_error_log": "추적 가능한 오류 로그",
+    "recovery_and_cleanup": "복구·정리",
+    "end_to_end_response_time": "전체 응답시간",
+    "timeout_compliance": "타임아웃 준수",
+    "per_agent_timing_visibility": "Agent별 소요시간 표시",
+    "complaint_type_and_cause": "불만 유형·원인 정확성",
+    "impact_consistency": "영향 일관성",
+    "policy_statement_correctness": "정책 설명 정확성",
+    "question_relevance": "질문 관련성",
+    "voc_source_traceability": "VOC 출처 추적성",
+    "no_unsupported_claim": "근거 없는 주장 방지",
+    "source_meaning_preservation": "원문 의미 보존",
+    "uncertainty_disclosure": "불확실성 명시",
+    "required_issue_coverage": "필수 이슈 포함",
+    "cause_impact_action_coverage": "원인·영향·조치 포함",
+    "compound_complaint_coverage": "복합 불만 포함",
+    "no_critical_omission": "핵심 누락 방지",
+    "action_detail": "조치 상세성",
+    "owner_and_priority": "담당·우선순위",
+    "measurable_kpi": "측정 가능한 KPI",
+    "clear_language": "명확한 표현",
+    "no_sensitive_data_exposure": "민감정보 노출 방지",
+    "no_fabricated_guarantee": "허위 보장 방지",
+    "failure_transparency": "실패 투명성",
+    "safe_escalation": "안전한 상향 보고",
+    "complaint_to_root_cause": "불만-근본원인 연결",
+    "root_cause_to_action": "근본원인-조치 연결",
+    "expected_customer_impact": "예상 고객 영향",
+    "voc_id_reference": "VOC ID 참조",
+    "trace_and_agent_reference": "Trace·Agent 참조",
+    "no_unsupported_evidence": "근거 없는 증적 방지",
+    "process_feasibility": "업무 절차 실행 가능성",
+    "technical_feasibility": "기술 실행 가능성",
+    "resource_and_dependency_awareness": "자원·의존성 고려",
+    "responsible_owner": "담당자 명확성",
+    "target_schedule": "목표 일정",
+    "customer_and_operational_risk": "고객·운영 위험",
+    "privacy_and_security": "개인정보·보안",
+    "compliance_and_escalation": "규제 준수·상향 보고",
+}
+
+
+RUBRIC_ITEM_PANEL_HEIGHT = 460
+RUBRIC_CRITERIA_PANEL_MIN_HEIGHT = 430
+RUBRIC_WEIGHT_CHART_HEIGHT = 112
+RUBRIC_DETAIL_DIALOG_WIDTH = "medium"
+RUBRIC_DETAIL_NAV_STYLE = """
+<style>
+[class*="st-key-rubric_detail_previous_"] button,
+[class*="st-key-rubric_detail_next_"] button {
+    background: #F2F6FB;
+    border: 1px solid #B9CBE0;
+    color: #345F8A;
+    box-shadow: none;
+    font-weight: 600;
+}
+[class*="st-key-rubric_detail_previous_"] button:hover,
+[class*="st-key-rubric_detail_next_"] button:hover {
+    background: #E8F0F8;
+    border-color: #8EADCC;
+    color: #244F78;
+}
+[class*="st-key-rubric_detail_previous_"] button:focus,
+[class*="st-key-rubric_detail_next_"] button:focus {
+    border-color: #789DC2;
+    box-shadow: 0 0 0 0.12rem rgba(72, 116, 158, 0.16);
+}
+[class*="st-key-rubric_criteria_panel_"] {
+    min-height: %dpx;
+    overflow: visible;
+}
+</style>
+""" % RUBRIC_CRITERIA_PANEL_MIN_HEIGHT
+
+
+def _rubric_criterion_label(criterion_id: str) -> str:
+    korean = RUBRIC_CRITERION_KO_LABELS.get(
+        criterion_id,
+        criterion_id.replace("_", " ").title(),
+    )
+    return f"{korean} ({criterion_id})"
+
+
+def _build_rubric_weight_chart(item_label: str, item_total: float) -> alt.LayerChart:
+    selected_score = max(0.0, min(float(item_total), 100.0))
+    chart_rows = pd.DataFrame(
+        [
+            {
+                "구분": item_label,
+                "배점": selected_score,
+                "색상": "선택 평가 항목",
+                "순서": 1,
+            },
+            {
+                "구분": "나머지 평가 항목",
+                "배점": 100.0 - selected_score,
+                "색상": "나머지 평가 항목",
+                "순서": 2,
+            },
+        ]
+    )
+    arc = (
+        alt.Chart(chart_rows)
+        .mark_arc(innerRadius=34, outerRadius=50, cornerRadius=4)
+        .encode(
+            theta=alt.Theta("배점:Q", stack=True),
+            color=alt.Color(
+                "색상:N",
+                scale=alt.Scale(
+                    domain=["선택 평가 항목", "나머지 평가 항목"],
+                    range=["#1769AA", "#E3EAF2"],
+                ),
+                legend=None,
+            ),
+            order=alt.Order("순서:O"),
+            tooltip=[
+                alt.Tooltip("구분:N"),
+                alt.Tooltip("배점:Q", format=".0f", title="배점"),
+            ],
+        )
+    )
+    score_text = (
+        alt.Chart(pd.DataFrame([{"text": f"{selected_score:g}점"}]))
+        .mark_text(fontSize=18, fontWeight=700, color="#0B4F91", dy=-6)
+        .encode(text="text:N")
+    )
+    total_text = (
+        alt.Chart(pd.DataFrame([{"text": "전체 100점 중"}]))
+        .mark_text(fontSize=10, color="#66788A", dy=13)
+        .encode(text="text:N")
+    )
+    return (arc + score_text + total_text).properties(height=RUBRIC_WEIGHT_CHART_HEIGHT)
+
+
+def _selected_rubric_item_id(
+    item_ids: list[str],
+    selection_state: dict | None,
+    fallback: str,
+) -> str:
+    selected_row = _table_selected_row_index(selection_state, len(item_ids))
+    if selected_row is not None:
+        return item_ids[selected_row]
+    return fallback
+
+
+def _sync_rubric_item_selection(
+    table_key: str,
+    selected_key: str,
+    item_ids: list[str],
+):
+    selected_row = _promote_table_cell_to_row_selection(
+        table_key,
+        len(item_ids),
+    )
+    if selected_row is not None:
+        selected_id = item_ids[selected_row]
+        st.session_state[selected_key] = selected_id
+        st.session_state[f"{selected_key}_detail_dialog_request"] = selected_id
+
+
+def _navigate_rubric_detail_dialog(
+    rubric_type: str,
+    item_ids: list[str],
+    item_id: str,
+):
+    """팝업 항목만 이동하고 목록은 선택 항목 상태로 다음 전체 렌더에서 맞춥니다."""
+    if item_id not in item_ids:
+        return
+    selected_key = f"rubric_edit_{rubric_type}_selected_item"
+    dialog_key = f"{selected_key}_detail_dialog_item"
+    opened_key = f"{dialog_key}_opened"
+    st.session_state[selected_key] = item_id
+    st.session_state[dialog_key] = item_id
+    st.session_state[opened_key] = True
+
+
+def _clear_rubric_detail_dialog_state(rubric_type: str):
+    selected_key = f"rubric_edit_{rubric_type}_selected_item"
+    dialog_key = f"{selected_key}_detail_dialog_item"
+    st.session_state.pop(f"{selected_key}_detail_dialog_request", None)
+    st.session_state.pop(dialog_key, None)
+    st.session_state.pop(f"{dialog_key}_opened", None)
+
+
+def _dismiss_rubric_detail_dialog():
+    for rubric_type in QUALITY_RUBRIC_SPECS:
+        _clear_rubric_detail_dialog_state(rubric_type)
+
+
+def _complete_rubric_detail_dialog(rubric_type: str):
+    selected_key = f"rubric_edit_{rubric_type}_selected_item"
+    dialog_key = f"{selected_key}_detail_dialog_item"
+    st.session_state.pop(f"{selected_key}_detail_dialog_request", None)
+    st.session_state.pop(dialog_key, None)
+    # Dialog 조각 rerun이 먼저 발생하므로 전체 앱 rerun을 유도할 표식을 남깁니다.
+    st.session_state[f"{dialog_key}_opened"] = True
+
+
+@st.dialog(
+    "세부 배점 설정",
+    width=RUBRIC_DETAIL_DIALOG_WIDTH,
+    icon=":material/tune:",
+    on_dismiss=_dismiss_rubric_detail_dialog,
+)
+def _rubric_item_detail_dialog(
+    draft: dict,
+    rubric_type: str,
+    spec: dict,
+    selected_id: str,
+):
     items = draft.get(spec["items_key"], {})
     item_ids = list(items)
     selected_key = f"rubric_edit_{rubric_type}_selected_item"
-    if st.session_state.get(selected_key) not in items:
-        st.session_state[selected_key] = item_ids[0]
-    selected_id = st.session_state[selected_key]
-
-    left, right = st.columns([5, 7], gap="large", vertical_alignment="top")
-    with left:
-        st.markdown("#### 평가 항목")
-        st.caption("항목을 클릭하면 오른쪽에 해당 세부 배점이 열립니다.")
-        item_frame = pd.DataFrame(
-            [
-                {
-                    "ID": item_id,
-                    "평가 항목": item.get("label", ""),
-                    "배점": _score_value(_rubric_item_total(item)),
-                }
-                for item_id, item in items.items()
-            ]
-        )
-        default_row = item_ids.index(selected_id)
-        event = st.dataframe(
-            item_frame,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row-required",
-            selection_default={"selection": {"rows": [default_row]}},
-            key=f"rubric_edit_{rubric_type}_widget_item_table",
-            column_config={
-                "ID": None,
-                "배점": st.column_config.ProgressColumn(
-                    "배점",
-                    min_value=0,
-                    max_value=100,
-                    format="%g점",
-                ),
-            },
-            height=min(430, 38 + len(item_frame) * 35),
-        )
-        selected_rows = event.selection.rows
-        if selected_rows:
-            clicked_id = item_ids[selected_rows[0]]
-            if clicked_id != selected_id:
-                st.session_state[selected_key] = clicked_id
-                st.rerun()
-    selected_id = st.session_state[selected_key]
+    dialog_key = f"{selected_key}_detail_dialog_item"
+    opened_key = f"{dialog_key}_opened"
+    if st.session_state.get(dialog_key) not in items:
+        if st.session_state.get(opened_key):
+            st.session_state.pop(opened_key, None)
+            st.rerun(scope="app")
+        st.session_state[dialog_key] = selected_id
+        st.session_state[opened_key] = True
+    selected_id = st.session_state[dialog_key]
+    if selected_id not in items or not item_ids:
+        st.warning("선택한 평가 항목을 찾을 수 없습니다.")
+        return
+    selected_index = item_ids.index(selected_id)
+    previous_id = item_ids[(selected_index - 1) % len(item_ids)]
+    next_id = item_ids[(selected_index + 1) % len(item_ids)]
     item = items[selected_id]
     prefix = f"rubric_edit_{rubric_type}_widget_{selected_id}"
-    with right.container(border=True):
-        st.markdown("#### 세부 배점")
-        label = st.text_input(
-            "평가 항목명",
-            value=str(item.get("label", "")),
-            key=f"{prefix}_label",
+    other_item_total = _rubric_total(items) - _rubric_item_total(item)
+    item_budget = max(0, int(round(100 - other_item_total)))
+    item_total = _rubric_item_total(item)
+    st.html(RUBRIC_DETAIL_NAV_STYLE)
+    previous_col, title_col, chart_col, next_col = st.columns(
+        [1.35, 4.6, 2.4, 1.35],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with previous_col:
+        st.button(
+            "< 이전",
+            type="secondary",
+            key=f"rubric_detail_previous_{rubric_type}_{selected_id}",
+            help=f"이전 · {items[previous_id].get('label', previous_id)}",
+            on_click=_navigate_rubric_detail_dialog,
+            args=(rubric_type, item_ids, previous_id),
+            width="stretch",
         )
-        if label.strip() != str(item.get("label", "")):
-            item["label"] = label.strip()
-            st.rerun()
-
-        other_item_total = _rubric_total(items) - _rubric_item_total(item)
-        item_budget = max(0, int(round(100 - other_item_total)))
+    with title_col:
+        st.markdown(f"#### {item.get('label', selected_id)}")
         st.caption(
-            "게이지를 움직이면 세부 배점 합계가 평가 항목의 배점으로 자동 반영됩니다. "
-            f"현재 다른 평가 항목을 제외한 입력 가능 범위는 0~{item_budget}점입니다."
+            f"{selected_index + 1} / {len(item_ids)} · "
+            f"세부 배점 입력 가능 범위 0~{item_budget}점"
         )
+    with chart_col:
+        chart_slot = st.empty()
+    with next_col:
+        st.button(
+            "다음 >",
+            type="secondary",
+            key=f"rubric_detail_next_{rubric_type}_{selected_id}",
+            help=f"다음 · {items[next_id].get('label', next_id)}",
+            on_click=_navigate_rubric_detail_dialog,
+            args=(rubric_type, item_ids, next_id),
+            width="stretch",
+        )
+
+    with st.container(
+        border=False,
+        key=f"rubric_criteria_panel_{rubric_type}_{selected_id}",
+    ):
         for criterion_id, points in list(item.get("criteria", {}).items()):
             minimum, maximum = _rubric_criterion_range(
                 items,
@@ -3807,7 +4937,7 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
                 criterion_id,
             )
             score = st.slider(
-                criterion_id.replace("_", " "),
+                _rubric_criterion_label(criterion_id),
                 min_value=minimum,
                 max_value=maximum,
                 value=max(minimum, min(int(round(float(points))), maximum)),
@@ -3824,14 +4954,9 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
                 item["max_points"] = _score_value(_rubric_item_total(item))
                 if "pass_floor" in item and float(item["pass_floor"]) > float(item["max_points"]):
                     item["pass_floor"] = item["max_points"]
-                st.rerun()
 
         item_total = _rubric_item_total(item)
         item["max_points"] = _score_value(item_total)
-        st.progress(
-            min(item_total / 100.0, 1.0),
-            text=f"세부 배점 합계 · 평가 항목 배점  {item_total:g}점",
-        )
         if "pass_floor" in item:
             pass_floor = st.slider(
                 "PASS 하한",
@@ -3845,34 +4970,167 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
             )
             item["pass_floor"] = pass_floor
 
+    chart_slot.altair_chart(
+        _build_rubric_weight_chart(
+            str(item.get("label", selected_id)),
+            item_total,
+        )
+    )
+
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        st.button(
+            "설정 완료",
+            type="primary",
+            icon=":material/check:",
+            key=f"rubric_detail_done_{rubric_type}_{selected_id}",
+            on_click=_complete_rubric_detail_dialog,
+            args=(rubric_type,),
+        )
+
+
+def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
+    items = draft.get(spec["items_key"], {})
+    item_ids = list(items)
+    selected_key = f"rubric_edit_{rubric_type}_selected_item"
+    if st.session_state.get(selected_key) not in items:
+        st.session_state[selected_key] = item_ids[0]
+    selected_id = st.session_state[selected_key]
+
+    with st.container(
+        border=True,
+        height=RUBRIC_ITEM_PANEL_HEIGHT,
+        key=f"rubric_item_list_{rubric_type}",
+    ):
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
+            st.markdown("### 항목별 배점 설정")
+            _render_rubric_total_summary(draft, spec)
+        item_frame = pd.DataFrame(
+            [
+                {
+                    "ID": item_id,
+                    "평가 항목": item.get("label", ""),
+                    "배점": _score_value(_rubric_item_total(item)),
+                }
+                for item_id, item in items.items()
+            ]
+        )
+        default_row = item_ids.index(selected_id)
+        table_key = f"rubric_edit_{rubric_type}_widget_item_table"
+        st.dataframe(
+            item_frame,
+            hide_index=True,
+            on_select=partial(
+                _sync_rubric_item_selection,
+                table_key,
+                selected_key,
+                item_ids,
+            ),
+            selection_mode=["single-row-required", "single-cell"],
+            selection_default={"selection": {"rows": [default_row]}},
+            key=table_key,
+            column_config={
+                "ID": None,
+                "배점": st.column_config.ProgressColumn(
+                    "배점",
+                    min_value=0,
+                    max_value=100,
+                    format="%g점",
+                ),
+            },
+            height=min(430, 38 + len(item_frame) * 35),
+        )
+    request_key = f"{selected_key}_detail_dialog_request"
+    dialog_key = f"{selected_key}_detail_dialog_item"
+    opened_key = f"{dialog_key}_opened"
+    requested_item = st.session_state.pop(request_key, None)
+    if requested_item in items:
+        st.session_state[dialog_key] = requested_item
+        st.session_state[opened_key] = True
+    elif dialog_key not in st.session_state:
+        st.session_state.pop(opened_key, None)
+    dialog_item = st.session_state.get(dialog_key)
+    if dialog_item in items:
+        _rubric_item_detail_dialog(
+            draft,
+            rubric_type,
+            spec,
+            dialog_item,
+        )
+
 
 def _render_rubric_total_summary(draft: dict, spec: dict):
     total = _rubric_total(draft.get(spec["items_key"], {}))
     complete = abs(total - 100.0) < 0.001
-    with st.container(border=True):
-        st.markdown("##### 평가 항목 합계 점수")
-        st.caption("모든 평가 항목의 세부 배점을 합산한 최종 점수입니다.")
+    with st.container(
+        horizontal=True,
+        horizontal_alignment="right",
+        vertical_alignment="center",
+        width="content",
+        gap="xsmall",
+    ):
         color = "primary" if complete else "red"
         st.markdown(
-            f"## :{color}[{total:g} / 100점]",
-            text_alignment="right",
+            f":{color}[**{total:g} / 100점**]",
         )
         if complete:
             st.badge("배점 구성 완료", color="blue", icon=":material/check_circle:")
         else:
-            st.badge("배점 조정 필요", color="red", icon=":material/error:")
-            st.caption(f":red[100점까지 {100 - total:+g}점 조정이 필요합니다.]")
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.badge("배점 조정 필요", color="red", icon=":material/error:")
+                st.caption(f":red[100점까지 {100 - total:+g}점 조정이 필요합니다.]")
+
+
+@st.dialog(
+    "판정 구간 미리보기",
+    width="large",
+    icon=":material/table_view:",
+)
+def _rubric_decision_preview_dialog(draft: dict, spec: dict):
+    decision_frame = _decision_display_frame(
+        draft.get(spec["decisions_key"], []),
+        spec,
+    )
+    ordered_columns = [
+        "decision",
+        spec["decision_min_key"],
+        spec["decision_max_key"],
+        *[
+            column
+            for column in decision_frame.columns
+            if column
+            not in {
+                "decision",
+                spec["decision_min_key"],
+                spec["decision_max_key"],
+            }
+        ],
+    ]
+    st.dataframe(
+        decision_frame,
+        hide_index=True,
+        column_order=ordered_columns,
+        column_config={
+            "decision": st.column_config.TextColumn("decision", pinned=True),
+        },
+    )
 
 
 def _render_decision_gauges(draft: dict, rubric_type: str, spec: dict):
-    st.markdown("### 판정 구간")
-    st.caption("시작 점수를 조정하면 맞닿은 상·하위 판정의 최소·최대 점수가 함께 변경됩니다.")
-    gauge_col, preview_col = st.columns([6, 5], gap="large", vertical_alignment="top")
     decisions_key = spec["decisions_key"]
     min_key = spec["decision_min_key"]
     ordered = _ordered_decision_rows(draft.get(decisions_key, []), spec)
 
-    with gauge_col.container(border=True):
+    with st.container(
+        border=True,
+        height=RUBRIC_ITEM_PANEL_HEIGHT,
+        key=f"rubric_decision_section_{rubric_type}",
+    ):
+        st.markdown("### 판정 구간")
+        st.caption("시작 점수를 조정하면 맞닿은 상·하위 판정의 최소·최대 점수가 함께 변경됩니다.")
         for index, row in enumerate(ordered[:-1]):
             lower_bound = round(float(ordered[index + 1][min_key]) + 0.01, 2)
             upper_bound = 100.0 if index == 0 else round(float(ordered[index - 1][min_key]) - 0.01, 2)
@@ -3894,27 +5152,26 @@ def _render_decision_gauges(draft: dict, rubric_type: str, spec: dict):
                 )
                 st.rerun()
 
-    with preview_col.container(border=True):
-        st.markdown("##### 판정 구간 미리보기")
-        decision_frame = _decision_display_frame(draft.get(decisions_key, []), spec)
-        ordered_columns = [
-            "decision",
-            spec["decision_min_key"],
-            spec["decision_max_key"],
-            *[
-                column
-                for column in decision_frame.columns
-                if column not in {"decision", spec["decision_min_key"], spec["decision_max_key"]}
-            ],
-        ]
-        st.dataframe(
-            decision_frame,
-            hide_index=True,
-            column_order=ordered_columns,
-            column_config={
-                "decision": st.column_config.TextColumn("decision", pinned=True),
-            },
-        )
+        if st.button(
+            "판정 구간 미리보기",
+            icon=":material/visibility:",
+            key=f"rubric_decision_preview_{rubric_type}",
+            width="stretch",
+        ):
+            _rubric_decision_preview_dialog(draft, spec)
+
+        with st.expander("즉시 FAIL·보류 규칙", icon=":material/warning:"):
+            hold_rules_text = st.text_area(
+                "한 줄에 한 규칙",
+                value="\n".join(draft.get(spec["hold_rules_key"], [])),
+                height=140,
+                key=f"rubric_edit_{rubric_type}_widget_hold_rules",
+            )
+            draft[spec["hold_rules_key"]] = [
+                line.strip()
+                for line in hold_rules_text.splitlines()
+                if line.strip()
+            ]
 
 
 def _render_rubric_management(stage: str):
@@ -3923,10 +5180,12 @@ def _render_rubric_management(stage: str):
     payload = load_quality_rubric(rubric_type)
     draft = _rubric_draft(payload, rubric_type)
 
-    st.markdown("## 평가 기준 설정")
-    st.caption("조회와 관리를 한 화면에 통합했습니다. 변경 내용은 검증 후 저장되며 기존 파일은 자동 백업됩니다.")
-    meta_col, transfer_col = st.columns([5, 4], vertical_alignment="bottom")
-    with meta_col:
+    version_col, title_col, provider_col, action_col = st.columns(
+        [1.0, 1.8, 1.4, 2.6],
+        gap="small",
+        vertical_alignment="bottom",
+    )
+    with version_col:
         version = st.text_input(
             "Rubric 버전",
             value=str(draft.get("version", "")),
@@ -3934,73 +5193,113 @@ def _render_rubric_management(stage: str):
             help="기준 내용을 변경해 저장할 때는 이전과 다른 버전을 입력해야 합니다.",
         )
         draft["version"] = version.strip()
-    with transfer_col:
-        st.caption("파일 관리")
-        _render_rubric_transfer_tools(draft, rubric_type, spec)
-
-    if "title" in draft:
+        original_version = str(payload.get("version", "")).strip()
+    with title_col:
+        default_titles = {
+            "internal_pipeline": "내부 Pipeline 품질 평가 기준",
+            "independent_judge": "독립 LLM Judge 100점 평가 기준",
+            "improvement_validity": "최종 개선안 타당성 100점 검증 기준",
+        }
         title = st.text_input(
             "기준명",
-            value=str(draft.get("title", "")),
+            value=str(draft.get("title") or default_titles[rubric_type]),
             key=f"rubric_edit_{rubric_type}_widget_title",
         )
         draft["title"] = title.strip()
-    if rubric_type == "independent_judge":
-        current_provider = str(draft.get("default_provider") or "anthropic")
-        provider_options = list(dict.fromkeys([current_provider, "anthropic", "openai", "google", "azure_openai"]))
-        draft["default_provider"] = st.selectbox(
-            "기본 Judge Provider",
-            provider_options,
-            index=provider_options.index(current_provider),
-            accept_new_options=True,
-            key=f"rubric_edit_{rubric_type}_widget_provider",
+    with provider_col:
+        if rubric_type == "independent_judge":
+            current_provider = str(draft.get("default_provider") or "anthropic")
+            provider_options = list(
+                dict.fromkeys(
+                    [current_provider, "anthropic", "openai", "google", "azure_openai"]
+                )
+            )
+            draft["default_provider"] = st.selectbox(
+                "기본 Judge Provider",
+                provider_options,
+                index=provider_options.index(current_provider),
+                accept_new_options=True,
+                key=f"rubric_edit_{rubric_type}_widget_provider",
+            )
+        else:
+            st.selectbox(
+                "기본 Judge Provider",
+                ["해당 없음"],
+                disabled=True,
+                key=f"rubric_edit_{rubric_type}_widget_provider",
+            )
+    with action_col:
+        download_col, upload_col, spacer_col, save_col = st.columns(
+            [1.0, 1.0, 0.35, 1.45],
+            gap="small",
+            vertical_alignment="bottom",
         )
-
-    _render_rubric_items(draft, rubric_type, spec)
-    _render_decision_gauges(draft, rubric_type, spec)
-
-    with st.expander("즉시 FAIL·보류 규칙", icon=":material/warning:"):
-        hold_rules_text = st.text_area(
-            "한 줄에 한 규칙",
-            value="\n".join(draft.get(spec["hold_rules_key"], [])),
-            height=140,
-            key=f"rubric_edit_{rubric_type}_widget_hold_rules",
+        _render_rubric_transfer_tools(
+            draft,
+            rubric_type,
+            spec,
+            download_container=download_col,
+            upload_container=upload_col,
         )
-        draft[spec["hold_rules_key"]] = [
-            line.strip() for line in hold_rules_text.splitlines() if line.strip()
-        ]
+        with spacer_col:
+            st.empty()
+        header_validation_errors = validate_quality_rubric(
+            rubric_type,
+            draft,
+        )
+        has_rubric_changes = _rubric_signature(draft) != _rubric_signature(payload)
+        needs_version_change = has_rubric_changes and draft.get("version", "") == original_version
+        with save_col:
+            if needs_version_change:
+                st.markdown(":red-badge[변경발생]")
+                st.caption("Rubric 버전을 변경해야 저장할 수 있습니다.")
+            elif has_rubric_changes:
+                st.markdown(":red-badge[변경발생]")
+            elif st.session_state.get("voc_rubric_last_save_message") == "변경완료":
+                st.markdown(":gray-badge[변경완료]")
+            else:
+                st.markdown(":gray-badge[변경없음]")
+            if st.button(
+                "평가 기준 저장",
+                type="primary",
+                icon=":material/save:",
+                key=f"rubric_edit_{rubric_type}_save",
+                width="stretch",
+                disabled=bool(header_validation_errors) or not has_rubric_changes or needs_version_change,
+            ):
+                _show_rubric_save_result(
+                    save_quality_rubric(
+                        rubric_type,
+                        deepcopy(draft),
+                        source="screen_editor",
+                    )
+                )
+
+    score_col, decision_col = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+    )
+    with score_col:
+        _render_rubric_items(draft, rubric_type, spec)
+    with decision_col:
+        _render_decision_gauges(draft, rubric_type, spec)
 
     validation_errors = validate_quality_rubric(rubric_type, draft)
     if validation_errors:
         with st.expander(f"저장 전 확인 필요 · {len(validation_errors)}건", icon=":material/error:"):
             for error in validation_errors:
                 st.markdown(f"- {error}")
-    else:
-        st.success("총점·세부 배점·판정 구간 검증을 통과했습니다.", icon=":material/check_circle:")
-    if st.button(
-        "평가 기준 저장",
-        type="primary",
-        icon=":material/save:",
-        key=f"rubric_edit_{rubric_type}_save",
-        width="stretch",
-        disabled=bool(validation_errors),
-    ):
-        _show_rubric_save_result(
-            save_quality_rubric(rubric_type, deepcopy(draft), source="screen_editor")
-        )
-    _render_rubric_total_summary(draft, spec)
 
 
 def render_rubric():
-    # 상단 경로가 페이지 위치를 이미 설명하므로 중복 페이지 제목을 표시하지 않는다.
-    st.markdown("## 평가 기준 구분 선택")
-    st.caption("조회하고 수정할 품질 평가 단계를 선택하세요.")
     stage = st.segmented_control(
-        "평가 기준 구분",
+        "수정할 평가 단계",
         RUBRIC_STAGE_OPTIONS,
         default=RUBRIC_STAGE_OPTIONS[0],
         key="voc_quality_rubric_stage",
         label_visibility="collapsed",
+        on_change=_dismiss_rubric_detail_dialog,
     )
     selected_stage = stage or RUBRIC_STAGE_OPTIONS[0]
     _render_rubric_management(selected_stage)
@@ -4486,7 +5785,7 @@ def _render_voc_quality_report():
     )
     baseline_options = [""] + [value for value in full_suite if value != selected_run_id]
     baseline_run_id = st.selectbox(
-        "33 PASS / 2 FAIL 기준선 Run (선택)", baseline_options,
+        "33 통과 / 2 실패 기준선 Run (선택)", baseline_options,
         format_func=lambda value: value or "연결하지 않음 · 현재 기준선 증적 없음",
         key="voc_report_baseline_run_id",
         help="동일 35개 Case·Catalog·TC hash·Rubric과 결함 링크가 확인되는 Run만 유효합니다.",
@@ -4577,7 +5876,7 @@ def render_acceptance():
     )
     baseline_ids = [value for value in run_ids if value != run_id]
     baseline_run_id = st.selectbox(
-        "33 PASS / 2 FAIL 기준선 Run (선택)",
+        "33 통과 / 2 실패 기준선 Run (선택)",
         [""] + baseline_ids,
         format_func=lambda value: value or "연결하지 않음",
         key="voc_acceptance_baseline_run_id",
@@ -4616,12 +5915,12 @@ def render_acceptance():
 
     quantitative = snapshot["quantitative"]
     with st.container(horizontal=True):
-        st.metric("Pipeline PASS", quantitative["case_counts"].get("PASS", 0), border=True)
+        st.metric("Pipeline 통과", quantitative["case_counts"].get("PASS", 0), border=True)
         st.metric("Judge 평가", sum(quantitative["judge_counts"].values()), border=True)
         st.metric("타당성 평가", sum(quantitative["validity_counts"].values()), border=True)
         st.metric("비통과율", f"{quantitative['failure_rate_percent']}%", border=True)
     st.caption(
-        "비용은 현재 저장 증적에 공통 필드가 없어 NOT_AVAILABLE로 표시합니다. "
+        "비용은 현재 저장 증적에 공통 필드가 없어 확인 불가로 표시합니다. "
         "응답시간은 수행 이력의 Run·Case 시작/종료 시각으로 확인합니다."
     )
 

@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.4",
   "rubric_id": "VOC-INDEPENDENT-JUDGE-100",
   "title": "독립 LLM Judge 100점 평가 기준",
   "judge_provider_policy": "runtime_configurable",
@@ -64,9 +64,24 @@
     }
   },
   "decisions": [
-    {"decision": "PASS", "min_score": 80, "max_score": 100, "requires_all_pass_floors": true},
-    {"decision": "REVIEW_REQUIRED", "min_score": 65, "max_score": 79.99, "requires_all_pass_floors": false},
-    {"decision": "FAIL", "min_score": 0, "max_score": 64.99, "requires_all_pass_floors": false}
+    {
+      "decision": "PASS",
+      "min_score": 80,
+      "max_score": 100,
+      "requires_all_pass_floors": true
+    },
+    {
+      "decision": "REVIEW_REQUIRED",
+      "min_score": 65,
+      "max_score": 79.99,
+      "requires_all_pass_floors": false
+    },
+    {
+      "decision": "FAIL",
+      "min_score": 0,
+      "max_score": 64.99,
+      "requires_all_pass_floors": false
+    }
   ],
   "immediate_fail_rules": [
     "fabricated_voc_evidence",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import hashlib
 import locale
 import os
@@ -13,6 +14,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from core.paths import VOC_REPORTS_DIR, VOC_REUSE_DOCS_DIR, VOC_RUNTIME_DIR
 from services import (
@@ -202,6 +204,139 @@ def run_agent_action(action: str, agent_name: str | None = None) -> dict:
     return _run_cmd(VOC_RUNTIME_DIR / "scripts" / "agents.cmd", arguments, timeout=40)
 
 
+def _load_voc_grpc_modules():
+    runtime_path = str(VOC_RUNTIME_DIR)
+    if runtime_path not in sys.path:
+        sys.path.insert(0, runtime_path)
+    import grpc  # type: ignore
+    import voc_pb2  # type: ignore
+    import voc_pb2_grpc  # type: ignore
+
+    return grpc, voc_pb2, voc_pb2_grpc
+
+
+def _agent_test_payload(agent_name: str, voc_pb2):
+    csv_path = str(VOC_RUNTIME_DIR / "voc.csv")
+    sample_text = (
+        "배송 지연으로 고객 불만이 증가했습니다. 안내 메시지와 보상 기준을 명확히 하고 "
+        "상담 이관 기준을 개선해야 합니다."
+    )
+    if agent_name == "Interpreter":
+        return (
+            "ParseQuestion",
+            voc_pb2.ParseQuestionReq(
+                question="배송 지연 VOC를 요약하고 개선안을 제안해줘",
+                default_csv=csv_path,
+            ),
+            "질문 1건 · 기본 VOC CSV",
+        )
+    if agent_name == "Retriever":
+        return (
+            "Retrieve",
+            voc_pb2.RetrieveReq(csv_path=csv_path, filters=["배송", "지연"], max_items=3),
+            "필터 배송/지연 · 최대 3건",
+        )
+    if agent_name == "Summarizer":
+        return (
+            "MakeCandidates",
+            voc_pb2.SummarizeReq(texts=[sample_text], max_items=3, n=2),
+            "샘플 VOC 문장 1건 · 후보 2개",
+        )
+    if agent_name == "Evaluator":
+        return (
+            "Evaluate",
+            voc_pb2.EvaluateReq(
+                task="summary",
+                candidates={
+                    "S0": "배송 지연 VOC가 증가했으며 선제 안내와 보상 기준 정비가 필요합니다.",
+                    "S1": "문의량 증가로 상담 대기 시간이 늘어났습니다.",
+                },
+            ),
+            "요약 후보 2개 비교",
+        )
+    if agent_name == "Critic":
+        return (
+            "Review",
+            voc_pb2.ReviewReq(doc=sample_text, role="summary"),
+            "요약 검토 샘플 1건",
+        )
+    if agent_name == "Improver":
+        return (
+            "Improve",
+            voc_pb2.PolicyReq(summary="상태점검"),
+            "헬스 체크용 짧은 요약",
+        )
+    raise ValueError(f"지원하지 않는 Agent 테스트 대상: {agent_name}")
+
+
+def _summarize_agent_test_response(agent_name: str, response) -> str:
+    if agent_name == "Interpreter":
+        filters = ", ".join(response.filters) or "-"
+        return f"task={response.task or '-'} · filters={filters} · max_items={response.max_items or '-'}"
+    if agent_name == "Retriever":
+        first_text = (response.texts[0] if response.texts else "검색 결과 없음")[:80]
+        return f"검색 {len(response.texts)}건 · {first_text}"
+    if agent_name == "Summarizer":
+        keys = ", ".join(response.candidates.keys()) or "-"
+        return f"후보 {len(response.candidates)}개 · {keys}"
+    if agent_name == "Evaluator":
+        return f"winner={response.winner or '-'} · scores={response.scores_json[:80] or '-'}"
+    if agent_name == "Critic":
+        return f"보완 필요={response.need_refine} · 수정 의견 {len(response.edits)}건"
+    if agent_name == "Improver":
+        return f"RPC 응답 {len(response.policy or '')}자 · {(response.policy or '-')[:80]}"
+    return str(response)[:120]
+
+
+async def _test_agent_rpc_async(agent_name: str, port: int, timeout: float):
+    grpc, voc_pb2, voc_pb2_grpc = _load_voc_grpc_modules()
+    rpc_name, request, input_summary = _agent_test_payload(agent_name, voc_pb2)
+    stub_classes = {
+        "Interpreter": voc_pb2_grpc.InterpreterStub,
+        "Retriever": voc_pb2_grpc.RetrieverStub,
+        "Summarizer": voc_pb2_grpc.SummarizerStub,
+        "Evaluator": voc_pb2_grpc.EvaluatorStub,
+        "Critic": voc_pb2_grpc.CriticStub,
+        "Improver": voc_pb2_grpc.ImproverStub,
+    }
+    endpoint = f"127.0.0.1:{int(port)}"
+    async with grpc.aio.insecure_channel(endpoint) as channel:
+        stub = stub_classes[agent_name](channel)
+        response = await getattr(stub, rpc_name)(request, timeout=timeout)
+    return rpc_name, input_summary, _safe_text(_summarize_agent_test_response(agent_name, response))
+
+
+def test_agent_rpc(agent_name: str, port: int, *, timeout: float = 12.0) -> dict:
+    started = time.perf_counter()
+    try:
+        rpc_name, input_summary, output_summary = asyncio.run(
+            _test_agent_rpc_async(agent_name, port, timeout)
+        )
+        return {
+            "ok": True,
+            "agent": agent_name,
+            "rpc": rpc_name,
+            "input": input_summary,
+            "summary": output_summary,
+            "duration_seconds": round(time.perf_counter() - started, 2),
+        }
+    except Exception as exc:
+        error_text = _safe_text(f"{type(exc).__name__}: {exc}")
+        if "DEADLINE_EXCEEDED" in error_text or "Deadline Exceeded" in error_text:
+            error_text = (
+                "응답 시간 초과 · Agent 프로세스는 RUNNING이지만 실제 처리 또는 외부 LLM 응답이 "
+                "제한 시간 안에 끝나지 않았습니다."
+            )
+        return {
+            "ok": False,
+            "agent": agent_name,
+            "rpc": "-",
+            "input": "-",
+            "summary": error_text[:220],
+            "duration_seconds": round(time.perf_counter() - started, 2),
+        }
+
+
 def parse_agent_status_output(output: str) -> list[dict]:
     """agents.ps1의 상태 출력을 화면용 구조로 변환합니다."""
     parsed = {}
@@ -339,16 +474,17 @@ def a2a_trace_snapshot(recent_minutes: int = 30) -> dict:
     return summary
 
 
-def pipeline_trace_events(started_at: str = "") -> dict:
+def pipeline_trace_events(started_at: str = "", trace_id: str = "") -> dict:
     """실행 시작 이후 생성된 최신 Pipeline Trace와 안전한 감사 이벤트를 반환합니다."""
     path, events = _read_recent_audit_events()
     if started_at:
         events = [event for event in events if event.get("timestamp", "") >= started_at]
-    trace_starts = [
-        event for event in events
-        if event.get("operation") == "ParseQuestion" and event.get("status") == "started"
-    ]
-    trace_id = trace_starts[-1].get("trace_id") if trace_starts else ""
+    if not trace_id:
+        trace_starts = [
+            event for event in events
+            if event.get("operation") == "ParseQuestion" and event.get("status") == "started"
+        ]
+        trace_id = trace_starts[-1].get("trace_id") if trace_starts else ""
     trace_events = [event for event in events if event.get("trace_id") == trace_id] if trace_id else []
     return {"trace_id": trace_id, "events": trace_events, "path": str(path)}
 
@@ -450,6 +586,7 @@ def run_test_case(
     case_id: str,
     timeout_seconds: int = 180,
     judge_config: dict | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict:
     """선택한 정의를 실제 VOC 실행 또는 안전한 격리 장애 시험으로 수행합니다."""
     cases = load_test_cases().get("cases", [])
@@ -457,13 +594,26 @@ def run_test_case(
     if not case:
         raise ValueError(f"알 수 없는 테스트케이스: {case_id}")
 
+    def notify_preparation(step: int, status: str) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(step, status)
+        except Exception:
+            pass
+
     judge_config = _normalize_judge_config(judge_config)
+    notify_preparation(2, "active")
     run = _start_manual_voc_run(case, judge_config=judge_config)
+    for preparation_step in (2, 3, 4):
+        notify_preparation(preparation_step, "success")
+    notify_preparation(5, "active")
     run_id = run["run_id"]
     started_at = run["manifest"]["started_at"]
     fault_id = FAULT_TEST_CASES.get(case_id)
     mode = "fault" if fault_id else "voc"
     try:
+        notify_preparation(5, "success")
         if fault_id:
             execution = _run_cmd(
                 VOC_RUNTIME_DIR / "scripts" / "fault-tests.cmd",
@@ -629,10 +779,6 @@ def batch_preflight(case_ids: list[str] | None = None) -> dict:
         blockers.append(f"런타임 필수 파일 누락: {', '.join(health.get('missing', []))}")
     if needs_agents and not agents.get("all_running"):
         blockers.append("일반 VOC Case 실행에 필요한 6개 Agent가 모두 RUNNING 상태가 아닙니다.")
-    if pending:
-        warnings.append(
-            f"후속 단계에서 구현할 {len(pending)}건은 NOT_RUN으로 기록됩니다: {', '.join(pending)}"
-        )
     return {
         "ok": not blockers,
         "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1626,6 +1772,127 @@ def load_system_rubric() -> dict:
 
 def load_quality_test_catalog() -> dict:
     return load_json("quality_diagnosis/quality_test_catalog.json")
+
+
+def validate_quality_test_catalog(payload: dict) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["테스트케이스 카탈로그 JSON의 최상위 값은 객체여야 합니다."]
+    errors = []
+    serialized_payload = json.dumps(payload, ensure_ascii=False, default=str)
+    if any(pattern.search(serialized_payload) for pattern in SECRET_PATTERNS):
+        errors.append("테스트케이스 카탈로그에는 API 키나 인증정보를 포함할 수 없습니다.")
+    if not str(payload.get("version") or "").strip():
+        errors.append("version은 필수입니다.")
+    if not str(payload.get("suite_id") or "").strip():
+        errors.append("suite_id는 필수입니다.")
+    groups = payload.get("groups")
+    if not isinstance(groups, dict) or not groups:
+        errors.append("groups는 비어 있지 않은 객체여야 합니다.")
+        groups = {}
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or not cases:
+        errors.append("cases는 비어 있지 않은 배열이어야 합니다.")
+        cases = []
+
+    ids = []
+    required_fields = {
+        "case_id",
+        "group",
+        "name",
+        "source_ref",
+        "implementation_status",
+        "acceptance",
+    }
+    valid_statuses = {"IMPLEMENTED", "DEFINED"}
+    for index, case in enumerate(cases, start=1):
+        if not isinstance(case, dict):
+            errors.append(f"cases[{index}]: 객체 형식이어야 합니다.")
+            continue
+        missing = sorted(required_fields - set(case))
+        case_id = str(case.get("case_id") or f"#{index}").strip()
+        if missing:
+            errors.append(f"{case_id}: 필수 필드 누락 {missing}")
+            continue
+        ids.append(case_id)
+        if not case_id:
+            errors.append(f"cases[{index}]: case_id가 필요합니다.")
+        group_key = str(case.get("group") or "").strip()
+        if group_key not in groups:
+            errors.append(f"{case_id}: 등록되지 않은 검증 영역입니다. ({group_key})")
+        status = str(case.get("implementation_status") or "").strip()
+        if status not in valid_statuses:
+            errors.append(f"{case_id}: implementation_status는 IMPLEMENTED 또는 DEFINED여야 합니다.")
+        for field in ("name", "source_ref", "acceptance"):
+            if not str(case.get(field) or "").strip():
+                errors.append(f"{case_id}: {field}가 필요합니다.")
+    if len(ids) != len(set(ids)):
+        errors.append("case_id가 중복되었습니다.")
+    total_cases = payload.get("total_cases")
+    if _is_number(total_cases) and int(total_cases) != len(cases):
+        errors.append(f"total_cases({int(total_cases)})와 cases 건수({len(cases)})가 다릅니다.")
+    return errors
+
+
+def save_quality_test_catalog(payload: dict, *, source: str) -> dict:
+    errors = validate_quality_test_catalog(payload)
+    if errors:
+        return {"ok": False, "errors": errors}
+    target = (VOC_RUNTIME_DIR / "quality_diagnosis" / "quality_test_catalog.json").resolve()
+    if VOC_RUNTIME_DIR.resolve() not in target.parents:
+        return {"ok": False, "errors": ["런타임 외부 경로에는 저장할 수 없습니다."]}
+
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    before_bytes = target.read_bytes() if target.exists() else b""
+    after_bytes = serialized.encode("utf-8")
+    before_hash = hashlib.sha256(before_bytes).hexdigest() if before_bytes else ""
+    after_hash = hashlib.sha256(after_bytes).hexdigest()
+    if before_hash == after_hash:
+        return {
+            "ok": True,
+            "changed": False,
+            "path": str(target),
+            "sha256": after_hash,
+            "message": "현재 테스트케이스 카탈로그와 동일합니다.",
+        }
+
+    history_dir = target.parent / "TestCaseHistory"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().astimezone()
+    stamp = timestamp.strftime("%Y%m%d_%H%M%S_%f")
+    backup_path = history_dir / f"{target.stem}_{stamp}.json"
+    if before_bytes:
+        backup_path.write_bytes(before_bytes)
+
+    temp_path = target.with_suffix(target.suffix + ".tmp")
+    try:
+        temp_path.write_bytes(after_bytes)
+        os.replace(temp_path, target)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+    audit = {
+        "changed_at": timestamp.isoformat(),
+        "source": source,
+        "target_file": target.name,
+        "backup_file": backup_path.name if before_bytes else "",
+        "before_sha256": before_hash,
+        "after_sha256": after_hash,
+        "version": payload.get("version"),
+        "suite_id": payload.get("suite_id"),
+        "case_count": len(payload.get("cases", [])),
+    }
+    with (history_dir / "testcase_catalog_changes.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(audit, ensure_ascii=False) + "\n")
+
+    return {
+        "ok": True,
+        "changed": True,
+        "path": str(target),
+        "backup_path": str(backup_path) if before_bytes else "",
+        "sha256": after_hash,
+        "message": "테스트케이스 카탈로그를 저장했습니다.",
+    }
 
 
 def load_independent_judge_rubric() -> dict:

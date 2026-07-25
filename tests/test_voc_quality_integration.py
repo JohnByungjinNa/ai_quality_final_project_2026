@@ -1,15 +1,22 @@
 import asyncio
 import json
+import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 from datetime import datetime
 
+import pandas as pd
 import pytest
+from streamlit.proto.Block_pb2 import Block
+from streamlit.proto.Dataframe_pb2 import Dataframe
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
 from streamlit.testing.v1 import AppTest
 
 from dashboard.navigation import MENU_OPTIONS, SIDEBAR_MENU_OPTIONS
 from dashboard.pages_top import voc_quality_view
 from dashboard.services import voc_quality_service
+from services import voc_background_job_service
 from dashboard.services.voc_quality_service import (
     load_improvement_validity_rubric,
     load_independent_judge_rubric,
@@ -69,7 +76,7 @@ def test_voc_visual_design_shell_renders_header_flow_and_content():
 
     assert not app.exception
     markdown = "\n".join(item.value for item in app.markdown)
-    assert "품질 평가 기준" in markdown
+    assert "품질 평가 기준 수립" in markdown
     assert ":blue-badge[단계 선택]" in markdown
     assert ":blue-badge[배점 조정]" in markdown
     assert ":blue-badge[검증·저장]" in markdown
@@ -129,11 +136,91 @@ def test_agent_management_cards_show_start_time_and_stop_impact_without_summary_
         for metric in app.metric
     )
     rendered_text = "\n".join(item.value for item in [*app.markdown, *app.caption])
+    warning_text = "\n".join(item.value for item in app.warning)
+    assert "Report에 저장하지 않습니다" not in warning_text
+    assert "런타임 폴더에서 직접 입력하세요" not in warning_text
     assert "실행 환경 연결됨" not in rendered_text
     assert rendered_text.count("기동 시간 ·") == 6
     assert rendered_text.count(":red-badge[중지 영향]") == 1
     assert "정책 개선안을 생성·보완할 수 없어" in rendered_text
     assert "기동 시간 · -" in rendered_text
+    assert "6개 Agent 프로세스만 기동" in rendered_text
+    assert "Test Case나 VOC 품질진단을 실행하지 않습니다" in rendered_text
+    assert len(app.get("column")) == 6
+    assert rendered_text.count("<div class='vqa-agent-head") == 6
+    assert rendered_text.count("<svg") == 6
+    assert ":material/smart_toy:" not in rendered_text
+
+
+def test_agent_management_reuses_dashboard_agent_icon():
+    agent = {
+        "name": "Retriever",
+        "healthy": True,
+    }
+
+    markup = voc_quality_view._agent_management_card_header(agent)
+
+    assert voc_quality_view._dashboard_agent_svg_icon("Retriever") in markup
+    assert "vqa-agent-head good" in markup
+    assert "관련 VOC 검색" in markup
+
+
+@pytest.mark.parametrize(
+    ("action", "agent_name", "expected"),
+    [
+        ("start", None, "Interpreter 등 6개 Agent 프로세스를 기동하고 있습니다..."),
+        ("restart", None, "Interpreter 등 6개 Agent 프로세스를 재기동하고 있습니다..."),
+        ("stop", None, "Interpreter 등 6개 Agent 프로세스를 중지하고 있습니다..."),
+        ("start", "retriever", "retriever Agent 프로세스를 기동하고 있습니다..."),
+    ],
+)
+def test_agent_control_uses_agent_specific_progress_message(action, agent_name, expected):
+    assert voc_quality_view._agent_control_progress_message(action, agent_name) == expected
+    assert "VOC 품질진단 작업을 수행" not in expected
+
+
+def test_agent_control_refreshes_after_command_completion(monkeypatch):
+    class Clearable:
+        def __init__(self):
+            self.clear_count = 0
+
+        def clear(self):
+            self.clear_count += 1
+
+    class Spinner:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    state = {}
+    spinner_messages = []
+    reruns = []
+    management_snapshot = Clearable()
+    monitor_snapshot = Clearable()
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "spinner",
+        lambda message: spinner_messages.append(message) or Spinner(),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "run_agent_action",
+        lambda action, agent_name=None: {"ok": True, "action": action, "agent_name": agent_name},
+    )
+    monkeypatch.setattr(voc_quality_view, "_load_agent_management_snapshot", management_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_load_goal_monitor_snapshot", monitor_snapshot)
+    monkeypatch.setattr(voc_quality_view.st, "rerun", lambda: reruns.append(True))
+
+    voc_quality_view._run_agent_control_and_refresh("start")
+
+    assert spinner_messages == ["Interpreter 등 6개 Agent 프로세스를 기동하고 있습니다..."]
+    assert state["voc_command_result"]["ok"] is True
+    assert management_snapshot.clear_count == 1
+    assert monitor_snapshot.clear_count == 1
+    assert reruns == [True]
 
 
 def test_agent_management_hides_success_command_details(monkeypatch):
@@ -293,7 +380,21 @@ def test_goal_testcase_selector_uses_user_facing_title():
     source = inspect.getsource(voc_quality_view._goal_testcase_selector.__wrapped__)
 
     assert 'st.markdown("### Test Case 선택 실행")' in source
+    assert 'st.caption("읽기 전용 · 행 클릭으로 선택")' in source
+    assert "읽기 전용 목록입니다." not in source
+    assert "horizontal=True" in source
     assert 'st.markdown("### test_cases.json 선택 실행")' not in source
+
+
+def test_goal_pipeline_uses_compact_inline_guide():
+    import inspect
+
+    source = inspect.getsource(voc_quality_view.render_goal_monitor)
+
+    assert 'st.markdown("### 실시간 Agent Pipeline")' in source
+    assert 'st.caption("실행 중 2초 갱신 · 종료 후 최근 Trace 유지")' in source
+    assert "실행 중에는 현재 흐름을 2초 간격으로 확인하고" not in source
+    assert "horizontal=True" in source
 
 
 def test_manual_result_renders_human_readable_judgment_evidence():
@@ -376,6 +477,224 @@ def test_trace_display_events_merges_started_and_success_into_one_step():
     assert display[0]["input_keywords"] == ["개선안"]
 
 
+def test_manual_pipeline_renders_every_raw_log_below_merged_agent_calls(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "session_state",
+        {"goal_testcase_started_at": "2026-07-17T10:00:00+09:00"},
+    )
+    monkeypatch.setattr(voc_quality_view.st, "html", rendered.append)
+    snapshot = {
+        "trace_id": "trace-raw-1",
+        "events": [
+            {
+                "timestamp": "2026-07-17T10:00:00+09:00",
+                "source": "Orchestrator",
+                "target": "Interpreter",
+                "operation": "ParseQuestion",
+                "status": "started",
+            },
+            {
+                "timestamp": "2026-07-17T10:00:02+09:00",
+                "source": "Orchestrator",
+                "target": "Interpreter",
+                "operation": "ParseQuestion",
+                "status": "success",
+                "duration_ms": 2000,
+            },
+        ],
+    }
+
+    voc_quality_view._render_agent_pipeline_v2(snapshot, running=True)
+
+    html = rendered[0]
+    assert html.index("실시간 실행 이벤트(Agent 호출)") < html.index(
+        "실시간 실행 이벤트(원본 로그)"
+    )
+    assert "Agent 호출 1건" in html
+    assert "원본 로그 2건 · 전체 표시" in html
+    assert 'data-event-count="2"' in html
+    assert "started·success·failure 로그를 병합하거나 상태를 보정하지 않고 그대로 표시" in html
+    assert ".flow2-trace-track{display:flex;align-items:flex-start;" in html
+    assert '<details class="flow2-trace flow2-raw-trace">' in html
+    assert '<details class="flow2-trace flow2-raw-trace" open>' not in html
+    assert "content:'펼치기 ＋'" in html
+    assert ".flow2-raw-trace[open] .flow2-raw-summary:after{content:'접기 −'}" in html
+    raw_section = html.split("실시간 실행 이벤트(원본 로그)", maxsplit=1)[1]
+    assert "#01" in raw_section
+    assert "#02" in raw_section
+    assert "<em>시작</em>" in raw_section
+    assert "<em>성공</em>" in raw_section
+
+
+def test_trace_display_events_preserves_repeated_agent_calls_without_omission():
+    events = [
+        {
+            "timestamp": "2026-07-17T10:00:00+09:00",
+            "source": "Critic",
+            "target": "Improver",
+            "operation": "RefinePolicy",
+            "status": "started",
+        },
+        {
+            "timestamp": "2026-07-17T10:00:01+09:00",
+            "source": "Critic",
+            "target": "Improver",
+            "operation": "RefinePolicy",
+            "status": "started",
+        },
+        {
+            "timestamp": "2026-07-17T10:00:02+09:00",
+            "source": "Critic",
+            "target": "Improver",
+            "operation": "RefinePolicy",
+            "status": "success",
+        },
+        {
+            "timestamp": "2026-07-17T10:00:03+09:00",
+            "source": "Critic",
+            "target": "Improver",
+            "operation": "RefinePolicy",
+            "status": "success",
+        },
+    ]
+
+    display = voc_quality_view._trace_display_events(events)
+
+    assert len(display) == 2
+    assert [item["status"] for item in display] == ["success", "success"]
+    assert [item["started_at"] for item in display] == [
+        "2026-07-17T10:00:00+09:00",
+        "2026-07-17T10:00:01+09:00",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("previous_target", "target", "operation", "expected_transition", "expected_label"),
+    [
+        ("Improver", "Critic", "ReviewPolicy", "Agent 6 → Agent 5", "개선안 재검토"),
+        ("Critic", "Improver", "RefinePolicy", "Agent 5 → Agent 6", "수정 요청 반영"),
+        ("Critic", "Summarizer", "UnknownReturn", "Agent 5 → Agent 3", "이전 단계 재호출"),
+        ("Improver", "Evaluator", "UnknownReview", "Agent 6 → Agent 4", "이전 단계 재호출"),
+    ],
+)
+def test_trace_flow_explanation_covers_feedback_and_unknown_reverse_routes(
+    previous_target,
+    target,
+    operation,
+    expected_transition,
+    expected_label,
+):
+    flow = voc_quality_view._trace_flow_explanation(
+        {
+            "source": "Summarizer",
+            "target": target,
+            "operation": operation,
+            "status": "success",
+        },
+        {
+            "source": "Summarizer",
+            "target": previous_target,
+            "operation": "Previous",
+            "status": "success",
+        },
+    )
+
+    assert flow["transition"] == expected_transition
+    assert flow["label"] == expected_label
+    assert flow["reason"]
+    assert flow["inferred"] is operation.startswith("Unknown")
+
+
+def test_all_known_pipeline_operations_have_explicit_flow_reasons():
+    for operation in voc_quality_view.TRACE_FLOW_EXPLANATIONS:
+        flow = voc_quality_view._trace_flow_explanation(
+            {
+                "source": "Summarizer",
+                "target": "Critic",
+                "operation": operation,
+                "status": "success",
+            }
+        )
+        assert flow["reason"]
+        assert flow["inferred"] is False
+
+
+def test_manual_pipeline_timeline_explains_policy_feedback_loop(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "session_state",
+        {"goal_testcase_started_at": "2026-07-17T10:00:00+09:00"},
+    )
+    monkeypatch.setattr(voc_quality_view.st, "html", rendered.append)
+    snapshot = {
+        "trace_id": "trace-feedback",
+        "events": [
+            {
+                "timestamp": "2026-07-17T10:00:01+09:00",
+                "source": "Summarizer",
+                "target": "Improver",
+                "operation": "ImprovePolicy",
+                "status": "success",
+            },
+            {
+                "timestamp": "2026-07-17T10:00:02+09:00",
+                "source": "Summarizer",
+                "target": "Critic",
+                "operation": "ReviewPolicy",
+                "status": "success",
+            },
+            {
+                "timestamp": "2026-07-17T10:00:03+09:00",
+                "source": "Summarizer",
+                "target": "Improver",
+                "operation": "RefinePolicy",
+                "status": "success",
+            },
+        ],
+    }
+
+    voc_quality_view._render_agent_pipeline_v2(snapshot, running=False)
+
+    html = rendered[0]
+    assert "Agent 6 → Agent 5 · 개선안 재검토" in html
+    assert "Agent 5 → Agent 6 · 수정 요청 반영" in html
+    assert "확정하기 전에 품질과 실행 가능성을 확인" in html
+    assert "수정이 필요하다고 판단" in html
+    assert "Trace 사유 미기록·추정" in html
+
+
+def test_pipeline_run_summary_names_current_agent_number(monkeypatch):
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "session_state",
+        {
+            "goal_testcase_started_at": "2026-07-17T10:00:00+09:00",
+            "goal_testcase_running_case_id": "TC-01",
+        },
+    )
+    snapshot = {
+        "events": [
+            {
+                "timestamp": "2026-07-17T10:00:02+09:00",
+                "source": "Improver",
+                "target": "Critic",
+                "operation": "ReviewPolicy",
+                "status": "started",
+            }
+        ]
+    }
+
+    summary = voc_quality_view._pipeline_run_summary(snapshot, running=True)
+
+    assert summary["state"] == "running"
+    assert summary["label"] == "Agent 5 · Critic 수행 중"
+    assert summary["active_agent_number"] == 5
+    assert summary["active_agent_name"] == "Critic"
+
+
 def test_pipeline_run_summary_exposes_completed_status_and_run_metrics(monkeypatch):
     monkeypatch.setattr(
         voc_quality_view.st,
@@ -419,6 +738,8 @@ def test_pipeline_run_summary_exposes_completed_status_and_run_metrics(monkeypat
         "successes": 1,
         "failures": 0,
         "duration_seconds": 5.0,
+        "active_agent_number": None,
+        "active_agent_name": "",
     }
 
 
@@ -437,8 +758,17 @@ def test_manual_pipeline_timeline_starts_with_active_preparation_card(monkeypatc
     voc_quality_view._render_agent_pipeline_v2({"trace_id": "", "events": []}, running=True)
 
     html = rendered[0]
-    assert html.index("테스트 수행 준비") < html.index("수행 준비 중")
+    assert html.index("테스트 수행 준비") < html.index("진행 중")
     assert "flow2-preparation active" in html
+    assert html.count('<article class="flow2-preparation') == 3
+    assert "준비 단계 1–3" in html
+    assert "준비 단계 4–5" in html
+    assert ".flow2-preparation{position:relative;width:280px;min-width:280px;height:154px" in html
+    assert (
+        f"min-width:280px;height:{voc_quality_view.MANUAL_EVENT_CARD_HEIGHT}px"
+        in html
+    )
+    assert "0/5 완료 · 순서대로 처리 중" in html
     assert "Agent 실행 상태 점검" in html
     assert "Run 폴더 생성" in html
     assert "Rubric과 Test Case 스냅샷 저장" in html
@@ -475,6 +805,37 @@ def test_manual_pipeline_preparation_card_completes_after_first_event(monkeypatc
     assert html.index("테스트 수행 준비") < html.index("ParseQuestion")
 
 
+def test_manual_pipeline_preparation_card_visualizes_each_step_status(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "session_state",
+        {
+            "goal_testcase_started_at": "2026-07-17T10:00:00+09:00",
+            "goal_testcase_running_case_id": "TC-01",
+        },
+    )
+    monkeypatch.setattr(voc_quality_view.st, "html", rendered.append)
+    preparation = voc_quality_view._new_manual_preparation_progress()
+    preparation["steps"][0]["status"] = "success"
+    preparation["steps"][1]["status"] = "success"
+    preparation["steps"][2]["status"] = "active"
+    preparation["current_step"] = 3
+
+    voc_quality_view._render_agent_pipeline_v2(
+        {"trace_id": "", "events": []},
+        running=True,
+        preparation=preparation,
+    )
+
+    html = rendered[0]
+    assert "2/5 완료 · 순서대로 처리 중" in html
+    assert html.count("class='success'") == 2
+    assert html.count("class='active'") == 1
+    assert html.count("class='waiting'") == 2
+    assert "Rubric과 Test Case 스냅샷 저장" in html
+
+
 def test_manual_pipeline_preflight_runs_inside_background_task(monkeypatch):
     captured = {}
     snapshot = {"all_running": False, "agents": []}
@@ -505,6 +866,82 @@ def test_manual_pipeline_preflight_runs_inside_background_task(monkeypatch):
     }
 
 
+def test_manual_pipeline_background_job_completes_all_preparation_steps(monkeypatch):
+    monkeypatch.setattr(
+        voc_quality_view,
+        "agent_status_snapshot",
+        lambda: {"all_running": True, "agents": []},
+    )
+
+    def fake_run(case_id, timeout_seconds, judge_config, progress_callback=None):
+        assert timeout_seconds == 180
+        assert progress_callback is not None
+        progress_callback(2, "active")
+        for step in (2, 3, 4, 5):
+            progress_callback(step, "success")
+        return {"case": {"case_id": case_id}}
+
+    monkeypatch.setattr(voc_quality_view, "run_test_case", fake_run)
+    job_id = voc_background_job_service.start_background_job(
+        "manual-pipeline-test",
+        "TC-01",
+        voc_quality_view._execute_goal_testcase,
+        "TC-01",
+        progress={
+            "preparation": voc_quality_view._new_manual_preparation_progress()
+        },
+    )
+
+    deadline = time.time() + 3
+    snapshot = None
+    while time.time() < deadline:
+        snapshot = voc_background_job_service.background_job_snapshot(job_id)
+        if snapshot and snapshot["done"]:
+            break
+        time.sleep(0.01)
+
+    preparation = snapshot["progress"]["preparation"]
+    assert snapshot["status"] == "COMPLETED"
+    assert preparation["status"] == "COMPLETED"
+    assert [step["status"] for step in preparation["steps"]] == ["success"] * 5
+    voc_background_job_service.discard_background_job(job_id)
+
+
+def test_voc_background_job_continues_without_page_render_cycle():
+    started = threading.Event()
+    release = threading.Event()
+
+    def worker(job_id):
+        voc_background_job_service.update_background_job(
+            job_id,
+            progress={"stage": "running"},
+        )
+        started.set()
+        assert release.wait(2)
+        return {"ok": True}
+
+    job_id = voc_background_job_service.start_background_job(
+        "test",
+        "TC-01",
+        worker,
+    )
+    assert started.wait(2)
+    assert voc_background_job_service.background_job_snapshot(job_id)["status"] == "RUNNING"
+
+    release.set()
+    deadline = time.time() + 3
+    snapshot = None
+    while time.time() < deadline:
+        snapshot = voc_background_job_service.background_job_snapshot(job_id)
+        if snapshot and snapshot["done"]:
+            break
+        time.sleep(0.01)
+
+    assert snapshot["status"] == "COMPLETED"
+    assert snapshot["result"] == {"ok": True}
+    voc_background_job_service.discard_background_job(job_id)
+
+
 def test_manual_judge_result_renders_directly_as_evaluation_section():
     app = AppTest.from_file(
         "tests/fixtures/voc_manual_judge_result_app.py",
@@ -532,6 +969,7 @@ def test_pipeline_evidence_parsers_tolerate_invalid_or_partial_values():
 def test_goal_testcase_cell_click_selects_its_row(monkeypatch):
     table_key = "goal_testcase_table_1"
     state = {
+        "goal_testcase_selected_case_id": "TC-01",
         table_key: {
             "selection": {
                 "rows": [0],
@@ -548,9 +986,64 @@ def test_goal_testcase_cell_click_selects_its_row(monkeypatch):
     )
 
     assert state["goal_testcase_selected_case_id"] == "TC-03"
+    assert state["goal_testcase_selection_changed"] is True
     assert state[table_key] == {
         "selection": {"rows": [2], "columns": [], "cells": []}
     }
+
+
+def test_manual_pipeline_initializes_selected_case_before_first_button_click(
+    monkeypatch,
+):
+    state = {}
+    cases = [
+        {"case_id": "TC-01", "question": "첫 번째 질문"},
+        {"case_id": "TC-02", "question": "두 번째 질문"},
+    ]
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "load_test_cases",
+        lambda: {"cases": cases},
+    )
+
+    selected = voc_quality_view._ensure_goal_testcase_selection()
+
+    assert selected == cases[0]
+    assert state["goal_testcase_selected_case_id"] == "TC-01"
+
+
+def test_manual_pipeline_first_click_callback_starts_background_job(monkeypatch):
+    class State(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    state = State(
+        goal_testcase_result={"stale": True},
+        goal_testcase_trace_id="old-trace",
+    )
+    captured = {}
+
+    def fake_start_background_job(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return "manual-job-1"
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "start_background_job",
+        fake_start_background_job,
+    )
+
+    voc_quality_view._start_goal_testcase_pipeline("TC-01")
+
+    assert state["goal_testcase_job_id"] == "manual-job-1"
+    assert state["goal_testcase_running_case_id"] == "TC-01"
+    assert "goal_testcase_result" not in state
+    assert "goal_testcase_trace_id" not in state
+    assert captured["args"][:2] == ("manual-pipeline", "TC-01")
+    assert captured["kwargs"]["progress"]["preparation"]["status"] == "RUNNING"
 
 
 def test_embedded_voc_runtime_is_complete():
@@ -582,16 +1075,63 @@ def test_testcase_page_uses_same_35_case_catalog_as_batch_execution():
     app.run()
 
     assert not app.exception
+    hidden_catalog_guide = (
+        "일괄 TC 수행과 동일한 통합 카탈로그를 기준으로 관리합니다. "
+        "VOC 질문형 Case뿐 아니라 장애 주입·Agent 역할·품질 게이트 Case도 포함합니다."
+    )
+    assert all(item.value != hidden_catalog_guide for item in app.caption)
     metrics = {item.label: item.value for item in app.metric}
     assert metrics["전체 실행 대상"] == "35건"
     assert metrics["VOC 질문형"] == "20건"
     assert metrics["추가 검증 Case"] == "15건"
     assert metrics["구현 상태"] == "26건 완료"
-    assert any(item.value == "현재 조건에 맞는 Case 35건" for item in app.caption)
+    headings = [item.value for item in app.markdown]
+    assert "#### :material/target: 실행 대상 요약" in headings
+    assert "#### :material/bar_chart: 검증 영역별 Case 구성" in headings
+    assert "#### :material/search: Case 탐색" in headings
+    assert "#### :material/list_alt: Case 목록" in headings
+    assert "#### 통합 테스트케이스 목록" not in headings
+    assert "#### :material/description: Case 상세" in headings
+    assert len(app.get("vega_lite_chart")) == 1
+    assert len(app.get("column")) == 11
+    assert any(
+        item.value == "검색 결과 35건 · 행을 선택하면 우측에서 상세 확인"
+        for item in app.caption
+    )
 
     catalog_table = app.dataframe[0].value
     assert len(catalog_table) == 35
+    assert list(catalog_table.columns) == ["Case ID", "검증 영역", "이름", "구현 상태"]
     assert set(catalog_table["Case ID"]) >= {"TC-01", "FT-01", "AG-01", "QG-01"}
+    assert set(app.dataframe[0].proto.selection_mode) == {
+        Dataframe.SelectionMode.SINGLE_ROW_REQUIRED,
+        Dataframe.SelectionMode.SINGLE_CELL,
+    }
+    assert json.loads(app.dataframe[0].proto.selection_default)["selection"]["rows"] == [0]
+    layout_columns = app.get("column")
+    assert layout_columns[6].proto.weight < layout_columns[7].proto.weight
+    assert layout_columns[8].proto.weight == pytest.approx(
+        layout_columns[5].proto.weight
+    )
+    column_config = json.loads(app.dataframe[0].proto.columns)
+    assert column_config["이름"]["width"] == 150
+    assert column_config["구현 상태"]["width"] == 130
+    assert "**TC-01** · 모바일 앱 자동차보험 갱신 오류" in headings
+
+
+def test_testcase_group_chart_hides_validation_area_axis_title():
+    rows = pd.DataFrame(
+        [
+            {"검증 영역": "VOC 기능", "Case 수": 20},
+            {"검증 영역": "장애 주입", "Case 수": 6},
+        ]
+    )
+
+    spec = voc_quality_view._build_testcase_group_chart(rows).to_dict()
+
+    assert spec["encoding"]["y"]["title"] is None
+    assert spec["encoding"]["y"]["field"] == "검증 영역"
+    assert spec["encoding"]["x"]["title"] is None
 
 
 def test_quality_catalog_defines_exactly_35_unique_cases():
@@ -665,7 +1205,7 @@ def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
 
     voc_quality_view.render_rubric()
 
-    assert segmented_labels == ["평가 기준 구분"]
+    assert segmented_labels == ["수정할 평가 단계"]
     assert rendered == ["독립 LLM Judge"]
 
 
@@ -698,21 +1238,411 @@ def test_unified_rubric_page_renders_gauges_without_exceptions():
     app.run()
 
     assert not app.exception
-    assert [control.label for control in app.segmented_control] == ["평가 기준 구분"]
-    assert any(slider.label == "intent" for slider in app.slider)
+    assert [control.label for control in app.segmented_control] == ["수정할 평가 단계"]
+    markdown = [item.value for item in app.markdown]
+    captions = [item.value for item in app.caption]
+    assert "## 평가 기준 구분 선택" not in markdown
+    assert "## 평가 기준 설정" not in markdown
+    assert "조회하고 수정할 품질 평가 단계를 선택하세요." not in captions
+    assert all("조회와 관리를 한 화면에 통합했습니다" not in item for item in captions)
+    assert all(
+        item.value != "총점·세부 배점·판정 구간 검증을 통과했습니다."
+        for item in app.success
+    )
+    assert app.segmented_control[0].proto.label_visibility.value == LabelVisibility.COLLAPSED
+    assert all(slider.label != "의도 파악 (intent)" for slider in app.slider)
     assert any(slider.label == "배포 가능 시작 점수" for slider in app.slider)
     assert any(button.label == "평가 기준 저장" for button in app.button)
-    intent = next(slider for slider in app.slider if slider.label == "intent")
+    assert any(button.label == "판정 구간 미리보기" for button in app.button)
+    assert all(item.label != "평가 항목명" for item in app.text_input)
+    assert "### 항목별 배점 설정" in markdown
+    assert "#### ① 평가 항목 선택" not in markdown
+    assert "### 판정 구간" in markdown
+    total_index = next(
+        index
+        for index, value in enumerate(markdown)
+        if "100 / 100점" in value
+    )
+    assert total_index < markdown.index("### 판정 구간")
+    assert "##### 평가 항목 합계 점수" not in markdown
+    assert all(
+        "모든 평가 항목의 세부 배점을 합산한 최종 점수입니다." not in item
+        for item in captions
+    )
+    assert [item.label for item in app.status] == ["즉시 FAIL·보류 규칙"]
+    assert all(
+        getattr(item, "type", "") != "status"
+        for item in app._tree[0].children.values()
+    )
+    assert "#### ② Interpreter 해석 정확성 · 세부 배점" not in markdown
+    item_table = next(
+        item
+        for item in app.dataframe
+        if item.key == "rubric_edit_internal_pipeline_widget_item_table"
+    )
+    assert set(item_table.proto.selection_mode) == {
+        Dataframe.SelectionMode.SINGLE_ROW_REQUIRED,
+        Dataframe.SelectionMode.SINGLE_CELL,
+    }
+    assert json.loads(item_table.proto.selection_default)["selection"]["rows"] == [0]
+    assert len(app.get("vega_lite_chart")) == 0
+    assert len(app.get("progress")) == 0
+    assert any("100 / 100점" in item.value for item in app.markdown)
+    assert all(
+        getattr(item, "key", None) != "rubric_edit_internal_pipeline_save"
+        for item in app._tree[0].children.values()
+    )
+
+    next(
+        button
+        for button in app.button
+        if button.label == "판정 구간 미리보기"
+    ).click().run()
+
+    assert not app.exception
+    assert len(app.dataframe) == 2
+    assert list(app.dataframe[1].value.columns)[:3] == ["decision", "min", "max"]
+
+
+def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
+    app = AppTest.from_file("tests/fixtures/voc_rubric_app.py", default_timeout=30)
+    app.run()
+
+    expected_provider_states = {
+        "내부 Pipeline 품질": ("해당 없음", True),
+        "독립 LLM Judge": ("anthropic", False),
+        "개선안 타당성": ("해당 없음", True),
+    }
+    expected_rubric_types = {
+        "내부 Pipeline 품질": "internal_pipeline",
+        "독립 LLM Judge": "independent_judge",
+        "개선안 타당성": "improvement_validity",
+    }
+    for stage, expected_provider in expected_provider_states.items():
+        app.segmented_control[0].set_value(stage).run()
+
+        assert not app.exception
+        assert [item.label for item in app.text_input[:2]] == ["Rubric 버전", "기준명"]
+        provider = next(
+            item for item in app.selectbox if item.label == "기본 Judge Provider"
+        )
+        assert (provider.value, provider.disabled) == expected_provider
+        assert any(item.label == "JSON D/L" for item in app.get("download_button"))
+        assert any(
+            item.proto.popover.label == "JSON Up"
+            for item in app.get("popover")
+        )
+        save_button = next(
+            item for item in app.button if item.label == "평가 기준 저장"
+        )
+        assert save_button.key == (
+            f"rubric_edit_{expected_rubric_types[stage]}_save"
+        )
+
+
+def test_rubric_detail_dialog_renders_existing_scoring_controls():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_rubric_detail_dialog_app.py",
+        default_timeout=30,
+    )
+    app.run()
+
+    assert not app.exception
+    assert "#### Interpreter 해석 정확성" in [
+        item.value for item in app.markdown
+    ]
+    assert len(app.get("vega_lite_chart")) == 1
+    assert any(button.label == "설정 완료" for button in app.button)
+    intent = app.slider[0]
+    assert intent.label == "의도 파악 (intent)"
     assert intent.min == 0
-    assert intent.max == 5
-    assert any(":primary[100 / 100점]" in item.value for item in app.markdown)
+    assert intent.max == 4
 
     intent.set_value(4).run()
 
     assert not app.exception
-    assert next(button for button in app.button if button.label == "평가 기준 저장").disabled
-    assert any(":red[99 / 100점]" in item.value for item in app.markdown)
-    assert any("100점까지 +1점 조정" in item.value for item in app.caption)
+    draft = app.session_state["rubric_edit_internal_pipeline_draft"]
+    assert draft["categories"]["interpreter"]["criteria"]["intent"] == 4
+    assert draft["categories"]["interpreter"]["max_points"] == 14
+
+
+def test_rubric_detail_dialog_navigates_to_previous_and_next_items():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_rubric_detail_dialog_app.py",
+        default_timeout=30,
+    )
+    app.run()
+
+    assert not app.exception
+    assert app._tree[2][0].proto.dialog.width == Block.Dialog.MEDIUM
+    navigation_style = app.get("html")[0].proto.body
+    assert "background: #F2F6FB" in navigation_style
+    assert "border: 1px solid #B9CBE0" in navigation_style
+    assert app.button[0].label == "< 이전"
+    assert app.button[0].help == "이전 · 성능"
+    assert app.button[1].label == "다음 >"
+    assert app.button[1].help == "다음 · Retriever 검색 관련성"
+
+    app.button[1].click().run()
+
+    assert not app.exception
+    assert "#### Retriever 검색 관련성" in [
+        item.value for item in app.markdown
+    ]
+    assert app.session_state["rubric_edit_internal_pipeline_selected_item"] == "retriever"
+    assert app.button[0].label == "< 이전"
+    assert app.button[0].help == "이전 · Interpreter 해석 정확성"
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    assert "#### Interpreter 해석 정확성" in [
+        item.value for item in app.markdown
+    ]
+
+
+def test_improver_detail_dialog_has_stable_content_height_without_scroll():
+    app = AppTest.from_file("tests/fixtures/voc_rubric_app.py", default_timeout=30)
+    app.session_state[
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_request"
+    ] = "improver"
+    app.run()
+
+    improver_sliders = [
+        slider
+        for slider in app.slider
+        if "widget_improver_criterion" in str(slider.key)
+    ]
+    criteria_panel = app._tree[2][0][0][1]
+    navigation_style = app.get("html")[0].proto.body
+
+    assert not app.exception
+    assert len(improver_sliders) == 5
+    assert criteria_panel.proto.height_config.use_content
+    assert "min-height: 430px" in navigation_style
+    assert "overflow: visible" in navigation_style
+
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_next_internal_pipeline_improver"
+    ).click().run()
+
+    assert not app.exception
+    assert "#### Agent 연계 품질" in [
+        item.value for item in app.markdown
+    ]
+    assert app._tree[2][0][0][1].proto.height_config.use_content
+
+
+def test_rubric_detail_dialog_closes_after_navigation_with_one_done_click():
+    app = AppTest.from_file("tests/fixtures/voc_rubric_app.py", default_timeout=30)
+    app.session_state[
+        "rubric_edit_internal_pipeline_selected_item"
+    ] = "interpreter"
+    app.session_state[
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_request"
+    ] = "interpreter"
+    app.run()
+
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_next_internal_pipeline_interpreter"
+    ).click().run()
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_previous_internal_pipeline_retriever"
+    ).click().run()
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_next_internal_pipeline_interpreter"
+    ).click().run()
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_done_internal_pipeline_retriever"
+    ).click().run()
+
+    assert not app.exception
+    assert all(
+        "rubric_detail_" not in str(button.key)
+        for button in app.button
+    )
+    assert (
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_item"
+        not in app.session_state
+    )
+    assert (
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_item_opened"
+        not in app.session_state
+    )
+    assert (
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_request"
+        not in app.session_state
+    )
+
+
+def test_rubric_stage_switch_clears_all_open_dialog_state():
+    app = AppTest.from_file("tests/fixtures/voc_rubric_app.py", default_timeout=30)
+    app.session_state[
+        "rubric_edit_internal_pipeline_selected_item_detail_dialog_request"
+    ] = "interpreter"
+    app.run()
+
+    next(
+        button
+        for button in app.button
+        if button.key == "rubric_detail_next_internal_pipeline_interpreter"
+    ).click().run()
+    app.segmented_control[0].set_value("독립 LLM Judge").run()
+
+    assert not app.exception
+    assert all(
+        "rubric_detail_" not in str(button.key)
+        for button in app.button
+    )
+    assert all(
+        "detail_dialog" not in str(key)
+        for key in app.session_state.filtered_state
+    )
+
+
+def test_rubric_total_summary_only_shows_score_and_adjustment_guidance():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_rubric_total_summary_app.py",
+        default_timeout=15,
+    )
+    app.run()
+
+    assert not app.exception
+    assert any("99 / 100점" in item.value for item in app.markdown)
+    assert any("배점 조정 필요" in item.value for item in app.markdown)
+    assert any(
+        "100점까지 +1점 조정이 필요합니다." in item.value
+        for item in app.caption
+    )
+    assert all(
+        "평가 항목 합계 점수" not in item.value
+        for item in app.markdown
+    )
+    assert all(
+        "모든 평가 항목의 세부 배점을 합산한 최종 점수입니다." not in item.value
+        for item in app.caption
+    )
+
+
+def test_rubric_row_selection_resolves_the_clicked_item():
+    item_ids = ["interpreter", "retriever", "improver"]
+
+    assert (
+        voc_quality_view._selected_rubric_item_id(
+            item_ids,
+            {"selection": {"rows": [0], "cells": [[2, "평가 항목"]]}},
+            "interpreter",
+        )
+        == "improver"
+    )
+    assert (
+        voc_quality_view._selected_rubric_item_id(
+            item_ids,
+            {"selection": {"rows": []}},
+            "retriever",
+        )
+        == "retriever"
+    )
+    assert (
+        voc_quality_view._table_selected_row_index(
+            {"selection": {"rows": [0], "cells": [[1, "배점"]]}},
+            len(item_ids),
+        )
+        == 1
+    )
+
+
+def test_cell_click_is_promoted_to_checked_row_for_rubric_and_case_catalog(
+    monkeypatch,
+):
+    rubric_table_key = "rubric_table"
+    catalog_table_key = "catalog_table"
+    session_state = {
+        rubric_table_key: {
+            "selection": {
+                "rows": [0],
+                "columns": [],
+                "cells": [[2, "평가 항목"]],
+            }
+        },
+        catalog_table_key: {
+            "selection": {
+                "rows": [0],
+                "columns": [],
+                "cells": [[1, "이름"]],
+            }
+        },
+        "rubric_selected": "interpreter",
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", session_state)
+
+    voc_quality_view._sync_rubric_item_selection(
+        rubric_table_key,
+        "rubric_selected",
+        ["interpreter", "retriever", "improver"],
+    )
+    voc_quality_view._remember_catalog_case_selection(
+        catalog_table_key,
+        ["TC-01", "TC-02", "TC-03"],
+    )
+
+    assert session_state["rubric_selected"] == "improver"
+    assert session_state["rubric_selected_detail_dialog_request"] == "improver"
+    assert session_state["voc_testcase_selected_case_id"] == "TC-02"
+    assert session_state[rubric_table_key] == {
+        "selection": {"rows": [2], "columns": [], "cells": []}
+    }
+    assert session_state[catalog_table_key] == {
+        "selection": {"rows": [1], "columns": [], "cells": []}
+    }
+
+
+def test_rubric_criterion_labels_and_weight_chart_are_bilingual_and_emphasized():
+    assert voc_quality_view._rubric_criterion_label("recall") == "검색 재현율 (recall)"
+    assert (
+        voc_quality_view._rubric_criterion_label("complaint_to_root_cause")
+        == "불만-근본원인 연결 (complaint_to_root_cause)"
+    )
+    rubric_sets = [
+        (load_system_rubric(), "categories"),
+        (load_independent_judge_rubric(), "dimensions"),
+        (load_improvement_validity_rubric(), "dimensions"),
+    ]
+    criterion_ids = {
+        criterion_id
+        for rubric, items_key in rubric_sets
+        for item in rubric[items_key].values()
+        for criterion_id in item["criteria"]
+    }
+    assert criterion_ids <= set(voc_quality_view.RUBRIC_CRITERION_KO_LABELS)
+
+    spec = voc_quality_view._build_rubric_weight_chart(
+        "Retriever 검색 관련성",
+        13,
+    ).to_dict()
+    chart_values = spec["datasets"]
+    flattened_rows = [row for rows in chart_values.values() for row in rows]
+
+    assert any(row.get("배점") == 13 for row in flattened_rows)
+    assert any(row.get("배점") == 87 for row in flattened_rows)
+    assert "#1769AA" in str(spec)
+    assert "전체 100점 중" in str(spec)
+    assert spec["height"] == voc_quality_view.RUBRIC_WEIGHT_CHART_HEIGHT
+    assert voc_quality_view.RUBRIC_ITEM_PANEL_HEIGHT == 460
+    assert (
+        voc_quality_view.RUBRIC_CRITERIA_PANEL_MIN_HEIGHT
+        < voc_quality_view.RUBRIC_ITEM_PANEL_HEIGHT
+    )
 
 
 def test_rubric_criterion_range_uses_remaining_total_budget():
@@ -720,13 +1650,13 @@ def test_rubric_criterion_range_uses_remaining_total_budget():
     items = rubric["categories"]
 
     assert voc_quality_view._rubric_total(items) == 100
-    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 5)
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 4)
 
     items["interpreter"]["criteria"]["intent"] = 3
 
-    assert voc_quality_view._rubric_total(items) == 98
-    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 5)
-    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "keywords") == (0, 6)
+    assert voc_quality_view._rubric_total(items) == 99
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 4)
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "keywords") == (0, 5)
 
 
 def test_batch_progress_dialog_renders_eta_and_thick_progress_bar():
