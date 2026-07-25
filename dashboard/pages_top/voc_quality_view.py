@@ -4846,6 +4846,9 @@ def _sync_rubric_item_selection(
     selected_key: str,
     item_ids: list[str],
 ):
+    suppress_key = f"{selected_key}_suppress_detail_dialog_once"
+    if st.session_state.pop(suppress_key, False):
+        return
     selected_row = _promote_table_cell_to_row_selection(
         table_key,
         len(item_ids),
@@ -5084,6 +5087,8 @@ def _render_rubric_items(draft: dict, rubric_type: str, spec: dict):
     request_key = f"{selected_key}_detail_dialog_request"
     dialog_key = f"{selected_key}_detail_dialog_item"
     opened_key = f"{dialog_key}_opened"
+    if st.session_state.pop(f"{selected_key}_suppress_detail_dialog_once", False):
+        st.session_state.pop(request_key, None)
     requested_item = st.session_state.pop(request_key, None)
     if requested_item in items:
         st.session_state[dialog_key] = requested_item
@@ -5224,12 +5229,20 @@ def _render_rubric_management(stage: str):
         vertical_alignment="bottom",
     )
     with version_col:
+        version_widget_key = f"rubric_edit_{rubric_type}_widget_version"
+        previous_version_key = f"{version_widget_key}_previous"
         version = st.text_input(
             "Rubric 버전",
             value=str(draft.get("version", "")),
-            key=f"rubric_edit_{rubric_type}_widget_version",
+            key=version_widget_key,
             help="기준 내용을 변경해 저장할 때는 이전과 다른 버전을 입력해야 합니다.",
         )
+        previous_version = st.session_state.get(previous_version_key)
+        if previous_version is not None and str(previous_version) != str(version):
+            selected_key = f"rubric_edit_{rubric_type}_selected_item"
+            st.session_state[f"{selected_key}_suppress_detail_dialog_once"] = True
+            st.session_state.pop(f"{selected_key}_detail_dialog_request", None)
+        st.session_state[previous_version_key] = str(version)
         draft["version"] = version.strip()
         original_version = str(payload.get("version", "")).strip()
     with title_col:

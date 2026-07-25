@@ -1607,6 +1607,33 @@ def test_cell_click_is_promoted_to_checked_row_for_rubric_and_case_catalog(
     }
 
 
+def test_rubric_version_edit_suppresses_stale_item_dialog_request(monkeypatch):
+    table_key = "rubric_table"
+    selected_key = "rubric_selected"
+    session_state = {
+        table_key: {
+            "selection": {
+                "rows": [0],
+                "columns": [],
+                "cells": [[2, "평가 항목"]],
+            }
+        },
+        selected_key: "interpreter",
+        f"{selected_key}_suppress_detail_dialog_once": True,
+        f"{selected_key}_detail_dialog_request": "interpreter",
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", session_state)
+
+    voc_quality_view._sync_rubric_item_selection(
+        table_key,
+        selected_key,
+        ["interpreter", "retriever", "improver"],
+    )
+
+    assert session_state[selected_key] == "interpreter"
+    assert f"{selected_key}_detail_dialog_request" in session_state
+
+
 def test_rubric_criterion_labels_and_weight_chart_are_bilingual_and_emphasized():
     assert voc_quality_view._rubric_criterion_label("recall") == "검색 재현율 (recall)"
     assert (
