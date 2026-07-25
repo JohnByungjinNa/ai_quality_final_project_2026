@@ -5149,14 +5149,14 @@ def _render_rubric_total_summary(draft: dict, spec: dict):
     st.markdown(
         f"""
         <div style="
-            display:flex;flex-direction:column;align-items:flex-end;justify-content:center;
+            display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:3px;
             min-width:190px;max-width:260px;padding:5px 9px;border:1px solid {border};
-            border-radius:10px;background:{background};box-sizing:border-box;line-height:1.25;
+            border-radius:10px;background:{background};box-sizing:border-box;line-height:1.2;
         ">
-            <div style="font-size:12px;font-weight:850;color:{accent};white-space:nowrap;">
+            <div style="display:block;font-size:12px;font-weight:850;color:{accent};white-space:nowrap;">
                 {escape(first_line)}
             </div>
-            <div style="font-size:10px;font-weight:700;color:{accent};opacity:.82;white-space:nowrap;margin-top:2px;">
+            <div style="display:block;font-size:10px;font-weight:700;color:{accent};opacity:.82;white-space:nowrap;">
                 {escape(second_line)}
             </div>
         </div>
