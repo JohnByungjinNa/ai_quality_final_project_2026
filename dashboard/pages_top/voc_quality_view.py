@@ -4492,6 +4492,43 @@ def _rubric_signature(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _rubric_save_state_pill(label: str, *, tone: str) -> str:
+    colors = {
+        "red": ("#b42318", "#fff1f0", "#f2b8b5"),
+        "gray": ("#617083", "#f3f6fa", "#d8e1eb"),
+    }
+    color, background, border = colors.get(tone, colors["gray"])
+    return (
+        "<div style=\""
+        "display:inline-flex;align-items:center;justify-content:center;"
+        "height:27px;min-width:74px;padding:0 10px;border-radius:999px;"
+        f"border:1px solid {border};background:{background};color:{color};"
+        "font-size:12px;font-weight:800;line-height:1;white-space:nowrap;"
+        "box-sizing:border-box;max-width:100%;overflow:hidden;text-overflow:ellipsis;"
+        f"\">{escape(label)}</div>"
+    )
+
+
+def _highlight_rubric_version_input(rubric_type: str) -> None:
+    widget_class = f"st-key-rubric_edit_{rubric_type}_widget_version"
+    st.markdown(
+        f"""
+        <style>
+        .{widget_class} input {{
+            border-color:#d83f36!important;
+            box-shadow:0 0 0 2px rgba(216,63,54,.14)!important;
+            background:#fffafa!important;
+        }}
+        .{widget_class} label p {{
+            color:#b42318!important;
+            font-weight:800!important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _ordered_decision_rows(decisions: list[dict], spec: dict) -> list[dict]:
     """Return decision bands from the highest score to the lowest score."""
     min_key = spec["decision_min_key"]
@@ -5255,19 +5292,21 @@ def _render_rubric_management(stage: str):
         )
         has_rubric_changes = draft_signature != payload_signature
         needs_version_change = has_rubric_changes and draft.get("version", "") == original_version
+        if needs_version_change:
+            _highlight_rubric_version_input(rubric_type)
         with save_col:
             if needs_version_change:
-                st.markdown(":red-badge[변경발생]")
+                st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
                 st.caption("Rubric 버전을 변경해야 저장할 수 있습니다.")
             elif has_rubric_changes:
-                st.markdown(":red-badge[변경발생]")
+                st.markdown(_rubric_save_state_pill("변경발생", tone="red"), unsafe_allow_html=True)
             elif (
                 st.session_state.get(f"voc_rubric_last_save_message_{rubric_type}") == "변경완료"
                 and saved_signature == draft_signature
             ):
-                st.markdown(":gray-badge[변경완료]")
+                st.markdown(_rubric_save_state_pill("변경완료", tone="gray"), unsafe_allow_html=True)
             else:
-                st.markdown(":gray-badge[변경없음]")
+                st.markdown(_rubric_save_state_pill("변경없음", tone="gray"), unsafe_allow_html=True)
             if st.button(
                 "평가 기준 저장",
                 type="primary",
