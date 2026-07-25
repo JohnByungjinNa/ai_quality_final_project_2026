@@ -1953,6 +1953,23 @@ def render_agents():
         .vqa-agent-icon svg{width:100%;height:auto}
         .vqa-agent-head b{display:block;color:#173f68;font-size:11px;line-height:1.2}
         .vqa-agent-head small{display:block;margin-top:2px;color:#718096;font-size:8px;line-height:1.15}
+        div[class*="st-key-stop_agent_"] button{
+            background:#d83f36!important;border-color:#d83f36!important;color:#fff!important;
+        }
+        div[class*="st-key-start_agent_"] button{
+            background:#155a96!important;border-color:#155a96!important;color:#fff!important;
+        }
+        div[class*="st-key-cleanup_agent_"] button{
+            background:#b36a08!important;border-color:#b36a08!important;color:#fff!important;
+        }
+        div[class*="st-key-stop_agent_"] button p,
+        div[class*="st-key-start_agent_"] button p,
+        div[class*="st-key-cleanup_agent_"] button p{
+            color:#fff!important;font-weight:800!important;white-space:nowrap!important;
+        }
+        div[class*="st-key-agent_control_header_"] [data-testid="column"]:nth-child(2) button{
+            min-height:30px!important;padding:4px 8px!important;font-size:12px!important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1995,7 +2012,44 @@ def render_agents():
     agent_columns = st.columns(6, gap="small")
     for index, agent in enumerate(snapshot["agents"]):
         with agent_columns[index].container(border=True):
-            st.markdown(_agent_management_card_header(agent), unsafe_allow_html=True)
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+                key=f"agent_control_header_{agent['key']}",
+            ):
+                st.markdown(_agent_management_card_header(agent), unsafe_allow_html=True)
+                if agent["status"] == "RUNNING":
+                    if st.button(
+                        "중지",
+                        key=f"stop_agent_{agent['key']}",
+                        icon=":material/stop_circle:",
+                        width="content",
+                    ):
+                        _confirm_agent_action(agent, "stop")
+                elif agent["status"] in {"STOPPED", "UNKNOWN"}:
+                    if st.button(
+                        "시작",
+                        key=f"start_agent_{agent['key']}",
+                        icon=":material/play_circle:",
+                        width="content",
+                    ):
+                        _confirm_agent_action(agent, "start")
+                elif agent["status"] == "STARTING/FAILED":
+                    if st.button(
+                        "정리",
+                        key=f"cleanup_agent_{agent['key']}",
+                        icon=":material/cleaning_services:",
+                        width="content",
+                    ):
+                        _confirm_agent_action(agent, "stop")
+                else:
+                    st.button(
+                        "제어 불가",
+                        key=f"unmanaged_agent_{agent['key']}",
+                        disabled=True,
+                        width="content",
+                    )
             _status_badge(
                 agent["status"],
                 "PASS" if agent["healthy"] else "FAIL",
@@ -2015,39 +2069,6 @@ def render_agents():
                 st.caption("기동 시간 · -")
             if agent["status"] == "STOPPED":
                 st.markdown(f":red-badge[중지 영향] {stop_impacts[agent['key']]}")
-
-            if agent["status"] == "RUNNING":
-                if st.button(
-                    "중지",
-                    key=f"stop_agent_{agent['key']}",
-                    icon=":material/stop_circle:",
-                    width="stretch",
-                ):
-                    _confirm_agent_action(agent, "stop")
-            elif agent["status"] in {"STOPPED", "UNKNOWN"}:
-                if st.button(
-                    "시작",
-                    key=f"start_agent_{agent['key']}",
-                    icon=":material/play_circle:",
-                    type="primary",
-                    width="stretch",
-                ):
-                    _confirm_agent_action(agent, "start")
-            elif agent["status"] == "STARTING/FAILED":
-                if st.button(
-                    "실패 프로세스 정리",
-                    key=f"cleanup_agent_{agent['key']}",
-                    icon=":material/cleaning_services:",
-                    width="stretch",
-                ):
-                    _confirm_agent_action(agent, "stop")
-            else:
-                st.button(
-                    "외부 프로세스 · 제어 불가",
-                    key=f"unmanaged_agent_{agent['key']}",
-                    disabled=True,
-                    width="stretch",
-                )
 
             test_result_key = f"agent_quick_test_result_{agent['key']}"
             if st.button(
