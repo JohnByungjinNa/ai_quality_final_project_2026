@@ -3957,7 +3957,7 @@ def _build_testcase_group_chart(group_rows: pd.DataFrame) -> alt.Chart:
                 alt.Tooltip("Case 수:Q", title="Case 수", format="d"),
             ],
         )
-        .properties(height=138)
+        .properties(height=120)
         .configure_view(strokeWidth=0)
     )
 
@@ -3995,7 +3995,7 @@ def render_testcases():
         """
         <style>
         .st-key-voc_testcase_metrics [data-testid="stMetric"]{
-            height:96px!important;min-height:96px!important;padding:8px 10px!important;
+            height:86px!important;min-height:86px!important;padding:7px 9px!important;
         }
         .st-key-voc_testcase_metrics [data-testid="stMetricLabel"] p{
             font-size:.72rem!important;line-height:1.2!important;
@@ -4030,7 +4030,7 @@ def render_testcases():
     )
     with overview_columns[0].container(
         border=True,
-            height=210,
+            height=190,
         key="voc_testcase_metrics",
     ):
         with st.container(
@@ -4095,7 +4095,7 @@ def render_testcases():
     )
     with overview_columns[1].container(
         border=True,
-            height=210,
+            height=190,
         key="voc_testcase_group_chart",
     ):
         st.markdown("#### :material/bar_chart: 검증 영역별 Case 구성")
@@ -4104,7 +4104,7 @@ def render_testcases():
     browser_columns = st.columns([0.5, 1.1, 1], gap="small", vertical_alignment="top")
     with browser_columns[0].container(
         border=True,
-        height=410,
+        height=380,
         key="voc_testcase_search",
     ):
         st.markdown("#### :material/search: Case 탐색")
@@ -4163,7 +4163,7 @@ def render_testcases():
 
     with browser_columns[1].container(
         border=True,
-        height=410,
+        height=380,
         key="voc_testcase_browser",
     ):
         st.markdown("#### :material/list_alt: Case 목록")
@@ -4180,7 +4180,7 @@ def render_testcases():
             pd.DataFrame(rows),
             hide_index=True,
             width="stretch",
-            height=300,
+            height=270,
             on_select=(
                 partial(
                     _remember_catalog_case_selection,
@@ -4214,7 +4214,7 @@ def render_testcases():
         selected_rows = [default_index]
     with browser_columns[2].container(
         border=True,
-        height=410,
+        height=380,
         key="voc_testcase_detail",
     ):
         st.markdown("#### :material/description: Case 상세")
