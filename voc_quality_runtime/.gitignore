@@ -1,0 +1,7 @@
+.env
+.runtime/
+.venv/
+__pycache__/
+*.py[cod]
+quality_diagnosis/Reports/**
+!quality_diagnosis/Reports/README.md

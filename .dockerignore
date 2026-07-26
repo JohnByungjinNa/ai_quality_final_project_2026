@@ -1,0 +1,14 @@
+.git
+.pytest_tmp
+__pycache__/
+*.pyc
+*.pyo
+.coverage*
+.env
+.venv/
+venv/
+data/lock
+reports/formal_reports/
+reports/test_*.pdf
+reports/test_*.docx
+reports/test_*.html
