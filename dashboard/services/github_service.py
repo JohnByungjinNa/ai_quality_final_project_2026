@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -221,7 +222,7 @@ def collect_git_environment(project_dir=PROJECT_DIR):
     return snapshot
 
 
-def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
+def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80, refresh_remote=True):
     snapshot = collect_git_environment(project_dir)
     project_dir = Path(project_dir)
     repository_root = Path(snapshot["repository_root"] or project_dir)
@@ -241,6 +242,7 @@ def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
             "readme_path": "",
             "latest_commit": {},
             "ahead_behind": {"ahead": 0, "behind": 0, "label": ""},
+            "remote_refresh": {"ok": None, "message": "origin 미확인", "detail": ""},
             "is_github_remote": is_github_remote_url(snapshot["remote_url"]),
         }
     )
@@ -253,6 +255,9 @@ def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
 
     if not snapshot["git_installed"] or not snapshot["is_repository"]:
         return snapshot
+
+    if refresh_remote and snapshot["remote_url"]:
+        snapshot["remote_refresh"] = refresh_origin_reference(project_dir)
 
     snapshot["branches"] = _output_lines(
         run_git(["branch", "--format=%(refname:short)"], project_dir=project_dir)
@@ -274,6 +279,18 @@ def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
     snapshot["latest_commit"] = latest_commit(project_dir)
     snapshot["ahead_behind"] = collect_ahead_behind(project_dir, snapshot["branch"])
     return snapshot
+
+
+def refresh_origin_reference(project_dir=PROJECT_DIR, *, timeout=20):
+    remote_url = _config_value(["remote", "get-url", "origin"], project_dir)
+    if not remote_url:
+        return {"ok": False, "message": "origin 원격 저장소가 없습니다.", "detail": ""}
+    result = run_git(["fetch", "origin", "--prune"], project_dir=project_dir, timeout=timeout)
+    return {
+        "ok": result["ok"],
+        "message": "GitHub 최신 기준을 확인했습니다." if result["ok"] else "GitHub 최신 기준 확인에 실패했습니다.",
+        "detail": result["stderr"] or result["stdout"],
+    }
 
 
 def collect_repository_tree_entries(
@@ -659,26 +676,30 @@ def latest_commit(project_dir=PROJECT_DIR):
 
 def collect_ahead_behind(project_dir, branch):
     if not branch:
-        return {"ahead": 0, "behind": 0, "label": ""}
-    upstream = run_git(
-        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        project_dir=project_dir,
-        timeout=5,
-    )
-    if not upstream["ok"] or not upstream["stdout"]:
-        return {"ahead": 0, "behind": 0, "label": "upstream 미설정"}
+        return {"ahead": 0, "behind": 0, "label": "", "state": "no_branch"}
+    upstream_label = upstream_reference(project_dir, branch)
+    if not upstream_label:
+        return {"ahead": 0, "behind": 0, "label": "원격 기준 없음", "state": "no_upstream"}
     counts = run_git(
-        ["rev-list", "--left-right", "--count", f"{upstream['stdout']}...HEAD"],
+        ["rev-list", "--left-right", "--count", f"{upstream_label}...HEAD"],
         project_dir=project_dir,
         timeout=10,
     )
     if not counts["ok"] or not counts["stdout"]:
-        return {"ahead": 0, "behind": 0, "label": upstream["stdout"]}
+        return {"ahead": 0, "behind": 0, "label": upstream_label, "state": "unknown"}
     try:
         behind, ahead = [int(part) for part in counts["stdout"].split()]
     except (TypeError, ValueError):
         ahead, behind = 0, 0
-    return {"ahead": ahead, "behind": behind, "label": upstream["stdout"]}
+    if ahead > 0 and behind > 0:
+        state = "diverged"
+    elif ahead > 0:
+        state = "local_ahead"
+    elif behind > 0:
+        state = "remote_ahead"
+    else:
+        state = "synced"
+    return {"ahead": ahead, "behind": behind, "label": upstream_label, "state": state}
 
 
 def create_commit(message, project_dir=PROJECT_DIR):
@@ -722,8 +743,35 @@ def fetch_origin(project_dir=PROJECT_DIR):
 
 
 def pull_current_branch(project_dir=PROJECT_DIR):
+    snapshot = collect_git_environment(project_dir)
+    if not snapshot["branch"]:
+        return {"ok": False, "message": "현재 브랜치를 확인할 수 없습니다.", "detail": ""}
+    refresh = refresh_origin_reference(project_dir)
+    if not refresh["ok"]:
+        return {"ok": False, "message": refresh["message"], "detail": refresh.get("detail", "")}
+    sync = collect_ahead_behind(project_dir, snapshot["branch"])
+    if sync["state"] == "diverged":
+        return {
+            "ok": False,
+            "message": "로컬과 GitHub 이력이 갈라져 자동 다운로드를 중단했습니다.",
+            "detail": (
+                f"{sync['label']} 기준 GitHub에만 {sync['behind']}개, "
+                f"로컬에만 {sync['ahead']}개 커밋이 있습니다. "
+                "충돌 가능성이 있어 rebase/merge 방향을 먼저 결정해야 합니다."
+            ),
+        }
+    if sync["state"] == "local_ahead":
+        return {
+            "ok": True,
+            "message": "GitHub에서 내려받을 새 커밋은 없습니다. 로컬 커밋을 Push하면 됩니다.",
+            "detail": f"{sync['label']} 기준 로컬에만 {sync['ahead']}개 커밋이 있습니다.",
+        }
+    pull_target = [sync["label"]] if sync["label"].startswith("origin/") else []
+    pull_args = ["pull", "--ff-only"]
+    if pull_target:
+        pull_args = ["pull", "--ff-only", "origin", snapshot["branch"]]
     return _git_action_message(
-        run_git(["pull", "--ff-only"], project_dir=project_dir, timeout=60),
+        run_git(pull_args, project_dir=project_dir, timeout=60),
         success="현재 브랜치를 fast-forward 방식으로 갱신했습니다.",
         failure="pull에 실패했습니다. 로컬 변경 또는 원격 이력을 확인하세요.",
     )
@@ -733,6 +781,28 @@ def push_current_branch(project_dir=PROJECT_DIR):
     snapshot = collect_git_environment(project_dir)
     if not snapshot["branch"]:
         return {"ok": False, "message": "현재 브랜치를 확인할 수 없습니다.", "detail": ""}
+    refresh = refresh_origin_reference(project_dir)
+    if not refresh["ok"]:
+        return {"ok": False, "message": refresh["message"], "detail": refresh.get("detail", "")}
+    sync = collect_ahead_behind(project_dir, snapshot["branch"])
+    if sync["state"] == "diverged":
+        return {
+            "ok": False,
+            "message": "로컬과 GitHub 이력이 갈라져 Push를 중단했습니다.",
+            "detail": (
+                f"{sync['label']} 기준 GitHub에만 {sync['behind']}개, "
+                f"로컬에만 {sync['ahead']}개 커밋이 있습니다. "
+                "먼저 GitHub 변경을 통합한 뒤 Push해야 합니다."
+            ),
+        }
+    if sync["state"] == "remote_ahead":
+        return {
+            "ok": False,
+            "message": "GitHub에 로컬에 없는 커밋이 있어 Push를 중단했습니다.",
+            "detail": f"먼저 Git 다운로드로 {sync['behind']}개 원격 커밋을 적용한 뒤 다시 Push하세요.",
+        }
+    if sync["state"] == "synced" and not snapshot["changed_files"]:
+        return {"ok": True, "message": "Push할 새 커밋이 없습니다.", "detail": ""}
     result = run_git(
         ["push", "-u", "origin", snapshot["branch"]],
         project_dir=project_dir,
@@ -745,6 +815,123 @@ def push_current_branch(project_dir=PROJECT_DIR):
     )
 
 
+def create_sync_backup_branch(project_dir=PROJECT_DIR):
+    snapshot = collect_git_environment(project_dir)
+    if not snapshot["git_installed"]:
+        return {"ok": False, "message": "Git이 설치되어 있지 않습니다.", "detail": ""}
+    if not snapshot["is_repository"]:
+        return {"ok": False, "message": "현재 폴더가 Git 저장소가 아닙니다.", "detail": ""}
+    if snapshot["changed_files"]:
+        return {
+            "ok": False,
+            "message": "커밋되지 않은 변경사항이 있어 백업 브랜치 생성을 중단했습니다.",
+            "detail": "먼저 Git 저장 또는 Commit으로 현재 변경사항을 커밋한 뒤 다시 실행하세요.",
+        }
+    branch_name = f"backup/github-sync-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    result = run_git(["branch", branch_name, "HEAD"], project_dir=project_dir, timeout=10)
+    return {
+        "ok": result["ok"],
+        "message": (
+            f"안전 백업 브랜치를 생성했습니다: {branch_name}"
+            if result["ok"]
+            else "안전 백업 브랜치 생성에 실패했습니다."
+        ),
+        "detail": result["stderr"] or result["stdout"],
+        "branch": branch_name if result["ok"] else "",
+    }
+
+
+def merge_origin_into_current_branch(project_dir=PROJECT_DIR):
+    snapshot = collect_git_environment(project_dir)
+    if not snapshot["git_installed"]:
+        return {"ok": False, "message": "Git이 설치되어 있지 않습니다.", "detail": ""}
+    if not snapshot["is_repository"]:
+        return {"ok": False, "message": "현재 폴더가 Git 저장소가 아닙니다.", "detail": ""}
+    if not snapshot["branch"]:
+        return {"ok": False, "message": "현재 브랜치를 확인할 수 없습니다.", "detail": ""}
+    if snapshot["changed_files"]:
+        return {
+            "ok": False,
+            "message": "커밋되지 않은 변경사항이 있어 GitHub 통합을 중단했습니다.",
+            "detail": "먼저 Git 저장 또는 Commit으로 현재 변경사항을 커밋한 뒤 다시 실행하세요.",
+        }
+    refresh = refresh_origin_reference(project_dir)
+    if not refresh["ok"]:
+        return {"ok": False, "message": refresh["message"], "detail": refresh.get("detail", "")}
+
+    sync = collect_ahead_behind(project_dir, snapshot["branch"])
+    target = sync.get("label") or ""
+    if not target or sync.get("state") in {"no_branch", "no_upstream", "unknown"}:
+        return {
+            "ok": False,
+            "message": "통합할 GitHub 기준 브랜치를 확인할 수 없습니다.",
+            "detail": f"현재 기준: {target or '-'}",
+        }
+    if sync["state"] == "synced":
+        return {"ok": True, "message": "이미 GitHub 기준과 동기화되어 있습니다.", "detail": ""}
+    if sync["state"] == "local_ahead":
+        return {
+            "ok": True,
+            "message": "GitHub에서 통합할 새 커밋은 없습니다. Push 단계로 진행할 수 있습니다.",
+            "detail": f"{target} 기준 로컬에만 {sync['ahead']}개 커밋이 있습니다.",
+        }
+    if sync["state"] == "remote_ahead":
+        result = run_git(["merge", "--ff-only", target], project_dir=project_dir, timeout=90)
+        return _git_action_message(
+            result,
+            success=f"{target}의 변경사항을 fast-forward로 적용했습니다.",
+            failure="GitHub 변경사항 적용에 실패했습니다. 로컬 상태와 충돌 여부를 확인하세요.",
+        )
+
+    result = run_git(
+        ["merge", "--no-ff", target, "-m", f"Merge {target} before GitHub sync"],
+        project_dir=project_dir,
+        timeout=120,
+    )
+    return _git_action_message(
+        result,
+        success=f"{target}의 변경사항을 로컬 브랜치에 통합했습니다.",
+        failure="GitHub 변경사항 통합 중 충돌이 발생했습니다. 충돌 파일을 확인하고 수동으로 정리해야 합니다.",
+    )
+
+
+def run_github_sync_validation(project_dir=PROJECT_DIR):
+    checks = [
+        (
+            "Python 문법 검증",
+            [
+                sys.executable,
+                "-m",
+                "py_compile",
+                "dashboard/services/github_service.py",
+                "dashboard/pages_top/github_view.py",
+                "dashboard/navigation.py",
+            ],
+            30,
+        ),
+        (
+            "GitHub 관리 테스트",
+            [sys.executable, "-m", "pytest", "tests/test_github_management.py", "-q"],
+            120,
+        ),
+    ]
+    details = []
+    for label, command, timeout in checks:
+        result = _run_project_process(command, project_dir=project_dir, timeout=timeout)
+        details.append(f"[{label}] {'성공' if result['ok'] else '실패'}\n{result['detail']}".strip())
+        if not result["ok"]:
+            return {
+                "ok": False,
+                "message": f"{label}에 실패했습니다.",
+                "detail": "\n\n".join(details),
+            }
+    return {
+        "ok": True,
+        "message": "GitHub 동기화 전 검증을 통과했습니다.",
+        "detail": "\n\n".join(details),
+    }
+
+
 def save_project_to_github(message, project_dir=PROJECT_DIR):
     snapshot = collect_repository_home(project_dir)
     if not snapshot["git_installed"]:
@@ -755,6 +942,26 @@ def save_project_to_github(message, project_dir=PROJECT_DIR):
         return {"ok": False, "message": "origin 원격 저장소가 등록되어 있지 않습니다.", "detail": ""}
 
     details = []
+    sync = snapshot.get("ahead_behind", {})
+    if sync.get("state") == "diverged":
+        return {
+            "ok": False,
+            "message": "로컬과 GitHub 이력이 갈라져 자동 저장을 중단했습니다.",
+            "detail": (
+                f"{sync.get('label', 'origin')} 기준 GitHub에만 {sync.get('behind', 0)}개, "
+                f"로컬에만 {sync.get('ahead', 0)}개 커밋이 있습니다. "
+                "이 상태에서는 어떤 이력을 우선할지 결정해야 하므로 화면에서 바로 push하지 않습니다."
+            ),
+        }
+    if sync.get("state") == "remote_ahead":
+        return {
+            "ok": False,
+            "message": "GitHub에 먼저 내려받아야 할 커밋이 있습니다.",
+            "detail": (
+                f"{sync.get('label', 'origin')} 기준 GitHub에만 {sync.get('behind', 0)}개 커밋이 있습니다. "
+                "먼저 Git 다운로드를 실행한 뒤 다시 Git 저장을 진행하세요."
+            ),
+        }
     if snapshot["changed_files"]:
         commit_result = create_commit(message, project_dir=project_dir)
         details.append(f"[commit] {commit_result['message']}\n{commit_result.get('detail', '')}".strip())
@@ -1086,6 +1293,26 @@ def _output_lines(result):
     if not result["ok"] or not result["stdout"]:
         return []
     return [line for line in result["stdout"].splitlines() if line.strip()]
+
+
+def _run_project_process(command, *, project_dir=PROJECT_DIR, timeout=60):
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "utf-8"
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(project_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "detail": str(exc)}
+    detail = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+    return {"ok": completed.returncode == 0, "detail": detail}
 
 
 def _step_result(label, result):

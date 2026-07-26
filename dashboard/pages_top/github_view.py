@@ -9,16 +9,19 @@ from services.github_service import (
     build_project_source_archive,
     collect_git_environment,
     collect_repository_home,
+    create_sync_backup_branch,
     clone_repository,
     configure_repository,
     create_branch,
     create_commit,
     download_project_from_github,
     fetch_origin,
+    merge_origin_into_current_branch,
     pull_current_branch,
     push_current_branch,
     readiness_checks,
     run_git,
+    run_github_sync_validation,
     save_project_to_github,
     verify_remote_connection,
 )
@@ -588,20 +591,35 @@ def _render_project_sync_panel(snapshot):
     ready = snapshot.get("git_installed") and snapshot.get("is_repository")
     remote_ready = ready and bool(snapshot.get("remote_url"))
     branch = snapshot.get("branch") or "main"
+    sync = snapshot.get("ahead_behind") or {}
+    sync_label, sync_badge = _project_sync_state(sync)
+    remote_refresh = snapshot.get("remote_refresh") or {}
+    remote_note = (
+        "GitHub 기준 확인 완료"
+        if remote_refresh.get("ok") is True
+        else "GitHub 기준 확인 필요"
+        if remote_refresh.get("ok") is False
+        else "GitHub 기준 미확인"
+    )
     default_message = "Save project snapshot from GitHub management"
     st.session_state.setdefault("github_project_commit_message", default_message)
 
     with st.container(border=True):
-        header_col, status_col = st.columns([1.5, 1.0], gap="small", vertical_alignment="center")
+        header_col, status_col = st.columns([1.35, 1.15], gap="small", vertical_alignment="center")
         with header_col:
             st.markdown("##### :material/sync: 프로젝트 저장·다운로드")
             st.caption("현재 개발 프로젝트의 GitHub 저장, GitHub 다운로드, 소스 ZIP 다운로드를 한 곳에서 수행합니다.")
         with status_col:
             st.markdown(
                 f"""
-                :blue-badge[{branch}] :orange-badge[변경 {changed_count}개]
+                :blue-badge[{branch}] :{sync_badge}-badge[{sync_label}]
+                :orange-badge[변경 {changed_count}개]
                 {' :green-badge[origin 연결]' if remote_ready else ' :red-badge[origin 확인 필요]'}
                 """
+            )
+            st.caption(
+                f"{remote_note} · GitHub에만 {sync.get('behind', 0)}개 · "
+                f"로컬에만 {sync.get('ahead', 0)}개 · 기준 {sync.get('label') or '-'}"
             )
 
         commit_message = st.text_input(
@@ -621,7 +639,7 @@ def _render_project_sync_panel(snapshot):
                 type="primary",
                 width="stretch",
                 disabled=not remote_ready,
-                help="현재 프로젝트 변경사항 전체를 commit 후 push합니다.",
+                help="현재 프로젝트 변경사항 전체를 commit 후 push합니다. 이력이 갈라진 경우에는 자동 저장을 중단합니다.",
             ):
                 _run_and_rerun(lambda: save_project_to_github(commit_message))
         with download_col:
@@ -673,6 +691,110 @@ def _render_project_sync_panel(snapshot):
         if not remote_ready:
             st.caption("Git 저장/다운로드를 사용하려면 GitHub 관리 > 환경 설정에서 origin 원격 저장소를 먼저 등록하세요.")
         st.caption("ZIP에는 .env, secrets, .git, .venv, 캐시, 실행 로그 폴더를 포함하지 않습니다.")
+        _render_safe_sync_wizard(snapshot, remote_ready=remote_ready, changed_count=changed_count)
+
+
+def _project_sync_state(sync):
+    state = (sync or {}).get("state")
+    ahead = int((sync or {}).get("ahead") or 0)
+    behind = int((sync or {}).get("behind") or 0)
+    if state == "diverged":
+        return f"이력 갈라짐 · GitHub {behind} / 로컬 {ahead}", "red"
+    if state == "local_ahead":
+        return f"Push 필요 · {ahead}개", "orange"
+    if state == "remote_ahead":
+        return f"다운로드 필요 · {behind}개", "orange"
+    if state == "synced":
+        return "동기화 완료", "green"
+    if state == "no_upstream":
+        return "원격 기준 없음", "red"
+    return "상태 확인 필요", "gray"
+
+
+def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
+    sync = snapshot.get("ahead_behind") or {}
+    state = sync.get("state")
+    if not remote_ready:
+        return
+
+    expanded = state in {"diverged", "remote_ahead"}
+    with st.expander("안전 동기화 가이드", expanded=expanded):
+        st.caption(
+            "GitHub와 로컬 이력이 다를 때 백업 → GitHub 변경 통합 → 검증 → Push 순서로 진행합니다. "
+            "각 단계는 버튼을 눌러 하나씩 실행됩니다."
+        )
+        step_cols = st.columns(4, gap="small")
+        steps = [
+            ("1", "백업", "현재 커밋을 백업 브랜치로 보존"),
+            ("2", "통합", "GitHub 기준 커밋을 로컬에 적용"),
+            ("3", "검증", "문법과 GitHub 관리 테스트 실행"),
+            ("4", "Push", "검증된 로컬 커밋을 GitHub에 반영"),
+        ]
+        for column, (number, title, desc) in zip(step_cols, steps):
+            with column:
+                st.markdown(f"**{number}. {title}**")
+                st.caption(desc)
+
+        if state == "diverged":
+            st.warning(
+                f"현재 이력이 갈라져 있습니다. GitHub에만 {sync.get('behind', 0)}개, "
+                f"로컬에만 {sync.get('ahead', 0)}개 커밋이 있습니다.",
+                icon=":material/warning:",
+            )
+        elif state == "remote_ahead":
+            st.info(
+                f"GitHub에만 {sync.get('behind', 0)}개 커밋이 있습니다. 먼저 통합 단계가 필요합니다.",
+                icon=":material/download:",
+            )
+        elif state == "local_ahead":
+            st.info(
+                f"로컬에만 {sync.get('ahead', 0)}개 커밋이 있습니다. 검증 후 Push할 수 있습니다.",
+                icon=":material/upload:",
+            )
+        elif state == "synced" and changed_count == 0:
+            st.success("현재 GitHub 기준과 동기화되어 있습니다.", icon=":material/check_circle:")
+
+        if changed_count:
+            st.caption("커밋되지 않은 변경사항이 있으면 먼저 Git 저장 또는 Commit을 실행해야 백업·통합을 진행할 수 있습니다.")
+
+        action_cols = st.columns(4, gap="small")
+        with action_cols[0]:
+            if st.button(
+                "백업 브랜치 생성",
+                icon=":material/account_tree:",
+                width="stretch",
+                disabled=changed_count > 0,
+                key="github_safe_backup_branch",
+            ):
+                _run_and_rerun(create_sync_backup_branch)
+        with action_cols[1]:
+            if st.button(
+                "GitHub 변경 통합",
+                icon=":material/merge_type:",
+                width="stretch",
+                disabled=changed_count > 0 or state in {"synced", "local_ahead"},
+                key="github_safe_merge_origin",
+            ):
+                _run_and_rerun(merge_origin_into_current_branch)
+        with action_cols[2]:
+            if st.button(
+                "검증 실행",
+                icon=":material/rule:",
+                width="stretch",
+                disabled=changed_count > 0,
+                key="github_safe_validation",
+            ):
+                _run_and_rerun(run_github_sync_validation)
+        with action_cols[3]:
+            if st.button(
+                "안전 Push",
+                icon=":material/upload:",
+                type="primary",
+                width="stretch",
+                disabled=changed_count > 0 or state in {"diverged", "remote_ahead", "no_upstream", "unknown"},
+                key="github_safe_push",
+            ):
+                _run_and_rerun(push_current_branch)
 
 
 def _render_git_command_guide(snapshot):

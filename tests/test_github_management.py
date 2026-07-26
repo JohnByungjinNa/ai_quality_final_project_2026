@@ -7,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 from dashboard.services.github_service import (
     build_project_source_archive,
     clone_repository,
+    collect_ahead_behind,
     collect_repository_home,
     collect_git_environment,
     configure_repository,
@@ -184,6 +185,65 @@ def test_save_project_to_github_commits_and_pushes_to_origin(tmp_path):
         text=True,
     )
     assert "Initial save" in log.stdout
+
+
+def test_ahead_behind_falls_back_to_origin_branch_without_upstream(tmp_path):
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "테스트 사용자"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, check=True)
+    (repo / "README.md").write_text("# Demo\n", encoding="utf-8")
+    assert save_project_to_github("Initial save", project_dir=repo)["ok"] is True
+    subprocess.run(["git", "branch", "--unset-upstream", "main"], cwd=repo, check=True)
+    (repo / "README.md").write_text("# Demo\n\nLocal update\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Local only"], cwd=repo, check=True, capture_output=True)
+
+    sync = collect_ahead_behind(repo, "main")
+
+    assert sync["label"] == "origin/main"
+    assert sync["ahead"] == 1
+    assert sync["behind"] == 0
+    assert sync["state"] == "local_ahead"
+
+
+def test_save_project_to_github_blocks_diverged_history(tmp_path):
+    remote = tmp_path / "remote.git"
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "테스트 사용자"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=source, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
+    (source / "README.md").write_text("# Demo\n", encoding="utf-8")
+    assert save_project_to_github("Initial save", project_dir=source)["ok"] is True
+    subprocess.run(["git", "clone", "--branch", "main", str(remote), str(work)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "테스트 사용자"], cwd=work, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=work, check=True)
+
+    (source / "remote.txt").write_text("remote\n", encoding="utf-8")
+    assert save_project_to_github("Remote update", project_dir=source)["ok"] is True
+    (work / "local.txt").write_text("local\n", encoding="utf-8")
+    subprocess.run(["git", "add", "local.txt"], cwd=work, check=True)
+    subprocess.run(["git", "commit", "-m", "Local update"], cwd=work, check=True, capture_output=True)
+
+    result = save_project_to_github("Should not push", project_dir=work)
+
+    assert result["ok"] is False
+    assert "이력이 갈라져" in result["message"]
+    remote_log = subprocess.run(
+        ["git", "--git-dir", str(remote), "log", "--oneline", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Local update" not in remote_log.stdout
 
 
 def test_download_project_from_github_pulls_remote_changes(tmp_path):
