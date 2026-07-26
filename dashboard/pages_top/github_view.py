@@ -311,7 +311,6 @@ def _render_code_tab(snapshot):
     with left:
         _render_code_toolbar(snapshot)
         _render_file_browser(snapshot)
-        _render_readme(snapshot)
     with right:
         _render_about_sidebar(snapshot)
 
@@ -399,19 +398,6 @@ def _sync_badge_class(status):
         "원격 기준 없음": "muted",
         "기록 없음": "muted",
     }.get(status, "muted")
-
-
-def _render_readme(snapshot):
-    readme_text = snapshot.get("readme_text") or ""
-    if not readme_text:
-        return
-    st.markdown(
-        f"""
-        <div class="gh-readme-title">📘 {html.escape(snapshot.get('readme_path') or 'README.md')}</div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(readme_text[:7000])
 
 
 def _render_about_sidebar(snapshot):
@@ -521,25 +507,25 @@ def _render_actions_tab(snapshot):
             "Fetch는 원격 정보만 가져오고, Get/Pull은 원격 변경을 현재 브랜치에 적용합니다. "
             "Push는 로컬 커밋을 GitHub에 올립니다."
         )
-        action_cols = st.columns([0.75, 0.95, 0.95, 0.95, 1.25, 1.05], gap="small")
+        action_cols = st.columns([0.9, 1.1, 1.1, 1.1, 1.35, 1.1], gap="small")
         with action_cols[0]:
             if st.button("새로고침", width="stretch", icon=":material/refresh:"):
                 st.rerun()
         with action_cols[1]:
             if st.button("Get 정보", width="stretch", icon=":material/cloud_download:", disabled=not snapshot["remote_url"]):
-                _run_and_rerun(fetch_origin)
+                _run_and_rerun(fetch_origin, "GitHub 최신 정보를 가져오는 중입니다...")
         with action_cols[2]:
             if st.button("Get 적용", width="stretch", icon=":material/download:", disabled=not snapshot["remote_url"]):
-                _run_and_rerun(pull_current_branch)
+                _run_and_rerun(pull_current_branch, "GitHub 변경사항을 현재 프로젝트에 적용하는 중입니다...")
         with action_cols[3]:
             if st.button("Push하기", width="stretch", icon=":material/upload:", disabled=not snapshot["remote_url"]):
-                _run_and_rerun(push_current_branch)
+                _run_and_rerun(push_current_branch, "로컬 커밋을 GitHub에 Push하는 중입니다...")
         with action_cols[4]:
             if st.button("GitHub 연결 확인", width="stretch", icon=":material/cloud_sync:", disabled=not snapshot["remote_url"]):
-                _run_and_rerun(verify_remote_connection)
+                _run_and_rerun(verify_remote_connection, "GitHub 연결을 확인하는 중입니다...")
         with action_cols[5]:
             if st.button("화면 테스트", width="stretch", icon=":material/check_circle:"):
-                _run_and_rerun(_run_local_pytest)
+                _run_and_rerun(_run_local_pytest, "GitHub 관리 화면 테스트를 실행하는 중입니다...")
 
     with st.container(border=True):
         st.markdown("##### :material/save: 변경사항 커밋")
@@ -562,7 +548,7 @@ def _render_actions_tab(snapshot):
                 width="stretch",
                 disabled=not snapshot["changed_files"],
             ):
-                _run_and_rerun(lambda: create_commit(message))
+                _run_and_rerun(lambda: create_commit(message), "변경사항을 커밋하는 중입니다...")
 
     with st.container(border=True):
         st.markdown("##### :material/account_tree: 브랜치 생성")
@@ -577,7 +563,7 @@ def _render_actions_tab(snapshot):
             )
         with branch_cols[1]:
             if st.button("Create", width="stretch"):
-                _run_and_rerun(lambda: create_branch(branch_name))
+                _run_and_rerun(lambda: create_branch(branch_name), "새 브랜치를 생성하는 중입니다...")
 
     _render_clone_section(snapshot)
 
@@ -641,7 +627,10 @@ def _render_project_sync_panel(snapshot):
                 disabled=not remote_ready,
                 help="현재 프로젝트 변경사항 전체를 commit 후 push합니다. 이력이 갈라진 경우에는 자동 저장을 중단합니다.",
             ):
-                _run_and_rerun(lambda: save_project_to_github(commit_message))
+                _run_and_rerun(
+                    lambda: save_project_to_github(commit_message),
+                    "Git 저장을 수행하는 중입니다...",
+                )
         with download_col:
             if st.button(
                 "Git 다운로드",
@@ -650,7 +639,7 @@ def _render_project_sync_panel(snapshot):
                 disabled=not remote_ready,
                 help="GitHub의 최신 변경사항을 현재 프로젝트 폴더에 pull합니다.",
             ):
-                _run_and_rerun(download_project_from_github)
+                _run_and_rerun(download_project_from_github, "Git 다운로드를 수행하는 중입니다...")
         with zip_col:
             if st.button(
                 "ZIP 준비",
@@ -659,7 +648,16 @@ def _render_project_sync_panel(snapshot):
                 disabled=not ready,
                 help="현재 프로젝트 소스 ZIP 파일을 준비합니다.",
             ):
-                archive_result = build_project_source_archive()
+                with st.status("프로젝트 ZIP 파일을 준비하는 중입니다...", expanded=True) as status:
+                    archive_result = build_project_source_archive()
+                    status.update(
+                        label=(
+                            "프로젝트 ZIP 파일 준비가 완료되었습니다."
+                            if archive_result["ok"]
+                            else "프로젝트 ZIP 파일 준비에 실패했습니다."
+                        ),
+                        state="complete" if archive_result["ok"] else "error",
+                    )
                 st.session_state.github_project_archive = archive_result
                 st.session_state.github_action_result = {
                     "ok": archive_result["ok"],
@@ -717,8 +715,7 @@ def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
     if not remote_ready:
         return
 
-    expanded = state in {"diverged", "remote_ahead"}
-    with st.expander("안전 동기화 가이드", expanded=expanded):
+    with st.expander("안전 동기화 가이드", expanded=True):
         st.caption(
             "GitHub와 로컬 이력이 다를 때 백업 → GitHub 변경 통합 → 검증 → Push 순서로 진행합니다. "
             "각 단계는 버튼을 눌러 하나씩 실행됩니다."
@@ -766,7 +763,7 @@ def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
                 disabled=changed_count > 0,
                 key="github_safe_backup_branch",
             ):
-                _run_and_rerun(create_sync_backup_branch)
+                _run_and_rerun(create_sync_backup_branch, "안전 백업 브랜치를 생성하는 중입니다...")
         with action_cols[1]:
             if st.button(
                 "GitHub 변경 통합",
@@ -775,7 +772,7 @@ def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
                 disabled=changed_count > 0 or state in {"synced", "local_ahead"},
                 key="github_safe_merge_origin",
             ):
-                _run_and_rerun(merge_origin_into_current_branch)
+                _run_and_rerun(merge_origin_into_current_branch, "GitHub 변경사항을 통합하는 중입니다...")
         with action_cols[2]:
             if st.button(
                 "검증 실행",
@@ -784,7 +781,7 @@ def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
                 disabled=changed_count > 0,
                 key="github_safe_validation",
             ):
-                _run_and_rerun(run_github_sync_validation)
+                _run_and_rerun(run_github_sync_validation, "동기화 전 검증을 실행하는 중입니다...")
         with action_cols[3]:
             if st.button(
                 "안전 Push",
@@ -794,7 +791,7 @@ def _render_safe_sync_wizard(snapshot, *, remote_ready, changed_count):
                 disabled=changed_count > 0 or state in {"diverged", "remote_ahead", "no_upstream", "unknown"},
                 key="github_safe_push",
             ):
-                _run_and_rerun(push_current_branch)
+                _run_and_rerun(push_current_branch, "검증된 커밋을 GitHub에 Push하는 중입니다...")
 
 
 def _render_git_command_guide(snapshot):
@@ -838,25 +835,15 @@ def _render_git_command_guide(snapshot):
             "desc": "GitHub 저장소를 다른 폴더에 새로 복제합니다. 현재 프로젝트 내부에는 중첩 저장소가 생기지 않도록 차단합니다.",
         },
     ]
-    html_cards = []
-    for card in cards:
-        html_cards.append(
-            f"""
-            <div class="gh-command-card">
-                <div class="gh-command-title">
-                    <span class="gh-command-symbol">{html.escape(card['icon'])}</span>
-                    <span>{html.escape(card['title'])}</span>
-                    <span class="gh-command-state">{html.escape(card['state'])}</span>
-                </div>
-                <code>{html.escape(card['command'])}</code>
-                <p>{html.escape(card['desc'])}</p>
-            </div>
-            """
-        )
-    st.markdown(
-        f"<div class='gh-command-grid'>{''.join(html_cards)}</div>",
-        unsafe_allow_html=True,
-    )
+    for start in range(0, len(cards), 3):
+        row_cards = cards[start : start + 3]
+        columns = st.columns(len(row_cards), gap="small")
+        for column, card in zip(columns, row_cards):
+            with column.container(border=True, height=178):
+                st.markdown(f"##### {card['icon']} {card['title']}")
+                st.markdown(f":blue-badge[{card['state']}]")
+                st.write(card["desc"])
+                st.caption(f"실행 명령 · {card['command']}")
 
 
 def _render_clone_section(snapshot):
@@ -960,9 +947,14 @@ def _render_insights_tab(snapshot):
             )
 
 
-def _run_and_rerun(handler):
-    with st.spinner("Git 작업을 수행하는 중입니다..."):
-        st.session_state.github_action_result = handler()
+def _run_and_rerun(handler, label="Git 작업을 수행하는 중입니다..."):
+    with st.status(label, expanded=True) as status:
+        result = handler()
+        status.update(
+            label=result["message"],
+            state="complete" if result.get("ok") else "error",
+        )
+        st.session_state.github_action_result = result
     st.rerun()
 
 
@@ -1198,15 +1190,6 @@ def _render_github_css():
             font-size:12px;
             margin-right:6px;
         }
-        .gh-readme-title {
-            border:1px solid #d0d7de;
-            border-bottom:0;
-            border-radius:8px 8px 0 0;
-            padding:12px 14px;
-            margin-top:16px;
-            font-weight:700;
-            background:#f6f8fa;
-        }
         .gh-side-card {
             border:1px solid #d0d7de;
             border-radius:10px;
@@ -1248,79 +1231,6 @@ def _render_github_css():
             color:#57606a;
             font-size:12px;
             font-weight:700;
-        }
-        .gh-command-grid {
-            display:grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap:10px;
-            margin:8px 0 14px;
-        }
-        .gh-command-card {
-            border:1px solid #d0d7de;
-            border-radius:10px;
-            background:#ffffff;
-            padding:12px;
-            min-height:150px;
-            box-shadow:0 1px 2px rgba(31, 35, 40, 0.04);
-        }
-        .gh-command-title {
-            display:flex;
-            align-items:center;
-            gap:7px;
-            font-weight:800;
-            color:#24292f;
-            margin-bottom:7px;
-        }
-        .gh-command-symbol {
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            width:22px;
-            height:22px;
-            border-radius:50%;
-            background:#ddf4ff;
-            color:#0969da;
-            font-weight:900;
-        }
-        .gh-command-state {
-            margin-left:auto;
-            background:#f6f8fa;
-            border:1px solid #d8dee4;
-            border-radius:999px;
-            color:#57606a;
-            font-size:11px;
-            padding:2px 7px;
-            white-space:nowrap;
-        }
-        .gh-command-card code {
-            display:block;
-            width:100%;
-            overflow:hidden;
-            text-overflow:ellipsis;
-            white-space:nowrap;
-            border-radius:6px;
-            background:#f6f8fa;
-            border:1px solid #d8dee4;
-            padding:6px 7px;
-            color:#24292f;
-            font-size:11px;
-            margin-bottom:8px;
-        }
-        .gh-command-card p {
-            margin:0;
-            color:#57606a;
-            line-height:1.45;
-            font-size:12px;
-        }
-        @media (max-width: 1400px) {
-            .gh-command-grid {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-            }
-        }
-        @media (max-width: 900px) {
-            .gh-command-grid {
-                grid-template-columns: 1fr;
-            }
         }
         div[data-testid="stRadio"] > label {
             display:none;
