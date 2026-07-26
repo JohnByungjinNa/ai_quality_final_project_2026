@@ -30,6 +30,13 @@ EXCLUDED_LANGUAGE_DIRS = {
     "htmlcov",
     "node_modules",
 }
+EXCLUDED_TREE_DIRS = EXCLUDED_LANGUAGE_DIRS | {
+    "RubricHistory",
+}
+EXCLUDED_TREE_PREFIXES = (
+    "voc_quality_runtime/Runs/",
+    "voc_quality_runtime/quality_diagnosis/RubricHistory/",
+)
 EXCLUDED_LANGUAGE_FILE_PARTS = {
     "voc_quality_runtime\\Runs",
     "voc_quality_runtime/Runs",
@@ -226,6 +233,7 @@ def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
             "branches": [],
             "tags": [],
             "file_entries": [],
+            "tree_entries": [],
             "status_entries": [],
             "contributors": [],
             "language_stats": [],
@@ -254,12 +262,221 @@ def collect_repository_home(project_dir=PROJECT_DIR, *, max_files=80):
     )
     snapshot["status_entries"] = parse_status_entries(snapshot["changed_files"])
     snapshot["file_entries"] = collect_root_file_entries(repository_root, max_files=max_files)
+    snapshot["tree_entries"] = collect_repository_tree_entries(
+        repository_root,
+        project_dir=project_dir,
+        max_entries=220,
+        max_depth=4,
+    )
     snapshot["contributors"] = collect_contributors(project_dir)
     snapshot["language_stats"] = collect_language_stats(repository_root)
     snapshot["readme_path"], snapshot["readme_text"] = read_readme(repository_root)
     snapshot["latest_commit"] = latest_commit(project_dir)
     snapshot["ahead_behind"] = collect_ahead_behind(project_dir, snapshot["branch"])
     return snapshot
+
+
+def collect_repository_tree_entries(
+    repository_root,
+    *,
+    project_dir=PROJECT_DIR,
+    max_entries=220,
+    max_depth=4,
+):
+    root = Path(repository_root)
+    if not root.exists():
+        return []
+
+    status_map = repository_status_map(project_dir)
+    tracked_paths = set(_output_lines(run_git(["ls-files"], project_dir=project_dir, timeout=10)))
+    all_paths = set(tracked_paths) | set(status_map)
+    directories = set()
+    normalized_paths = set()
+
+    for raw_path in all_paths:
+        normalized = raw_path.replace("\\", "/").strip("/")
+        if not normalized or _is_tree_excluded(normalized):
+            continue
+        parts = normalized.split("/")
+        if len(parts) > max_depth:
+            continue
+        normalized_paths.add(normalized)
+        for depth in range(1, len(parts)):
+            directories.add("/".join(parts[:depth]))
+
+    rows = []
+    unpushed_commits = collect_unpushed_commit_hashes(project_dir)
+    upstream_ready = upstream_reference(project_dir)
+    tree_paths = sorted(directories | normalized_paths, key=_tree_sort_key)
+    latest_by_path = collect_latest_commits_for_tree_paths(project_dir, tree_paths)
+    for path in tree_paths:
+        item_path = root / Path(path)
+        is_dir = path in directories
+        if not item_path.exists() and path not in status_map:
+            continue
+        if len(rows) >= max_entries:
+            break
+        latest = latest_by_path.get(path, {})
+        status_code = _aggregate_tree_status(path, status_map) if is_dir else status_map.get(path, "")
+        sync_status = sync_status_for_path(
+            status_code,
+            latest.get("hash", ""),
+            unpushed_commits,
+            upstream_ready=upstream_ready,
+        )
+        rows.append(
+            {
+                "type": "dir" if is_dir else "file",
+                "level": path.count("/"),
+                "name": path.split("/")[-1],
+                "display_name": f"{'　' * path.count('/')} {'📁' if is_dir else '📄'} {path.split('/')[-1]}",
+                "path": path,
+                "status_code": status_code,
+                "worktree_status": status_label(status_code) if status_code else "변경 없음",
+                "sync_status": sync_status,
+                "sync_time": sync_time_label(sync_status, latest),
+                "commit_message": latest.get("message") or "커밋 기록 없음",
+                "commit_age": latest.get("age") or "-",
+                "commit_hash": latest.get("short_hash") or "",
+            }
+        )
+    return rows
+
+
+def repository_status_map(project_dir=PROJECT_DIR):
+    status_entries = parse_status_entries(
+        _output_lines(run_git(["status", "--short", "--untracked-files=all"], project_dir=project_dir))
+    )
+    return {entry["path"].replace("\\", "/"): entry["status"] for entry in status_entries}
+
+
+def upstream_reference(project_dir=PROJECT_DIR, branch=None):
+    upstream = run_git(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        project_dir=project_dir,
+        timeout=5,
+    )
+    if upstream["ok"] and upstream["stdout"]:
+        return upstream["stdout"]
+    current_branch = branch or _config_value(["branch", "--show-current"], project_dir)
+    if not current_branch:
+        return ""
+    origin_branch = f"origin/{current_branch}"
+    origin_check = run_git(
+        ["rev-parse", "--verify", "--quiet", origin_branch],
+        project_dir=project_dir,
+        timeout=5,
+    )
+    return origin_branch if origin_check["ok"] else ""
+
+
+def collect_unpushed_commit_hashes(project_dir=PROJECT_DIR):
+    upstream = upstream_reference(project_dir)
+    if not upstream:
+        return set()
+    result = run_git(["rev-list", f"{upstream}..HEAD"], project_dir=project_dir, timeout=10)
+    return set(_output_lines(result))
+
+
+def latest_commit_for_path(project_dir, path):
+    result = run_git(
+        ["log", "-1", "--pretty=format:%H|%h|%ci|%cr|%s", "--", path],
+        project_dir=project_dir,
+        timeout=8,
+    )
+    if not result["ok"] or not result["stdout"]:
+        return {}
+    parts = result["stdout"].split("|", 4)
+    if len(parts) != 5:
+        return {}
+    return {
+        "hash": parts[0],
+        "short_hash": parts[1],
+        "committed_at": parts[2],
+        "age": parts[3],
+        "message": parts[4],
+    }
+
+
+def collect_latest_commits_for_tree_paths(project_dir, tree_paths, *, max_commits=250):
+    requested = set(tree_paths)
+    if not requested:
+        return {}
+    result = run_git(
+        [
+            "log",
+            f"--max-count={max_commits}",
+            "--name-only",
+            "--pretty=format:__COMMIT__%H|%h|%ci|%cr|%s",
+        ],
+        project_dir=project_dir,
+        timeout=15,
+    )
+    if not result["ok"] or not result["stdout"]:
+        return {}
+
+    latest_by_path = {}
+    current_commit = {}
+    for raw_line in result["stdout"].splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("__COMMIT__"):
+            parts = line.removeprefix("__COMMIT__").split("|", 4)
+            if len(parts) == 5:
+                current_commit = {
+                    "hash": parts[0],
+                    "short_hash": parts[1],
+                    "committed_at": parts[2],
+                    "age": parts[3],
+                    "message": parts[4],
+                }
+            continue
+        if not current_commit:
+            continue
+        normalized = line.replace("\\", "/")
+        candidates = [normalized]
+        path_parts = normalized.split("/")
+        candidates.extend("/".join(path_parts[:depth]) for depth in range(1, len(path_parts)))
+        for candidate in candidates:
+            if candidate in requested and candidate not in latest_by_path:
+                latest_by_path[candidate] = current_commit
+        if len(latest_by_path) >= len(requested):
+            break
+    return latest_by_path
+
+
+def sync_status_for_path(status_code, commit_hash, unpushed_commits, *, upstream_ready):
+    code = str(status_code or "")
+    if "?" in code:
+        return "추가 필요"
+    if "D" in code:
+        return "삭제 미반영"
+    if any(flag in code for flag in ("M", "A", "R", "C")):
+        return "로컬 변경"
+    if not commit_hash:
+        return "기록 없음"
+    if not upstream_ready:
+        return "원격 기준 없음"
+    if commit_hash in unpushed_commits:
+        return "Push 필요"
+    return "GitHub 반영"
+
+
+def sync_time_label(sync_status, latest):
+    if not latest:
+        return "-"
+    age = latest.get("age") or "-"
+    committed_at = latest.get("committed_at") or ""
+    if sync_status == "GitHub 반영":
+        return f"{age}"
+    if sync_status == "Push 필요":
+        return f"로컬 커밋 {age}"
+    if sync_status in {"로컬 변경", "삭제 미반영"}:
+        return f"이전 반영 {age}"
+    if sync_status == "원격 기준 없음":
+        return f"커밋 {age}"
+    return committed_at[:19] if committed_at else "-"
 
 
 def parse_github_remote(remote_url):
@@ -905,6 +1122,36 @@ def _should_exclude_from_archive(relative_text, filename):
         "voc_quality_runtime/quality_diagnosis/RubricHistory/",
     )
     return any(normalized.startswith(prefix) for prefix in excluded_prefixes)
+
+
+def _is_tree_excluded(relative_text):
+    normalized = relative_text.replace("\\", "/")
+    parts = normalized.split("/")
+    if any(part in EXCLUDED_TREE_DIRS for part in parts):
+        return True
+    return any(normalized.startswith(prefix) for prefix in EXCLUDED_TREE_PREFIXES)
+
+
+def _tree_sort_key(path):
+    parts = path.split("/")
+    return [(part.lower(), len(parts), part) for part in parts]
+
+
+def _aggregate_tree_status(directory_path, status_map):
+    child_statuses = [
+        status
+        for path, status in status_map.items()
+        if path == directory_path or path.startswith(f"{directory_path}/")
+    ]
+    if not child_statuses:
+        return ""
+    if any("?" in status for status in child_statuses):
+        return "??"
+    if any("D" in status for status in child_statuses):
+        return "D"
+    if any(any(flag in status for flag in ("M", "A", "R", "C")) for status in child_statuses):
+        return "M"
+    return child_statuses[0]
 
 
 def _git_action_message(result, *, success, failure):

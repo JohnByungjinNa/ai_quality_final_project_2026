@@ -336,7 +336,7 @@ def _render_code_toolbar(snapshot):
             label_visibility="collapsed",
         )
     with toolbar_code:
-        with st.popover("Code", use_container_width=True):
+        with st.popover("Code", width="stretch"):
             st.markdown("##### Clone")
             st.code(snapshot["remote_url"] or str(snapshot["repository_root"]), language="text")
             st.caption("GitHub 인증은 토큰을 화면에 저장하지 않고 Git Credential Manager 또는 SSH 설정을 사용합니다.")
@@ -344,7 +344,7 @@ def _render_code_toolbar(snapshot):
 
 def _render_file_browser(snapshot):
     keyword = st.session_state.get("github_file_search", "").strip().lower()
-    entries = snapshot["file_entries"]
+    entries = snapshot.get("tree_entries") or snapshot["file_entries"]
     if keyword:
         entries = [
             entry
@@ -358,25 +358,44 @@ def _render_file_browser(snapshot):
         <div class="gh-file-list">
             <div class="gh-file-head">
                 <div><span class="gh-avatar">J</span> {html.escape(latest.get('author', 'JohnByungjinNa'))}</div>
+                <div class="gh-file-status-head">최종 동기화 적용여부</div>
+                <div class="gh-file-time-head">최종 적용 시간</div>
                 <div class="gh-file-message">{html.escape(latest.get('message', '커밋 기록 없음'))}</div>
-                <div class="gh-file-age">{html.escape(latest.get('age', '-'))}</div>
             </div>
-            {''.join(_file_row(entry) for entry in entries)}
+            {''.join(_tree_row(entry) for entry in entries)}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _file_row(entry):
-    icon = "📁" if entry["type"] == "dir" else "📄"
+def _tree_row(entry):
+    status = entry.get("sync_status", "기록 없음")
+    badge_class = _sync_badge_class(status)
     return f"""
     <div class="gh-file-row">
-        <div class="gh-file-name"><span>{icon}</span> <span>{html.escape(entry['name'])}</span></div>
-        <div class="gh-file-message">{html.escape(entry['commit_message'])}</div>
-        <div class="gh-file-age">{html.escape(entry['age'])}</div>
+        <div class="gh-file-name" title="{html.escape(entry.get('path', ''))}">
+            <span>{html.escape(entry.get('display_name') or entry.get('name', ''))}</span>
+        </div>
+        <div class="gh-file-status"><span class="gh-sync-badge {badge_class}">{html.escape(status)}</span></div>
+        <div class="gh-file-age">{html.escape(entry.get('sync_time') or '-')}</div>
+        <div class="gh-file-message" title="{html.escape(entry.get('path', ''))}">
+            {html.escape(entry.get('commit_message') or '커밋 기록 없음')}
+        </div>
     </div>
     """
+
+
+def _sync_badge_class(status):
+    return {
+        "GitHub 반영": "ok",
+        "Push 필요": "warn",
+        "로컬 변경": "warn",
+        "삭제 미반영": "danger",
+        "추가 필요": "new",
+        "원격 기준 없음": "muted",
+        "기록 없음": "muted",
+    }.get(status, "muted")
 
 
 def _render_readme(snapshot):
@@ -960,11 +979,13 @@ def _render_github_css():
             overflow:hidden;
             margin-top:12px;
             background:#ffffff;
+            max-height:560px;
+            overflow-y:auto;
         }
         .gh-file-head,
         .gh-file-row {
             display:grid;
-            grid-template-columns: 39% 43% 18%;
+            grid-template-columns: 38% 17% 17% 28%;
             align-items:center;
             gap:12px;
             min-height:41px;
@@ -975,6 +996,9 @@ def _render_github_css():
         .gh-file-head {
             background:#f6f8fa;
             font-weight:700;
+            position:sticky;
+            top:0;
+            z-index:1;
         }
         .gh-file-row:last-child {
             border-bottom:0;
@@ -992,10 +1016,53 @@ def _render_github_css():
             text-overflow:ellipsis;
             white-space:nowrap;
         }
+        .gh-file-status,
+        .gh-file-status-head,
+        .gh-file-time-head {
+            color:#57606a;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
         .gh-file-age {
             color:#57606a;
-            text-align:right;
             white-space:nowrap;
+        }
+        .gh-sync-badge {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            border-radius:999px;
+            padding:3px 9px;
+            font-size:12px;
+            font-weight:800;
+            border:1px solid transparent;
+            white-space:nowrap;
+        }
+        .gh-sync-badge.ok {
+            color:#116329;
+            background:#dafbe1;
+            border-color:#aceebb;
+        }
+        .gh-sync-badge.warn {
+            color:#9a6700;
+            background:#fff8c5;
+            border-color:#f0d98c;
+        }
+        .gh-sync-badge.danger {
+            color:#cf222e;
+            background:#ffebe9;
+            border-color:#ffcecb;
+        }
+        .gh-sync-badge.new {
+            color:#0969da;
+            background:#ddf4ff;
+            border-color:#b6e3ff;
+        }
+        .gh-sync-badge.muted {
+            color:#57606a;
+            background:#f6f8fa;
+            border-color:#d8dee4;
         }
         .gh-avatar {
             display:inline-flex;

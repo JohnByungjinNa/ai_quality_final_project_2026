@@ -109,6 +109,28 @@ def test_repository_home_snapshot_collects_github_like_metadata(tmp_path):
     assert any(row["language"] == "Python" for row in snapshot["language_stats"])
 
 
+def test_repository_home_tree_entries_show_sync_status_and_time(tmp_path):
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "테스트 사용자"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, check=True)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("print('synced')\n", encoding="utf-8")
+    assert save_project_to_github("Initial synced tree", project_dir=repo)["ok"] is True
+    (repo / "src" / "local_only.py").write_text("print('local')\n", encoding="utf-8")
+
+    snapshot = collect_repository_home(repo)
+    rows_by_path = {row["path"]: row for row in snapshot["tree_entries"]}
+
+    assert rows_by_path["src/app.py"]["sync_status"] == "GitHub 반영"
+    assert rows_by_path["src/app.py"]["sync_time"] != "-"
+    assert rows_by_path["src/local_only.py"]["sync_status"] == "추가 필요"
+
+
 def test_clone_repository_runs_outside_current_project(tmp_path):
     source = tmp_path / "source"
     clone_target = tmp_path / "source_clone"
@@ -241,6 +263,7 @@ def test_github_repository_status_page_renders():
 
     assert not app.exception
     assert any("Code" in radio.options for radio in app.radio)
+    assert any("최종 동기화 적용여부" in element.value for element in app.markdown)
 
 
 def test_github_project_sync_page_renders():
