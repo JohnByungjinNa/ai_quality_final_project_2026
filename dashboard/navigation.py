@@ -3,7 +3,7 @@ import streamlit as st
 from core.constants import SYSTEM_NAME
 
 
-MENU_OPTIONS = ["종합 현황", "성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "VOC 품질진단"]
+MENU_OPTIONS = ["종합 현황", "성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "GitHub 관리", "VOC 품질진단"]
 # MENU_OPTIONS = ["성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "Docker 관리"]
 
 SIDEBAR_MENU_OPTIONS = {
@@ -12,6 +12,7 @@ SIDEBAR_MENU_OPTIONS = {
     "테스트 관리": ["테스트케이스 업로드", "테스트 케이스 실행", "테스트 수행 이력", "자동 테스트 결과"],
     "지식 파일 관리": ["지식 파일 관리"],
     "Jira관리": ["Jira 등록 현황"],
+    "GitHub 관리": ["저장소 현황", "프로젝트 동기화", "환경 설정"],
     "VOC 품질진단": [
         "Dashboard",
         "Agent 관리",

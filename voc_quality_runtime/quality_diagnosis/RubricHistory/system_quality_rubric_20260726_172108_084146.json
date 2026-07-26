@@ -1,0 +1,130 @@
+{
+  "version": "A2A1.4",
+  "total_points": 100,
+  "scoring_method": "criterion_points",
+  "categories": {
+    "interpreter": {
+      "label": "Interpreter 해석 정확성",
+      "max_points": 12,
+      "criteria": {
+        "intent": 3,
+        "keywords": 3,
+        "search_conditions": 3,
+        "defaults_and_format": 3
+      }
+    },
+    "retriever": {
+      "label": "Retriever 검색 관련성",
+      "max_points": 17,
+      "criteria": {
+        "recall": 6,
+        "precision": 5,
+        "source_preservation": 4,
+        "limit_and_error_handling": 2
+      }
+    },
+    "summarizer": {
+      "label": "Summarizer 사실성·요약성",
+      "max_points": 16,
+      "criteria": {
+        "factual_consistency": 6,
+        "coverage": 5,
+        "deduplication_and_conciseness": 3,
+        "format_and_readability": 2
+      }
+    },
+    "evaluator": {
+      "label": "Evaluator 평가 타당성",
+      "max_points": 11,
+      "criteria": {
+        "criteria_consistency": 2,
+        "winner_correctness": 3,
+        "evidence_validity": 4,
+        "format_and_repeatability": 2
+      }
+    },
+    "critic": {
+      "label": "Critic 위험 탐지력",
+      "max_points": 8,
+      "criteria": {
+        "defect_detection": 1,
+        "risk_detection": 3,
+        "edit_actionability": 2,
+        "false_positive_control": 2
+      }
+    },
+    "improver": {
+      "label": "Improver 실행 가능성",
+      "max_points": 15,
+      "criteria": {
+        "voc_grounding": 4,
+        "specificity": 3,
+        "feasibility": 3,
+        "measurability": 3,
+        "priority": 2
+      }
+    },
+    "agent_linkage": {
+      "label": "Agent 연계 품질",
+      "max_points": 11,
+      "criteria": {
+        "trace_completeness": 3,
+        "data_transfer_integrity": 4,
+        "upstream_result_usage": 3,
+        "no_duplicate_calls": 1
+      }
+    },
+    "fault_and_logging": {
+      "label": "장애 대응·로그",
+      "max_points": 5,
+      "criteria": {
+        "explicit_failure_response": 2,
+        "traceable_error_log": 2,
+        "recovery_and_cleanup": 1
+      }
+    },
+    "performance": {
+      "label": "성능",
+      "max_points": 5,
+      "criteria": {
+        "end_to_end_response_time": 3,
+        "timeout_compliance": 1,
+        "per_agent_timing_visibility": 1
+      },
+      "threshold_seconds": {
+        "target": 90,
+        "warning": 120,
+        "critical": 150
+      }
+    }
+  },
+  "deployment_decisions": [
+    {
+      "min": 90,
+      "max": 100,
+      "decision": "배포 가능"
+    },
+    {
+      "min": 80,
+      "max": 89.99,
+      "decision": "조건부 배포 가능 — 개선 후 재검증"
+    },
+    {
+      "min": 70,
+      "max": 79.99,
+      "decision": "주요 개선 필요"
+    },
+    {
+      "min": 0,
+      "max": 69.99,
+      "decision": "배포 보류"
+    }
+  ],
+  "immediate_deployment_hold": [
+    "personal_or_sensitive_data_exposure",
+    "fabricated_policy_or_material_fact",
+    "reported_success_on_failure",
+    "definitive_incorrect_payment_or_refund_guidance"
+  ],
+  "title": "내부 Pipeline 품질 평가 기준"
+}

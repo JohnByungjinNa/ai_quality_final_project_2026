@@ -1,0 +1,87 @@
+{
+  "version": "1.0",
+  "rubric_id": "VOC-IMPROVEMENT-VALIDITY-100",
+  "title": "최종 개선안 타당성 100점 검증 기준",
+  "total_points": 100,
+  "dimensions": {
+    "cause_linkage": {
+      "label": "불만 원인과 개선안 연결",
+      "max_points": 25,
+      "pass_floor": 18,
+      "criteria": {
+        "complaint_to_root_cause": 10,
+        "root_cause_to_action": 10,
+        "expected_customer_impact": 5
+      }
+    },
+    "evidence_traceability": {
+      "label": "VOC·Trace 근거 추적성",
+      "max_points": 20,
+      "pass_floor": 14,
+      "criteria": {
+        "voc_id_reference": 8,
+        "trace_and_agent_reference": 6,
+        "no_unsupported_evidence": 6
+      }
+    },
+    "feasibility": {
+      "label": "업무·기술 실행 가능성",
+      "max_points": 20,
+      "pass_floor": 14,
+      "criteria": {
+        "process_feasibility": 7,
+        "technical_feasibility": 7,
+        "resource_and_dependency_awareness": 6
+      }
+    },
+    "ownership_schedule_kpi": {
+      "label": "담당·일정·KPI 구체성",
+      "max_points": 20,
+      "pass_floor": 14,
+      "criteria": {
+        "responsible_owner": 6,
+        "target_schedule": 5,
+        "measurable_kpi": 6,
+        "priority": 3
+      }
+    },
+    "risk_security_compliance": {
+      "label": "위험·보안·규제 고려",
+      "max_points": 15,
+      "pass_floor": 10,
+      "criteria": {
+        "customer_and_operational_risk": 5,
+        "privacy_and_security": 5,
+        "compliance_and_escalation": 5
+      }
+    }
+  },
+  "automatic_decisions": [
+    {"decision": "AI_PASS", "min_score": 80, "max_score": 100, "requires_all_pass_floors": true},
+    {"decision": "REVISION_REQUIRED", "min_score": 65, "max_score": 79.99, "requires_all_pass_floors": false},
+    {"decision": "REJECTED", "min_score": 0, "max_score": 64.99, "requires_all_pass_floors": false}
+  ],
+  "workflow_states": [
+    "DRAFT",
+    "AI_REVIEWED",
+    "QA_REVIEWED",
+    "BUSINESS_APPROVED",
+    "REVISION_REQUIRED",
+    "REJECTED"
+  ],
+  "formal_approval_rule": "AI_PASS만으로 운영 적용을 승인하지 않는다. QA_REVIEWED와 BUSINESS_APPROVED가 모두 필요하다.",
+  "immediate_hold_rules": [
+    "missing_voc_or_trace_evidence",
+    "unsafe_or_noncompliant_action",
+    "unresolved_high_or_critical_defect",
+    "judge_error_or_not_run",
+    "safety_regression_against_baseline"
+  ],
+  "required_human_review_fields": [
+    "reviewer_role",
+    "reviewer_name_or_id",
+    "reviewed_at",
+    "decision",
+    "comment"
+  ]
+}

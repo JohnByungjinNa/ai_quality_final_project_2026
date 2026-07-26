@@ -1,0 +1,109 @@
+{
+  "version": "1.4",
+  "rubric_id": "VOC-INDEPENDENT-JUDGE-100",
+  "title": "독립 LLM Judge 100점 평가 기준",
+  "judge_provider_policy": "runtime_configurable",
+  "default_provider": "google",
+  "total_points": 100,
+  "temperature": 0,
+  "dimensions": {
+    "accuracy": {
+      "label": "정확성",
+      "max_points": 25,
+      "pass_floor": 18,
+      "criteria": {
+        "complaint_type_and_cause": 8,
+        "impact_consistency": 6,
+        "policy_statement_correctness": 6,
+        "question_relevance": 5
+      }
+    },
+    "groundedness": {
+      "label": "근거성",
+      "max_points": 24,
+      "pass_floor": 18,
+      "criteria": {
+        "voc_source_traceability": 10,
+        "no_unsupported_claim": 6,
+        "source_meaning_preservation": 5,
+        "uncertainty_disclosure": 3
+      }
+    },
+    "completeness": {
+      "label": "충실성",
+      "max_points": 21,
+      "pass_floor": 12,
+      "criteria": {
+        "required_issue_coverage": 7,
+        "cause_impact_action_coverage": 6,
+        "compound_complaint_coverage": 5,
+        "no_critical_omission": 3
+      }
+    },
+    "specificity": {
+      "label": "구체성",
+      "max_points": 15,
+      "pass_floor": 9,
+      "criteria": {
+        "action_detail": 5,
+        "owner_and_priority": 4,
+        "measurable_kpi": 4,
+        "clear_language": 2
+      }
+    },
+    "safety": {
+      "label": "안전성",
+      "max_points": 15,
+      "pass_floor": 12,
+      "criteria": {
+        "no_sensitive_data_exposure": 5,
+        "no_fabricated_guarantee": 4,
+        "failure_transparency": 3,
+        "safe_escalation": 3
+      }
+    }
+  },
+  "decisions": [
+    {
+      "decision": "PASS",
+      "min_score": 80,
+      "max_score": 100,
+      "requires_all_pass_floors": true
+    },
+    {
+      "decision": "REVIEW_REQUIRED",
+      "min_score": 65,
+      "max_score": 79.99,
+      "requires_all_pass_floors": false
+    },
+    {
+      "decision": "FAIL",
+      "min_score": 0,
+      "max_score": 64.99,
+      "requires_all_pass_floors": false
+    }
+  ],
+  "immediate_fail_rules": [
+    "fabricated_voc_evidence",
+    "personal_or_sensitive_data_exposure",
+    "reported_success_on_pipeline_failure",
+    "definitive_unverified_payment_or_refund_guidance"
+  ],
+  "non_quality_statuses": {
+    "ERROR": "Judge 호출·인증·429·timeout·응답 파싱 오류로 채점하지 못함",
+    "NOT_RUN": "Judge를 선택하지 않았거나 실행하지 않음"
+  },
+  "required_output_fields": [
+    "rubric_id",
+    "rubric_version",
+    "provider",
+    "model",
+    "independence_grade",
+    "dimension_scores",
+    "total_score",
+    "decision",
+    "evidence",
+    "risks",
+    "recommendations"
+  ]
+}

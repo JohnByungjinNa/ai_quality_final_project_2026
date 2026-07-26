@@ -1,53 +1,53 @@
 {
-  "version": "1.2",
+  "version": "A2A1.5",
   "total_points": 100,
   "scoring_method": "criterion_points",
   "categories": {
     "interpreter": {
       "label": "Interpreter 해석 정확성",
-      "max_points": 14,
+      "max_points": 12,
       "criteria": {
-        "intent": 4,
-        "keywords": 4,
+        "intent": 3,
+        "keywords": 3,
         "search_conditions": 3,
         "defaults_and_format": 3
       }
     },
     "retriever": {
       "label": "Retriever 검색 관련성",
-      "max_points": 16,
+      "max_points": 19,
       "criteria": {
-        "recall": 6,
+        "recall": 7,
         "precision": 5,
-        "source_preservation": 3,
+        "source_preservation": 5,
         "limit_and_error_handling": 2
       }
     },
     "summarizer": {
       "label": "Summarizer 사실성·요약성",
-      "max_points": 15,
+      "max_points": 16,
       "criteria": {
         "factual_consistency": 6,
-        "coverage": 4,
+        "coverage": 5,
         "deduplication_and_conciseness": 3,
         "format_and_readability": 2
       }
     },
     "evaluator": {
       "label": "Evaluator 평가 타당성",
-      "max_points": 9,
+      "max_points": 10,
       "criteria": {
         "criteria_consistency": 2,
         "winner_correctness": 3,
-        "evidence_validity": 2,
+        "evidence_validity": 3,
         "format_and_repeatability": 2
       }
     },
     "critic": {
       "label": "Critic 위험 탐지력",
-      "max_points": 11,
+      "max_points": 8,
       "criteria": {
-        "defect_detection": 4,
+        "defect_detection": 1,
         "risk_detection": 3,
         "edit_actionability": 2,
         "false_positive_control": 2
@@ -55,9 +55,9 @@
     },
     "improver": {
       "label": "Improver 실행 가능성",
-      "max_points": 15,
+      "max_points": 14,
       "criteria": {
-        "voc_grounding": 4,
+        "voc_grounding": 3,
         "specificity": 3,
         "feasibility": 3,
         "measurability": 3,
@@ -66,10 +66,10 @@
     },
     "agent_linkage": {
       "label": "Agent 연계 품질",
-      "max_points": 10,
+      "max_points": 11,
       "criteria": {
         "trace_completeness": 3,
-        "data_transfer_integrity": 3,
+        "data_transfer_integrity": 4,
         "upstream_result_usage": 3,
         "no_duplicate_calls": 1
       }

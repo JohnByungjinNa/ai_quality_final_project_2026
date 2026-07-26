@@ -154,6 +154,13 @@ def test_validity_human_approval_requires_qa_then_business(monkeypatch, tmp_path
         run["run_id"], "TC-01", {"provider": "anthropic", "model": "validity-model"}
     )
     assert evaluated["validity_result"]["workflow_state"] == "AI_REVIEWED"
+    candidate = next(
+        item for item in voc_quality_service.list_improvement_validity_candidates()
+        if item["run_id"] == run["run_id"] and item["case_id"] == "TC-01"
+    )
+    assert candidate["qa_review_ready"] is True
+    assert candidate["business_review_ready"] is False
+    assert candidate["review_action_label"] == "QA 검토 가능"
 
     with pytest.raises(ValueError, match="QA_REVIEWED"):
         voc_quality_service.review_voc_improvement_validity(
@@ -165,6 +172,13 @@ def test_validity_human_approval_requires_qa_then_business(monkeypatch, tmp_path
         reviewer_name_or_id="demo-reviewer", decision="APPROVE", comment="QA 역할로 근거 확인",
     )
     assert qa["validity_result"]["workflow_state"] == "QA_REVIEWED"
+    candidate = next(
+        item for item in voc_quality_service.list_improvement_validity_candidates()
+        if item["run_id"] == run["run_id"] and item["case_id"] == "TC-01"
+    )
+    assert candidate["qa_review_ready"] is False
+    assert candidate["business_review_ready"] is True
+    assert candidate["review_action_label"] == "업무 승인 가능"
     business = voc_quality_service.review_voc_improvement_validity(
         run["run_id"], "TC-01", reviewer_role="BUSINESS",
         reviewer_name_or_id="demo-reviewer", decision="APPROVE", comment="업무 역할로 운영 적용 승인",
@@ -177,6 +191,56 @@ def test_validity_human_approval_requires_qa_then_business(monkeypatch, tmp_path
     stored = store.load_voc_run(run["run_id"])
     assert stored["summary"]["deployment_decision"] == "FORMAL_QUALITY_APPROVED"
     assert store.verify_run_integrity(run["run_id"])["ok"]
+
+
+def test_validity_supplement_is_saved_and_used_for_auto_evaluation(monkeypatch, tmp_path):
+    store, run = _create_completed_case(monkeypatch, tmp_path)
+    captured = {}
+
+    def fake_validity_evaluator(**kwargs):
+        captured["execution"] = kwargs["execution"]
+        return {
+            "status": "AI_PASS",
+            "decision": "AI_PASS",
+            "workflow_state": "AI_REVIEWED",
+            "formal_approval": False,
+            "dimension_scores": {},
+            "total_score": 91,
+            "all_pass_floors_met": True,
+            "immediate_hold_rules_triggered": [],
+            "evidence": [],
+            "risks": [],
+            "recommendations": [],
+            "attempts": [],
+        }
+
+    monkeypatch.setattr(
+        voc_quality_service.voc_validity_service,
+        "evaluate_improvement_validity",
+        fake_validity_evaluator,
+    )
+    saved = voc_quality_service.save_voc_validity_supplement(
+        run["run_id"],
+        "TC-01",
+        {
+            "owner": "모바일앱개발팀 리드",
+            "schedule": "2026-08-01 착수, 2026-08-15 QA, 2026-08-22 배포",
+            "kpi": "구독 갱신 오류율 2.1%에서 0.5% 이하로 감소",
+        },
+    )
+    assert saved["validity_supplement"]["filled_fields"] == ["owner", "schedule", "kpi"]
+    assert store.load_case_artifacts(run["run_id"], "TC-01")["validity_supplement"]["owner"] == "모바일앱개발팀 리드"
+
+    evaluated = voc_quality_service.evaluate_voc_improvement_validity(
+        run["run_id"], "TC-01", {"provider": "anthropic", "model": "validity-model"}
+    )
+
+    policy = captured["execution"]["result"]["policy"]
+    assert "[사용자 타당성 보완 입력]" in policy
+    assert "모바일앱개발팀 리드" in policy
+    assert captured["execution"]["result"]["validity_supplement_applied"] is True
+    assert evaluated["validity_result"]["supplemental_evidence_applied"] is True
+    assert evaluated["validity_result"]["supplemental_evidence"]["kpi"].startswith("구독 갱신 오류율")
 
 
 def test_validity_rejects_blank_reviewer_and_comment(monkeypatch, tmp_path):
@@ -201,14 +265,20 @@ def test_improvement_validity_page_renders_without_exceptions():
     assert not app.exception
     assert any("검증 대상 선택" in item.value for item in app.markdown)
     assert {metric.label for metric in app.metric}.issuperset(
-        {"전체 대상", "평가 전", "QA 검토 가능", "정식 승인"}
+        {"자동 평가 필요", "보완/RETEST 필요", "QA 검토 가능", "업무 승인 가능", "정식 승인 완료"}
     )
-    assert len(app.dataframe) == 1
+    assert {control.label for control in app.segmented_control}.issuperset({"회차 유형", "평가 상태"})
+    assert not any(selectbox.label in {"회차 유형", "평가 상태"} for selectbox in app.selectbox)
+    assert len(app.dataframe) >= 3
     assert app.dataframe[0].value.columns.tolist() == [
-        "선택", "수행 일시", "Run ID", "Case ID", "유형", "질문", "Judge",
-        "Judge 점수", "타당성", "타당성 점수", "승인 단계", "정식 승인",
+        "수행 일시", "Run ID", "Case ID", "수행 유형", "질문", "독립 평가",
+        "독립 점수", "타당성", "타당 점수", "승인 단계", "다음 조치", "정식 승인",
     ]
-    assert any("선택 대상 · TC-01" in item.value for item in app.markdown)
+    assert any("QA 검토/승인 대기 대상" in item.value for item in app.markdown)
+    assert any("선택 기준 · TC-01" in item.value for item in app.markdown)
+    assert any("평가 항목과 점수 지표" in item.value for item in app.markdown)
+    assert any("자동 평가 수행 절차" in item.value for item in app.markdown)
+    assert any("QA 검토 가능 조건" in item.value for item in app.markdown)
 
     app.toggle[0].set_value(True).run()
     assert not app.exception
@@ -221,12 +291,15 @@ def test_validity_candidate_detail_dialog_renders_execution_evidence():
     app.run()
 
     assert not app.exception
+    import inspect
+    source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)
+    assert '["대상 요약", "A2A 수행 결과", "독립 Judge", "타당성 평가", "QA·승인"]' in source
     assert any("Pipeline 요약" in item.value for item in app.markdown)
     assert any("최종 개선안" in item.value for item in app.markdown)
     assert {metric.label for metric in app.metric}.issuperset(
-        {"Case", "Judge", "타당성", "승인 단계", "Judge 점수", "타당성 점수"}
+        {"Case", "독립 평가", "타당성", "승인 단계", "독립 평가 점수", "타당성 점수"}
     )
-    assert any(button.label == "이 대상으로 검증 진행" for button in app.button)
+    assert not any(button.label == "이 대상으로 검증 진행" for button in app.button)
 
 
 def test_validity_candidate_filter_and_rows_are_list_friendly():
@@ -239,6 +312,18 @@ def test_validity_candidate_filter_and_rows_are_list_friendly():
             "run_id": "RUN-02", "case_id": "TC-02", "question": "결제 실패",
             "run_type": "BATCH", "validity_status": "AI_PASS", "formal_approval": True,
         },
+        {
+            "run_id": "RUN-03", "case_id": "TC-03", "question": "갱신 보완",
+            "run_type": "BATCH", "validity_status": "AI_PASS",
+            "workflow_state": "AI_REVIEWED", "formal_approval": False,
+            "immediate_hold_count": 0,
+        },
+        {
+            "run_id": "RUN-04", "case_id": "TC-04", "question": "업무 승인",
+            "run_type": "BATCH", "validity_status": "AI_PASS",
+            "workflow_state": "QA_REVIEWED", "formal_approval": False,
+            "immediate_hold_count": 0,
+        },
     ]
 
     assert [
@@ -250,10 +335,255 @@ def test_validity_candidate_filter_and_rows_are_list_friendly():
     assert [
         item["case_id"]
         for item in voc_quality_view._filter_validity_candidates(
+            candidates, query="", status_filter="전체", run_type_filter="일괄 수행"
+        )
+    ] == ["TC-02", "TC-03", "TC-04"]
+    assert [
+        item["case_id"]
+        for item in voc_quality_view._filter_validity_candidates(
             candidates, query="", status_filter="정식 승인"
         )
     ] == ["TC-02"]
+    assert [
+        item["case_id"]
+        for item in voc_quality_view._filter_validity_candidates(
+            candidates, query="", status_filter="QA 검토 가능"
+        )
+    ] == ["TC-03"]
+    assert [
+        item["case_id"]
+        for item in voc_quality_view._filter_validity_candidates(
+            candidates, query="", status_filter="업무 승인 가능"
+        )
+    ] == ["TC-04"]
     rows = voc_quality_view._validity_candidate_rows(candidates, "RUN-02::TC-02")
-    assert rows.loc[0, "선택"] == ""
-    assert rows.loc[1, "선택"] == "●"
+    assert "선택" not in rows.columns
     assert rows.loc[1, "정식 승인"] == "승인"
+    assert rows.loc[2, "다음 조치"] == "QA 검토 가능"
+    cards = {card["label"]: card for card in voc_quality_view._validity_focus_cards(candidates)}
+    assert cards["자동 평가 필요"]["value"] == "1건"
+    assert cards["보완/RETEST 필요"]["value"] == "0건"
+    assert cards["QA 검토 가능"]["value"] == "1건"
+    assert cards["업무 승인 가능"]["value"] == "1건"
+    assert cards["정식 승인 완료"]["delta"] == "전체 대비 25%"
+
+
+def test_validity_selection_basis_and_qa_gate_are_explicit():
+    candidate = {
+        "run_id": "RUN-01",
+        "case_id": "TC-01",
+        "started_at": "2026-07-16T12:00:00+09:00",
+        "run_type": "RETEST",
+        "parent_run_id": "RUN-PARENT",
+        "question": "VOC 개선안 재검증",
+        "judge_status": "PASS",
+        "judge_score": 93,
+        "validity_status": "AI_PASS",
+        "validity_score": 91,
+        "workflow_state": "AI_REVIEWED",
+    }
+    artifacts = {
+        "pipeline_result": {
+            "mode": "voc",
+            "execution": {
+                "ok": True,
+                "question": "실행 질문",
+                "result": {"ok": True},
+            },
+        }
+    }
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+        "immediate_hold_rules_triggered": [],
+    }
+
+    basis = voc_quality_view._validity_selection_basis(candidate, artifacts)
+    gate = voc_quality_view._validity_qa_gate_model(candidate, result)
+
+    assert basis["run_type_label"] == "재시험"
+    assert basis["parent_run_id"] == "RUN-PARENT"
+    assert basis["pipeline_success"] is True
+    assert gate["ready"] is True
+    assert gate["summary"] == "QA 검토 가능"
+
+
+def test_validity_qa_gate_blocks_immediate_hold_rules():
+    candidate = {
+        "validity_status": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+    }
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+        "immediate_hold_rules_triggered": ["unresolved_high_or_critical_defect"],
+    }
+
+    gate = voc_quality_view._validity_qa_gate_model(candidate, result)
+
+    assert gate["ready"] is False
+    assert "즉시 보류 규칙" in gate["blocked_reasons"]
+    assert gate["holds"] == ["unresolved_high_or_critical_defect"]
+
+
+def test_validity_approval_workflow_model_moves_from_qa_to_business_approval():
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "QA_REVIEWED",
+        "total_score": 91,
+        "formal_approval": False,
+        "immediate_hold_rules_triggered": [],
+    }
+
+    model = voc_quality_view._validity_approval_workflow_model(result)
+
+    assert model["readiness"]["action"] == "BUSINESS_APPROVAL"
+    assert model["readiness"]["action_label"] == "업무 승인 가능"
+    assert model["readiness"]["deployment_decision"] == "BUSINESS_REVIEW_REQUIRED"
+    assert [stage["label"] for stage in model["stages"]] == [
+        "자동 타당성", "QA 검토", "업무 승인", "최종 배포 판정"
+    ]
+    assert model["stages"][1]["status"] == "완료"
+    assert model["stages"][2]["status"] == "현재 단계"
+
+
+def test_validity_dimension_rows_show_scores_and_korean_criteria():
+    rubric = {
+        "version": "1.0",
+        "dimensions": {
+            "cause_linkage": {
+                "label": "불만 원인과 개선안 연결",
+                "max_points": 20,
+                "pass_floor": 18,
+                "criteria": {
+                    "complaint_to_root_cause": 8,
+                    "root_cause_to_action": 8,
+                    "expected_customer_impact": 4,
+                },
+            }
+        },
+    }
+    result = {
+        "dimension_scores": {
+            "cause_linkage": {
+                "score": 18,
+                "max_points": 20,
+                "reason": "VOC 원인과 개선안이 연결됨",
+            }
+        }
+    }
+
+    rows = voc_quality_view._validity_dimension_rows(rubric, result)
+
+    assert rows.loc[0, "결과 점수"] == 18
+    assert rows.loc[0, "달성률"] == 90
+    assert rows.loc[0, "판정"] == "기준 충족"
+    assert "불만↔근본 원인 8점" in rows.loc[0, "세부 지표"]
+
+
+def test_validity_execution_steps_summarize_per_step_results():
+    candidate = {
+        "run_id": "RUN-01",
+        "case_id": "TC-01",
+        "run_type": "MANUAL",
+        "validity_status": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+    }
+    artifacts = {
+        "pipeline_result": {"mode": "voc", "execution": {"ok": True, "result": {"ok": True}}},
+        "trace": {"trace_id": "trace-1", "events": [{"status": "success"}]},
+        "judge_result": {"decision": "PASS"},
+    }
+    rubric = {
+        "version": "1.0",
+        "dimensions": {
+            "cause_linkage": {"max_points": 20},
+            "feasibility": {"max_points": 80},
+        },
+        "automatic_decisions": [
+            {"decision": "AI_PASS", "min_score": 80, "requires_all_pass_floors": True}
+        ],
+    }
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+        "total_score": 90,
+        "all_pass_floors_met": True,
+        "immediate_hold_rules_triggered": [],
+        "provider": "anthropic",
+        "model": "validity-model",
+        "duration_seconds": 3.2,
+        "attempts": [{"status": "SUCCESS"}],
+    }
+
+    rows = voc_quality_view._validity_execution_step_rows(candidate, artifacts, result, rubric)
+
+    assert rows["수행 절차"].tolist() == [
+        "대상 증적 수집",
+        "보완 입력 반영",
+        "평가 계약 구성",
+        "독립 LLM 평가",
+        "점수·판정 산출",
+        "즉시 보류 규칙 확인",
+        "QA Gate 판정",
+    ]
+    assert rows.iloc[-1]["상태"] == "가능"
+    assert rows.iloc[-1]["절차별 결과"] == "QA 검토 가능"
+
+def test_validity_rework_guide_targets_floor_misses_and_generates_instruction():
+    rubric = {
+        "dimensions": {
+            "cause_linkage": {
+                "label": "불만 원인과 개선안 연결",
+                "max_points": 20,
+                "pass_floor": 18,
+            },
+            "ownership_schedule_kpi": {
+                "label": "담당·일정·KPI",
+                "max_points": 15,
+                "pass_floor": 11,
+            },
+            "risk_security_compliance": {
+                "label": "리스크·보안·법규",
+                "max_points": 25,
+                "pass_floor": 10,
+            },
+        }
+    }
+    result = {
+        "decision": "REVISION_REQUIRED",
+        "workflow_state": "REVISION_REQUIRED",
+        "total_score": 71,
+        "dimension_scores": {
+            "cause_linkage": {"score": 17, "reason": "우선순위 2~4 개선안이 누락됨"},
+            "ownership_schedule_kpi": {"score": 9, "reason": "일정과 KPI가 없음"},
+            "risk_security_compliance": {"score": 24, "reason": "충분함"},
+        },
+        "recommendations": ["VOC ID를 명시하세요."],
+        "immediate_hold_rules_triggered": [],
+    }
+    candidate = {
+        "run_id": "RUN-20260726-112222-362409-7297",
+        "case_id": "TC-01",
+        "question": "보험 갱신 오류",
+    }
+    artifacts = {
+        "pipeline_result": {
+            "execution": {
+                "result": {
+                    "summary": "모바일 갱신 오류 요약",
+                    "policy": "세션 타임아웃 개선",
+                }
+            }
+        }
+    }
+
+    rows = voc_quality_view._validity_rework_items(rubric, result)
+    instruction = voc_quality_view._validity_rework_instruction(candidate, artifacts, result, rubric)
+
+    assert rows["평가 항목"].tolist() == ["불만 원인과 개선안 연결", "담당·일정·KPI"]
+    assert rows.loc[0, "부족 점수"] == 1
+    assert "우선순위 2~4 개선안이 누락됨" in instruction
+    assert "VOC ID" in instruction
+    assert "정량 KPI" in instruction
+    assert "원본 Run" in instruction

@@ -30,6 +30,14 @@ EXPECTED_AGENT_SOURCES = {
     "AG-05": "critic",
     "AG-06": "improver",
 }
+EXPECTED_EXECUTION_TYPES = {
+    "voc_pipeline",
+    "fault_proxy",
+    "isolated_fault",
+    "agent_role_quality",
+    "quality_gate",
+}
+EXPECTED_FAULT_PROXY = {"TC-19": "FT-01", "TC-20": "FT-03"}
 
 
 def load(path: Path) -> dict:
@@ -64,7 +72,8 @@ def validate_catalog() -> dict:
     } == EXPECTED_GROUP_COUNTS
 
     functional_ids = {item["case_id"] for item in cases if item["group"] == "voc_functional"}
-    source_case_ids = {item["case_id"] for item in load(TEST_CASES_FILE)["cases"]}
+    source_cases = {item["case_id"]: item for item in load(TEST_CASES_FILE)["cases"]}
+    source_case_ids = set(source_cases)
     assert functional_ids == source_case_ids == {f"TC-{index:02d}" for index in range(1, 21)}
 
     fault_ids = {item["case_id"] for item in cases if item["group"] == "isolated_fault"}
@@ -74,6 +83,26 @@ def validate_catalog() -> dict:
     for item in cases:
         assert item["implementation_status"] in {"IMPLEMENTED", "DEFINED"}
         assert item["source_ref"] and item["acceptance"]
+        assert item["execution_type"] in EXPECTED_EXECUTION_TYPES
+        assert isinstance(item.get("execution"), dict) and item["execution"]
+        execution = item["execution"]
+        if item["case_id"] in source_cases:
+            assert execution["category"] == source_cases[item["case_id"]]["category"]
+            assert execution.get("expected_system_behavior")
+            if item["case_id"] in EXPECTED_FAULT_PROXY:
+                assert item["execution_type"] == "fault_proxy"
+                assert execution["fault_case_id"] == EXPECTED_FAULT_PROXY[item["case_id"]]
+            else:
+                assert item["execution_type"] == "voc_pipeline"
+                assert execution.get("question")
+                assert execution["expected_task"] in {"summary", "policy", "both"}
+        if item["group"] == "isolated_fault":
+            assert item["execution_type"] == "isolated_fault"
+            assert execution["fault_case_id"] == item["case_id"]
+        if item["group"] == "agent_role":
+            assert item["execution_type"] == "agent_role_quality"
+        if item["group"] == "quality_gate":
+            assert item["execution_type"] == "quality_gate"
         if item["case_id"] in EXPECTED_AGENT_SOURCES:
             assert EXPECTED_AGENT_SOURCES[item["case_id"]] in system_categories
 

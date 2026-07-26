@@ -14,7 +14,7 @@ from pages_top.voc_quality_view import (
 
 
 draft = deepcopy(load_system_rubric())
-draft["categories"]["interpreter"]["criteria"]["intent"] = 3
+draft["categories"]["interpreter"]["criteria"]["intent"] = 2
 _render_rubric_total_summary(
     draft,
     QUALITY_RUBRIC_SPECS["internal_pipeline"],

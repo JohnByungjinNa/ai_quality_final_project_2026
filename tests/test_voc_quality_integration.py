@@ -23,9 +23,12 @@ from dashboard.services.voc_quality_service import (
     load_quality_evidence_contract,
     load_quality_test_catalog,
     load_system_rubric,
+    load_test_cases,
+    load_unified_quality_cases,
     parse_agent_status_output,
     runtime_health,
     save_quality_rubric,
+    describe_batch_state_model,
     summarize_a2a_events,
     test_case_summary as get_test_case_summary,
     validate_quality_rubric,
@@ -67,7 +70,12 @@ def test_voc_quality_top_and_sidebar_menu_registered():
 def test_voc_visual_design_metadata_covers_every_page():
     assert set(voc_quality_view.VOC_PAGE_META) == set(voc_quality_view.ROUTES)
     assert all(meta["icon"] for meta in voc_quality_view.VOC_PAGE_META.values())
-    assert all(len(meta["flow"]) == 3 for meta in voc_quality_view.VOC_PAGE_META.values())
+    assert all(len(meta.get("flow", ())) in {0, 3} for meta in voc_quality_view.VOC_PAGE_META.values())
+    assert voc_quality_view.VOC_PAGE_META["수동 TC 수행"]["flow"] == ()
+    assert voc_quality_view.VOC_PAGE_META["일괄 TC 수행"]["flow"] == ()
+    assert voc_quality_view.VOC_PAGE_META["테스트케이스"]["flow"] == ()
+    assert voc_quality_view.VOC_PAGE_META["품질 평가 기준"]["flow"] == ()
+    assert voc_quality_view.VOC_PAGE_META["개선안 타당성 검증"]["flow"] == ()
 
 
 def test_voc_visual_design_shell_renders_header_flow_and_content():
@@ -77,9 +85,9 @@ def test_voc_visual_design_shell_renders_header_flow_and_content():
     assert not app.exception
     markdown = "\n".join(item.value for item in app.markdown)
     assert "품질 평가 기준 수립" in markdown
-    assert ":blue-badge[단계 선택]" in markdown
-    assert ":blue-badge[배점 조정]" in markdown
-    assert ":blue-badge[검증·저장]" in markdown
+    assert ":blue-badge[단계 선택]" not in markdown
+    assert ":blue-badge[배점 조정]" not in markdown
+    assert ":blue-badge[검증·저장]" not in markdown
     assert any(item.label == "평가 총점" for item in app.metric)
     assert any(item.label == "기준명" for item in app.text_input)
 
@@ -89,6 +97,21 @@ def test_voc_history_page_renders_without_exceptions():
     app.run()
 
     assert not app.exception
+    rendered_markdown = "\n".join(item.value for item in app.markdown)
+    rendered_caption = "\n".join(item.value for item in app.caption)
+    assert ":blue-badge[Run 조회]" not in rendered_markdown
+    assert ":blue-badge[결과 비교]" not in rendered_markdown
+    assert ":blue-badge[증적 확인]" not in rendered_markdown
+    assert "통과 Case" in rendered_caption
+    assert "검토 필요 Case" in rendered_caption
+    assert "실패·오류 Case" in rendered_caption
+    assert "Judge 확인 필요" in rendered_caption
+    assert "후속 조치 Run" in rendered_caption
+    history_columns = set(app.dataframe[0].value.columns)
+    assert "선택" not in history_columns
+    assert {"Run ID", "실행 시각", "유형", "상태"}.issubset(history_columns)
+    assert "T" not in str(app.dataframe[0].value["실행 시각"].iloc[0])
+    assert json.loads(app.dataframe[0].proto.selection_default)["selection"]["rows"] == [0]
 
 
 def test_voc_dashboard_renders_operational_quality_summary():
@@ -194,7 +217,12 @@ def test_agent_control_refreshes_after_command_completion(monkeypatch):
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-    state = {}
+    state = {
+        "agent_control_confirm_nonce": 4,
+        "agent_quick_test_result_interpreter": {"ok": True},
+        "agent_quick_test_result_retriever": {"ok": False},
+        "unrelated_state": "keep",
+    }
     spinner_messages = []
     reruns = []
     management_snapshot = Clearable()
@@ -218,6 +246,10 @@ def test_agent_control_refreshes_after_command_completion(monkeypatch):
 
     assert spinner_messages == ["Interpreter 등 6개 Agent 프로세스를 기동하고 있습니다..."]
     assert state["voc_command_result"]["ok"] is True
+    assert state["agent_control_confirm_nonce"] == 5
+    assert "agent_quick_test_result_interpreter" not in state
+    assert "agent_quick_test_result_retriever" not in state
+    assert state["unrelated_state"] == "keep"
     assert management_snapshot.clear_count == 1
     assert monitor_snapshot.clear_count == 1
     assert reruns == [True]
@@ -373,6 +405,56 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
     ]
 
 
+def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monkeypatch):
+    render_order = []
+    state = {
+        "goal_testcase_selected_case_id": "TC-01",
+        "goal_testcase_focus_result": True,
+        "goal_testcase_result": {"case": {"case_id": "TC-01"}},
+    }
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
+    monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_pipeline_comparison",
+        lambda *_args, **_kwargs: render_order.append("pipeline"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_goal_testcase_result",
+        lambda case_id: render_order.append(f"result:{case_id}"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_selected_goal_testcase",
+        lambda: {"case_id": "TC-01"},
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_goal_judge_step",
+        lambda case: render_order.append(f"judge-select:{case['case_id']}"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_goal_judge_result",
+        lambda case_id: render_order.append(f"judge-result:{case_id}"),
+    )
+
+    voc_quality_view.render_goal_monitor()
+
+    assert render_order == [
+        "selector",
+        "pipeline",
+        "result:TC-01",
+        "judge-select:TC-01",
+        "judge-result:TC-01",
+    ]
+
+
 def test_goal_testcase_selector_uses_user_facing_title():
     import inspect
 
@@ -380,10 +462,26 @@ def test_goal_testcase_selector_uses_user_facing_title():
 
     assert 'st.markdown("### Test Case 선택 실행")' in source
     assert "?? ?? ? ? ???? ??" not in source
-    assert 'st.button(\n            "Agent Pipeline ??"' in source
+    assert 'st.button(\n            "Agent Pipeline 실행"' in source
     assert "읽기 전용 목록입니다." not in source
     assert "horizontal=True" in source
     assert 'st.markdown("### test_cases.json 선택 실행")' not in source
+
+
+def test_policy_terms_section_is_split_for_collapsible_rendering():
+    terms, body = voc_quality_view._split_policy_terms_section(
+        "0.용어 정의\n- 청구 진행 상태: 보험금 청구 처리 단계\n1. 앱 표시 개선\n- 진행 상태를 노출합니다."
+    )
+
+    assert "청구 진행 상태" in terms
+    assert "0.용어 정의" not in body
+    assert "1. 앱 표시 개선" in body
+
+
+def test_pipeline_result_message_suppresses_internal_a2a_completion_text():
+    assert voc_quality_view._pipeline_result_message(
+        {"message": "Pipeline completed via agent-to-agent calls"}
+    ) == "VOC 테스트 실행 완료"
 
 
 def test_goal_pipeline_uses_compact_inline_guide():
@@ -403,6 +501,11 @@ def test_manual_result_renders_human_readable_judgment_evidence():
     app.run()
 
     assert not app.exception
+    markdown = "\n".join(item.value for item in app.markdown)
+    success_text = "\n".join(item.value for item in app.success)
+    assert "보험금 청구 진행 상태가 앱에 표시되지 않습니다." in markdown
+    assert "vqa-voc-question-card" in markdown
+    assert "Pipeline completed via agent-to-agent calls" not in success_text
     assert any("판정 근거" in info.value for info in app.info)
     assert any("질문 해석과 검색 범위" in markdown.value for markdown in app.markdown)
     assert any("요약 후보 평가와 선택 근거" in markdown.value for markdown in app.markdown)
@@ -1068,7 +1171,7 @@ def test_manual_pipeline_initializes_selected_case_before_first_button_click(
     monkeypatch.setattr(voc_quality_view.st, "session_state", state)
     monkeypatch.setattr(
         voc_quality_view,
-        "load_test_cases",
+        "load_unified_quality_cases",
         lambda: {"cases": cases},
     )
 
@@ -1086,8 +1189,12 @@ def test_manual_pipeline_first_click_callback_starts_background_job(monkeypatch)
     state = State(
         goal_testcase_result={"stale": True},
         goal_testcase_trace_id="old-trace",
+        goal_testcase_completed_at="2026-07-17T10:00:05+09:00",
+        goal_testcase_preparation={"status": "COMPLETED"},
+        goal_testcase_agent_snapshot={"stale": True},
     )
     captured = {}
+    clear_calls = []
 
     def fake_start_background_job(*args, **kwargs):
         captured["args"] = args
@@ -1100,6 +1207,7 @@ def test_manual_pipeline_first_click_callback_starts_background_job(monkeypatch)
         "start_background_job",
         fake_start_background_job,
     )
+    monkeypatch.setattr(voc_quality_view._load_goal_monitor_snapshot, "clear", lambda: clear_calls.append(True))
 
     voc_quality_view._start_goal_testcase_pipeline("TC-01")
 
@@ -1107,8 +1215,58 @@ def test_manual_pipeline_first_click_callback_starts_background_job(monkeypatch)
     assert state["goal_testcase_running_case_id"] == "TC-01"
     assert "goal_testcase_result" not in state
     assert "goal_testcase_trace_id" not in state
+    assert "goal_testcase_completed_at" not in state
+    assert "goal_testcase_agent_snapshot" not in state
+    assert state["goal_testcase_focus_pipeline_once"] is True
+    assert state["goal_testcase_preparation"]["status"] == "RUNNING"
+    assert state["goal_testcase_preparation"]["steps"][0]["status"] == "active"
+    assert state["goal_testcase_preparation"]["steps"][1]["status"] == "waiting"
     assert captured["args"][:2] == ("manual-pipeline", "TC-01")
     assert captured["kwargs"]["progress"]["preparation"]["status"] == "RUNNING"
+    assert captured["kwargs"]["progress"]["preparation"]["steps"][0]["status"] == "active"
+    assert clear_calls == [True]
+
+
+def test_manual_pipeline_start_callback_requests_full_app_rerun(monkeypatch):
+    calls = []
+    reruns = []
+
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_start_goal_testcase_pipeline",
+        lambda case_id: calls.append(case_id),
+    )
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "rerun",
+        lambda *, scope="app": reruns.append(scope),
+    )
+
+    voc_quality_view._start_goal_testcase_pipeline_and_rerun("TC-01")
+
+    assert calls == ["TC-01"]
+    assert reruns == ["app"]
+
+
+def test_goal_pipeline_focus_anchor_scrolls_once(monkeypatch):
+    state = {"goal_testcase_focus_pipeline_once": True}
+    rendered = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "html",
+        lambda body, **kwargs: rendered.append((body, kwargs)),
+    )
+
+    voc_quality_view._render_goal_pipeline_focus_anchor_once()
+    voc_quality_view._render_goal_pipeline_focus_anchor_once()
+
+    assert len(rendered) == 1
+    assert "goal-pipeline-scroll-anchor" in rendered[0][0]
+    assert "scrollIntoView" in rendered[0][0]
+    assert rendered[0][1]["unsafe_allow_javascript"] is True
+    assert "goal_testcase_focus_pipeline_once" not in state
 
 
 def test_embedded_voc_runtime_is_complete():
@@ -1119,7 +1277,7 @@ def test_embedded_voc_runtime_is_complete():
 
 def test_testcase_distribution_and_rubric_total():
     summary = get_test_case_summary()
-    assert summary["total"] == 20
+    assert summary["total"] == 35
     assert summary["categories"] == {
         "normal_voc": 8,
         "ambiguous_question": 3,
@@ -1127,10 +1285,31 @@ def test_testcase_distribution_and_rubric_total():
         "no_data": 2,
         "typo_or_ungrammatical": 2,
         "fault_condition": 2,
+        "isolated_fault": 6,
+        "agent_role_quality": 6,
+        "quality_gate": 3,
     }
     rubric = load_system_rubric()
     assert rubric["total_points"] == 100
     assert sum(category["max_points"] for category in rubric["categories"].values()) == 100
+
+
+def test_unified_quality_cases_merge_35_catalog_with_legacy_execution_details():
+    legacy = load_test_cases()
+    unified = load_unified_quality_cases()
+    cases = {item["case_id"]: item for item in unified["cases"]}
+
+    assert len(legacy["cases"]) == 20
+    assert len(cases) == 35
+    assert cases["TC-01"]["execution_type"] == "voc_pipeline"
+    assert cases["TC-01"]["question"]
+    assert cases["TC-01"]["execution"]["runner"] == "scripts/run-voc.py"
+    assert cases["TC-19"]["execution_type"] == "fault_proxy"
+    assert cases["TC-19"]["execution"]["fault_case_id"] == "FT-01"
+    assert cases["FT-01"]["execution_type"] == "isolated_fault"
+    assert cases["FT-01"]["execution"]["fault_case_id"] == "FT-01"
+    assert cases["AG-01"]["execution_type"] == "agent_role_quality"
+    assert cases["QG-01"]["execution_type"] == "quality_gate"
 
 
 def test_testcase_page_uses_same_35_case_catalog_as_batch_execution():
@@ -1199,14 +1378,47 @@ def test_testcase_group_chart_hides_validation_area_axis_title():
     assert spec["encoding"]["x"]["title"] is None
 
 
+def test_catalog_upload_error_cards_identify_case_and_field():
+    cards = voc_quality_view._catalog_upload_error_cards([
+        "TC-01: 필수 필드 누락 ['acceptance', 'execution']",
+        "TC-02: execution.expected_task must be summary, policy, or both",
+        "TC-03: name가 필요합니다.",
+        "cases[4]: 객체 형식이어야 합니다.",
+        "total_cases(34)와 cases 건수(35)가 다릅니다.",
+        "JSON 파일을 해석할 수 없습니다: Expecting value",
+    ])
+
+    assert cards[0] == {
+        "case_ref": "TC-01",
+        "field": "acceptance, execution",
+        "message": "필수 필드 누락 ['acceptance', 'execution']",
+    }
+    assert cards[1]["case_ref"] == "TC-02"
+    assert cards[1]["field"] == "execution.expected_task"
+    assert cards[2]["case_ref"] == "TC-03"
+    assert cards[2]["field"] == "name"
+    assert cards[3]["case_ref"] == "cases[4]"
+    assert cards[3]["field"] == "Case 형식"
+    assert cards[4]["case_ref"] == "카탈로그"
+    assert cards[4]["field"] == "cases"
+    assert cards[5]["case_ref"] == "카탈로그"
+    assert cards[5]["field"] == "JSON 형식"
+
+
 def test_quality_catalog_defines_exactly_35_unique_cases():
     catalog = load_quality_test_catalog()
     cases = catalog["cases"]
     case_ids = [item["case_id"] for item in cases]
+    by_id = {item["case_id"]: item for item in cases}
 
+    assert catalog["schema_version"] == "2.0"
     assert catalog["suite_id"] == "VOC-QA-35"
     assert catalog["total_cases"] == len(cases) == 35
     assert len(case_ids) == len(set(case_ids))
+    assert all(item.get("execution_type") and isinstance(item.get("execution"), dict) for item in cases)
+    assert by_id["TC-01"]["execution"]["question"]
+    assert by_id["TC-19"]["execution"]["fault_case_id"] == "FT-01"
+    assert by_id["FT-01"]["execution"]["fault_case_id"] == "FT-01"
     assert catalog["baseline_claim"]["status"] == "PENDING_EVIDENCE"
     assert catalog["baseline_claim"]["expected_summary"] == {
         "total": 35,
@@ -1233,6 +1445,50 @@ def test_judge_validity_and_evidence_contracts_are_consistent():
     assert set(evidence["run_lifecycle_statuses"]) == {
         "RUNNING", "COMPLETED", "ERROR", "INTERRUPTED"
     }
+
+
+def test_validity_candidate_rows_remove_empty_select_column_and_localize_statuses():
+    rows = voc_quality_view._validity_candidate_rows(
+        [
+            {
+                "run_id": "RUN-20260726-000000-000000-abcd",
+                "case_id": "TC-01",
+                "started_at": "2026-07-26T10:00:00+09:00",
+                "run_type": "BATCH",
+                "question": "보험금 청구 진행 상태가 앱에 표시되지 않습니다.",
+                "judge_status": "NOT_RUN",
+                "judge_score": None,
+                "validity_status": "AI_PASS",
+                "validity_score": 88,
+                "workflow_state": "QA_REVIEWED",
+                "formal_approval": False,
+                "review_action_label": "업무 승인 가능",
+            }
+        ],
+        selected_key="RUN-20260726-000000-000000-abcd::TC-01",
+    )
+
+    assert "선택" not in rows.columns
+    assert list(rows.columns) == [
+        "수행 일시",
+        "Run ID",
+        "Case ID",
+        "수행 유형",
+        "질문",
+        "독립 평가",
+        "독립 점수",
+        "타당성",
+        "타당 점수",
+        "승인 단계",
+        "다음 조치",
+        "정식 승인",
+    ]
+    row = rows.iloc[0]
+    assert row["수행 유형"] == "일괄 수행"
+    assert row["독립 평가"] == "미실행"
+    assert row["타당성"] == "AI 통과"
+    assert row["승인 단계"] == "QA 검토 완료"
+    assert row["다음 조치"] == "업무 승인 가능"
 
 
 def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
@@ -1420,14 +1676,14 @@ def test_rubric_detail_dialog_renders_existing_scoring_controls():
     assert any(button.label == "설정 완료" for button in app.button)
     intent = app.slider[0]
     assert intent.label == "의도 파악 (intent)"
-    assert intent.min == 0
-    assert intent.max == 4
+    assert intent.min == 1
+    assert intent.max == 5
 
-    intent.set_value(4).run()
+    intent.set_value(5).run()
 
     assert not app.exception
     draft = app.session_state["rubric_edit_internal_pipeline_draft"]
-    assert draft["categories"]["interpreter"]["criteria"]["intent"] == 4
+    assert draft["categories"]["interpreter"]["criteria"]["intent"] == 5
     assert draft["categories"]["interpreter"]["max_points"] == 14
 
 
@@ -1599,6 +1855,63 @@ def test_rubric_total_summary_only_shows_score_and_adjustment_guidance():
     )
 
 
+def test_rubric_save_control_state_enables_only_valid_versioned_changes():
+    no_change = voc_quality_view._rubric_save_control_state(
+        has_changes=False,
+        needs_version_change=False,
+        validation_errors=[],
+        last_save_message=None,
+        saved_signature=None,
+        draft_signature="same",
+    )
+    saved = voc_quality_view._rubric_save_control_state(
+        has_changes=False,
+        needs_version_change=False,
+        validation_errors=[],
+        last_save_message="변경완료",
+        saved_signature="same",
+        draft_signature="same",
+    )
+    version_missing = voc_quality_view._rubric_save_control_state(
+        has_changes=True,
+        needs_version_change=True,
+        validation_errors=[],
+        last_save_message=None,
+        saved_signature=None,
+        draft_signature="changed",
+    )
+    invalid_total = voc_quality_view._rubric_save_control_state(
+        has_changes=True,
+        needs_version_change=False,
+        validation_errors=["평가 항목 배점 합계는 100이어야 합니다. 현재 합계: 102"],
+        last_save_message=None,
+        saved_signature=None,
+        draft_signature="changed",
+    )
+    valid_change = voc_quality_view._rubric_save_control_state(
+        has_changes=True,
+        needs_version_change=False,
+        validation_errors=[],
+        last_save_message=None,
+        saved_signature=None,
+        draft_signature="changed",
+    )
+
+    assert no_change["label"] == "변경없음"
+    assert no_change["disabled"] is True
+    assert saved["label"] == "변경완료"
+    assert saved["disabled"] is True
+    assert version_missing["label"] == "변경발생"
+    assert version_missing["disabled"] is True
+    assert version_missing["focus_version"] is True
+    assert "Rubric 버전" in version_missing["help"]
+    assert invalid_total["label"] == "변경발생"
+    assert invalid_total["disabled"] is True
+    assert "저장 전 확인 필요" in invalid_total["help"]
+    assert valid_change["label"] == "변경발생"
+    assert valid_change["disabled"] is False
+
+
 def test_rubric_row_selection_resolves_the_clicked_item():
     item_ids = ["interpreter", "retriever", "improver"]
 
@@ -1737,18 +2050,21 @@ def test_rubric_criterion_labels_and_weight_chart_are_bilingual_and_emphasized()
     )
 
 
-def test_rubric_criterion_range_uses_remaining_total_budget():
+def test_rubric_criterion_range_allows_narrow_temporary_budget_variance():
     rubric = deepcopy(load_system_rubric())
     items = rubric["categories"]
 
     assert voc_quality_view._rubric_total(items) == 100
-    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 4)
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (1, 5)
 
-    items["interpreter"]["criteria"]["intent"] = 3
+    items["interpreter"]["criteria"]["intent"] = 2
 
     assert voc_quality_view._rubric_total(items) == 99
     assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 4)
-    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "keywords") == (0, 5)
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "keywords") == (1, 5)
+
+    items["interpreter"]["criteria"]["intent"] = 0
+    assert voc_quality_view._rubric_criterion_range(items, "interpreter", "intent") == (0, 2)
 
 
 def test_batch_progress_dialog_renders_eta_and_thick_progress_bar():
@@ -1762,6 +2078,7 @@ def test_batch_progress_dialog_renders_eta_and_thick_progress_bar():
     assert {metric.label for metric in app.metric}.issuperset(
         {"상태", "예상 진행률", "예상 소요시간", "예상 남은 시간"}
     )
+    assert next(metric.value for metric in app.metric if metric.label == "상태") == "진행 중"
     progress = app.get("progress")
     assert len(progress) == 1
     assert progress[0].value == 50
@@ -1769,6 +2086,307 @@ def test_batch_progress_dialog_renders_eta_and_thick_progress_bar():
     assert "완료 2 / 4건" in progress[0].proto.text
     assert any("stProgress" in item.value and "24px" in item.value for item in app.markdown)
     assert any("닫기" in button.label for button in app.button)
+
+
+def test_batch_case_results_for_display_uses_korean_status_labels():
+    frame = voc_quality_view._batch_case_results_for_display([
+        {
+            "case_id": "TC-01",
+            "status": "NOT_RUN",
+            "mode": "voc",
+            "attempt_count": 0,
+            "judge_status": "ERROR",
+            "judge_score": None,
+            "judge_independence_grade": "-",
+            "message": "대기",
+            "finished_at": "-",
+        }
+    ])
+
+    assert list(frame.columns) == [
+        "Case ID",
+        "상태",
+        "수행 유형",
+        "시도",
+        "독립 평가 상태",
+        "독립 평가 점수",
+        "독립성",
+        "처리 내용",
+        "완료 시각",
+    ]
+    assert frame.iloc[0]["상태"] == "미실행"
+    assert frame.iloc[0]["수행 유형"] == "VOC"
+    assert frame.iloc[0]["독립 평가 상태"] == "오류"
+
+
+def test_batch_selector_state_defaults_to_all_cases_and_first_group(monkeypatch):
+    state = {}
+    cases = [
+        {"case_id": "TC-01", "group": "voc"},
+        {"case_id": "TC-02", "group": "voc"},
+        {"case_id": "QG-01", "group": "gate"},
+    ]
+    groups = {"voc": {"label": "VOC"}, "gate": {"label": "Gate"}}
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    selection = voc_quality_view._ensure_batch_selection_state(cases, groups)
+
+    assert selection["selected_ids"] == ["TC-01", "TC-02", "QG-01"]
+    assert selection["active_group"] == "voc"
+    assert state[voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY] == ["TC-01", "TC-02", "QG-01"]
+    assert state[voc_quality_view.BATCH_ACTIVE_GROUP_KEY] == "voc"
+
+
+def test_batch_group_rows_show_full_partial_and_empty_states():
+    group_keys = ("voc", "gate", "agent")
+    cases_by_group = {
+        "voc": [{"case_id": "TC-01"}, {"case_id": "TC-02"}],
+        "gate": [{"case_id": "QG-01"}],
+        "agent": [{"case_id": "AG-01"}],
+    }
+    groups = {
+        "voc": {"label": "VOC"},
+        "gate": {"label": "Gate"},
+        "agent": {"label": "Agent"},
+    }
+
+    rows = voc_quality_view._batch_group_table_rows(
+        group_keys,
+        cases_by_group,
+        groups,
+        ["TC-01", "QG-01"],
+    )
+
+    assert "선택" not in rows.columns
+    assert rows.loc[0, "상태"] == "부분 선택"
+    assert rows.loc[0, "현황"] == "1 / 2건"
+    assert rows.loc[1, "상태"] == "전체 선택"
+    assert rows.loc[2, "상태"] == "미선택"
+
+
+def test_batch_combined_selection_rows_merge_groups_and_cases():
+    group_keys = ("voc", "gate")
+    cases_by_group = {
+        "voc": [
+            {"case_id": "TC-01", "name": "첫 번째", "implementation_status": "IMPLEMENTED"},
+            {"case_id": "TC-02", "name": "두 번째", "implementation_status": "DEFINED"},
+        ],
+        "gate": [{"case_id": "QG-01", "name": "게이트", "implementation_status": "DEFINED"}],
+    }
+    groups = {"voc": {"label": "VOC"}, "gate": {"label": "Gate"}}
+
+    rows = voc_quality_view._batch_combined_selection_rows(
+        group_keys,
+        cases_by_group,
+        groups,
+        ["TC-01", "QG-01"],
+    )
+
+    assert "선택" not in rows.columns
+    assert list(rows.columns)[:5] == ["체크", "대상", "이름", "구현 상태", "현황"]
+    assert rows.loc[0, "_kind"] == "group"
+    assert rows.loc[0, "대상"] == "▾ VOC"
+    assert bool(rows.loc[0, "체크"]) is False
+    assert rows.loc[0, "구현 상태"] == "부분 선택"
+    assert rows.loc[1, "_kind"] == "case"
+    assert bool(rows.loc[1, "체크"]) is True
+    assert bool(rows.loc[3, "체크"]) is True
+
+
+def test_batch_group_toggle_selects_or_clears_entire_group(monkeypatch):
+    state = {
+        voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY: ["TC-01"],
+        voc_quality_view.BATCH_GROUP_TOGGLE_KEY: {"row": 0, "label": "◩"},
+    }
+    group_keys = ("voc", "gate")
+    group_case_ids = {"voc": ("TC-01", "TC-02"), "gate": ("QG-01",)}
+    all_case_ids = ("TC-01", "TC-02", "QG-01")
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._toggle_batch_group_selection_from_click(
+        group_keys,
+        group_case_ids,
+        all_case_ids,
+    )
+
+    assert state[voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY] == ["TC-01", "TC-02"]
+    assert state[voc_quality_view.BATCH_ACTIVE_GROUP_KEY] == "voc"
+
+    voc_quality_view._toggle_batch_group_selection_from_click(
+        group_keys,
+        group_case_ids,
+        all_case_ids,
+    )
+
+    assert state[voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY] == []
+
+
+def test_batch_combined_editor_group_and_case_checkbox_updates_selection(monkeypatch):
+    state = {
+        voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY: ["TC-01", "QG-01"],
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    group_keys = ("voc", "gate")
+    cases_by_group = {
+        "voc": [{"case_id": "TC-01"}, {"case_id": "TC-02"}],
+        "gate": [{"case_id": "QG-01"}],
+    }
+    original = voc_quality_view._batch_combined_selection_rows(
+        group_keys,
+        cases_by_group,
+        {"voc": {"label": "VOC"}, "gate": {"label": "Gate"}},
+        ["TC-01", "QG-01"],
+    )
+    edited = original.copy()
+    edited.loc[0, "체크"] = True
+
+    selected, changed = voc_quality_view._apply_batch_combined_editor_selection(
+        original,
+        edited,
+        ("TC-01", "TC-02", "QG-01"),
+        cases_by_group,
+    )
+
+    assert changed is True
+    assert selected == ["TC-01", "TC-02", "QG-01"]
+
+    original = voc_quality_view._batch_combined_selection_rows(
+        group_keys,
+        cases_by_group,
+        {"voc": {"label": "VOC"}, "gate": {"label": "Gate"}},
+        selected,
+    )
+    edited = original.copy()
+    edited.loc[2, "체크"] = False
+
+    selected, changed = voc_quality_view._apply_batch_combined_editor_selection(
+        original,
+        edited,
+        ("TC-01", "TC-02", "QG-01"),
+        cases_by_group,
+    )
+
+    assert changed is True
+    assert selected == ["TC-01", "QG-01"]
+
+
+def test_batch_case_row_selection_preserves_other_group_choices(monkeypatch):
+    state = {
+        voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY: ["TC-01", "QG-01"],
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    selected = voc_quality_view._apply_batch_case_row_selection(
+        ("TC-01", "TC-02"),
+        [1],
+        ("TC-01", "TC-02", "QG-01"),
+    )
+
+    assert selected == ["TC-02", "QG-01"]
+    assert state[voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY] == ["TC-02", "QG-01"]
+
+
+def test_batch_case_selection_rows_show_active_group_cases_only():
+    rows = voc_quality_view._batch_case_selection_rows(
+        [
+            {"case_id": "TC-01", "name": "첫 번째", "implementation_status": "IMPLEMENTED"},
+            {"case_id": "TC-02", "name": "두 번째", "implementation_status": "DEFINED"},
+        ],
+        ["TC-02"],
+    )
+
+    assert list(rows.columns)[:4] == ["체크", "Case ID", "상태", "이름"]
+    assert bool(rows.loc[0, "체크"]) is False
+    assert bool(rows.loc[1, "체크"]) is True
+    assert rows.loc[0, "상태"] == "실행 구현 완료"
+    assert rows.loc[1, "상태"] == "정의됨 · 후속 구현"
+
+
+def test_batch_case_editor_selection_preserves_other_group_choices(monkeypatch):
+    state = {
+        voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY: ["TC-01", "QG-01"],
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    original = voc_quality_view._batch_case_selection_rows(
+        [{"case_id": "TC-01"}, {"case_id": "TC-02"}],
+        ["TC-01", "QG-01"],
+    )
+    edited = original.copy()
+    edited.loc[0, "체크"] = False
+    edited.loc[1, "체크"] = True
+
+    selected, changed = voc_quality_view._apply_batch_case_editor_selection(
+        original,
+        edited,
+        ("TC-01", "TC-02", "QG-01"),
+    )
+
+    assert changed is True
+    assert selected == ["TC-02", "QG-01"]
+    assert state[voc_quality_view.BATCH_SELECTED_CASE_IDS_KEY] == ["TC-02", "QG-01"]
+
+
+def test_batch_execution_uses_list_selector_instead_of_dropdowns():
+    import inspect
+
+    source = inspect.getsource(voc_quality_view.render_batch_execution)
+    selector_source = inspect.getsource(voc_quality_view._render_batch_case_selector)
+
+    assert "_render_batch_case_selector" in source
+    assert "segmented_control" not in source
+    assert "multiselect" not in source
+    assert "data_editor" in selector_source
+    assert "CheckboxColumn" in selector_source
+    assert "ButtonColumn" not in selector_source
+    assert '"선택"' not in selector_source
+    assert "실행 대상 리스트" not in selector_source
+    assert "group_column, case_column" in selector_source
+    assert "선택된 TC" in selector_source
+    assert "Judge 옵션" in selector_source
+
+
+def test_batch_active_run_restores_from_running_history(monkeypatch):
+    monkeypatch.setattr(voc_quality_view.st, "session_state", {})
+    monkeypatch.setattr(
+        voc_quality_view,
+        "list_voc_run_history",
+        lambda: [
+            {
+                "run_id": "RUN-MANUAL",
+                "run_type": "MANUAL",
+                "status": "RUNNING",
+                "started_at": "2026-07-26T09:00:00+09:00",
+                "selected_case_ids": ["TC-99"],
+            },
+            {
+                "run_id": "RUN-BATCH-ACTIVE",
+                "run_type": "BATCH",
+                "status": "RUNNING",
+                "started_at": "2026-07-26T10:00:00+09:00",
+                "selected_case_ids": ["TC-01", "TC-02"],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "get_batch_run_progress",
+        lambda run_id: {
+            "run_id": run_id,
+            "status": "RUNNING",
+            "total": 2,
+            "completed": 1,
+            "estimated_total_seconds": 90,
+            "verification_scope": {"selected_case_ids": ["TC-01", "TC-02"]},
+        },
+    )
+
+    state = voc_quality_view._active_batch_run_state()
+
+    assert state["active"] is True
+    assert state["run_id"] == "RUN-BATCH-ACTIVE"
+    assert state["restored"] is True
+    assert voc_quality_view.st.session_state[voc_quality_view.BATCH_RUN_ID_KEY] == "RUN-BATCH-ACTIVE"
+    assert voc_quality_view.st.session_state[voc_quality_view.BATCH_CASE_IDS_KEY] == ["TC-01", "TC-02"]
 
 
 def test_batch_eta_uses_completed_case_average(monkeypatch):
@@ -2017,6 +2635,57 @@ def test_batch_run_executes_implemented_cases_and_records_pending_cases(monkeypa
     assert progress["finished_at"]
 
 
+def test_batch_state_model_defines_35_case_verification_cycle():
+    model = describe_batch_state_model()
+    scope = model["verification_scope"]
+
+    assert model["model_version"] == "2026-07-26.step3"
+    assert model["suite_id"] == "VOC-QA-35"
+    assert scope["catalog_total_cases"] == 35
+    assert scope["selected_count"] == 35
+    assert scope["executable_count"] == 26
+    assert scope["pending_count"] == 9
+    assert set(model["case_execution_statuses"]) == {
+        "PASS", "FAIL", "ERROR", "NOT_RUN", "REVIEW_REQUIRED"
+    }
+    assert set(model["validity_review_actions"]) == {
+        "VALIDITY_EVALUATION_REQUIRED",
+        "REWORK_REQUIRED",
+        "QA_REVIEW",
+        "BUSINESS_APPROVAL",
+        "FORMAL_APPROVED",
+        "NO_ACTION",
+    }
+    assert set(model["menu_io"]) == {
+        "batch_execution", "execution_history", "improvement_validity"
+    }
+    assert "validity_result.json" in " ".join(model["menu_io"]["improvement_validity"]["outputs"])
+
+
+def test_batch_run_persists_verification_scope_metadata(monkeypatch, tmp_path):
+    store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
+    catalog = load_quality_test_catalog()
+    case_ids = [item["case_id"] for item in catalog["cases"]]
+
+    run = voc_quality_service.start_batch_run(case_ids, max_retries=0)
+    manifest = store.load_voc_run(run["run_id"])["manifest"]
+    scope = manifest["run_metadata"]["verification_scope"]
+
+    assert manifest["state_model_version"] == "2026-07-26.step3"
+    assert manifest["run_metadata"]["state_model"]["menu_io"]["batch_execution"]["state_owner"] == "run_id"
+    assert scope["catalog_total_cases"] == 35
+    assert scope["selected_count"] == 35
+    assert scope["executable_count"] == 26
+    assert scope["pending_count"] == 9
+
+    progress = voc_quality_service.get_batch_run_progress(run["run_id"])
+    assert progress["verification_scope"]["pending_count"] == 9
+    assert progress["state_model_version"] == "2026-07-26.step3"
+
+    voc_quality_service.request_batch_stop(run["run_id"])
+    voc_quality_service.execute_batch_run(run["run_id"], case_ids, max_retries=0)
+
+
 def test_batch_run_persists_initial_phase_and_runtime_updates(monkeypatch, tmp_path):
     store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
     run = voc_quality_service.start_batch_run(["TC-01"], max_retries=0)
@@ -2139,6 +2808,56 @@ def test_batch_retest_links_parent_run(monkeypatch, tmp_path):
     assert manifest["run_metadata"]["parent_run_id"] == "RUN-PARENT"
 
 
+def test_batch_retest_applies_rework_instruction_to_execution_question(monkeypatch, tmp_path):
+    store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
+    captured = {}
+
+    def fake_run_voc(question, save_report=False, timeout_seconds=180, task_override=None):
+        captured.update(
+            question=question,
+            save_report=save_report,
+            timeout_seconds=timeout_seconds,
+            task_override=task_override,
+        )
+        return {"ok": True, "result": {"ok": True, "summary": "ok", "policy": "improved"}}
+
+    monkeypatch.setattr(voc_quality_service, "run_voc_analysis", fake_run_voc)
+    monkeypatch.setattr(
+        voc_quality_service,
+        "pipeline_trace_events",
+        lambda *_args: {"trace_id": "trace-rework", "events": []},
+    )
+    instruction = "VOC ID와 정량 KPI를 보완하고 실행계획을 다시 작성하세요."
+
+    run = voc_quality_service.start_batch_run(
+        ["TC-01"],
+        parent_run_id="RUN-PARENT",
+        max_retries=0,
+        rework_instruction=instruction,
+    )
+    result = voc_quality_service.execute_batch_run(
+        run["run_id"], ["TC-01"], max_retries=0, backoff_base_seconds=0
+    )
+
+    manifest = store.load_voc_run(run["run_id"])["manifest"]
+    assert manifest["run_type"] == "RETEST"
+    assert manifest["run_metadata"]["parent_run_id"] == "RUN-PARENT"
+    assert manifest["run_metadata"]["rework_instruction"] == instruction
+    assert "[RETEST 보완 지시]" in captured["question"]
+    assert instruction in captured["question"]
+
+    run_dir = Path(result["run_dir"])
+    snapshot = json.loads(
+        (run_dir / "snapshots" / "selected_test_cases.json").read_text(encoding="utf-8")
+    )
+    assert "[RETEST 보완 지시]" not in json.dumps(snapshot, ensure_ascii=False)
+    artifact = json.loads(
+        (run_dir / "cases" / "TC-01" / "pipeline_result.json").read_text(encoding="utf-8")
+    )
+    assert artifact["rework_instruction_applied"] is True
+    assert artifact["rework_instruction"] == instruction
+
+
 def _start_minimal_voc_run(store):
     return store.start_voc_run(
         run_type="MANUAL",
@@ -2216,6 +2935,77 @@ def _complete_minimal_run(store, run, status="PASS"):
         [{"case_id": "TC-01", "status": status, "attempt_count": 1}],
         lifecycle_status="COMPLETED",
     )
+
+
+def test_history_verification_scope_model_marks_full_suite_and_retest_parent():
+    parent_run_id = "RUN-20260726-000000-000000-abcd"
+    model = voc_quality_view._history_verification_scope_model(
+        {
+            "state_model_version": "2026-07-26.step3",
+            "run_type": "RETEST",
+            "selected_case_ids": ["TC-01"],
+            "run_metadata": {
+                "parent_run_id": parent_run_id,
+                "verification_scope": {
+                    "catalog_total_cases": 35,
+                    "selected_count": 35,
+                    "executable_count": 26,
+                    "pending_count": 9,
+                    "execution_type_counts": {
+                        "voc_pipeline": 18,
+                        "fault_proxy": 2,
+                        "isolated_fault": 6,
+                        "agent_role_quality": 6,
+                        "quality_gate": 3,
+                    },
+                },
+            },
+        },
+        {"total": 35},
+    )
+
+    assert model["state_model_version"] == "2026-07-26.step3"
+    assert model["is_full_suite"] is True
+    assert model["is_retest"] is True
+    assert model["parent_run_id"] == parent_run_id
+    assert model["executable_count"] == 26
+    assert model["pending_count"] == 9
+
+
+def test_history_rows_surface_scope_counts_and_retest_parent(monkeypatch, tmp_path):
+    store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
+    parent_run_id = "RUN-20260726-000000-000000-abcd"
+    run = store.start_voc_run(
+        run_type="RETEST",
+        selected_case_ids=["TC-01"],
+        suite_id="VOC-QA-35",
+        catalog_version="2.0",
+        test_case_hash="abc123",
+        rubric_versions={"internal_pipeline": {"version": "1.0", "sha256": "hash"}},
+        model_snapshot={"summary": {"provider": "openai", "model": "test"}},
+        judge_enabled=False,
+        environment_fingerprint={"fingerprint_sha256": "env"},
+        run_metadata={
+            "parent_run_id": parent_run_id,
+            "verification_scope": {
+                "catalog_total_cases": 35,
+                "selected_count": 1,
+                "executable_count": 1,
+                "pending_count": 0,
+                "execution_type_counts": {"voc_pipeline": 1},
+            },
+        },
+        snapshots={"selected_test_cases.json": {"cases": [{"case_id": "TC-01"}]}},
+    )
+    _complete_minimal_run(store, run)
+
+    row = voc_quality_service.list_voc_run_history()[0]
+
+    assert row["run_type"] == "RETEST"
+    assert row["parent_run_id"] == parent_run_id
+    assert row["verification_scope"]["catalog_total_cases"] == 35
+    assert row["executable_count"] == 1
+    assert row["pending_count"] == 0
 
 
 def test_history_listing_does_not_interrupt_run_owned_by_another_process(monkeypatch, tmp_path):

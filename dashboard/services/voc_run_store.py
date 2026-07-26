@@ -13,11 +13,18 @@ from datetime import datetime
 from pathlib import Path
 
 from core.paths import VOC_QUALITY_RUNS_DIR
+from services.voc_quality_state_model import (
+    CASE_EXECUTION_STATUSES,
+    RUN_LIFECYCLE_STATUSES,
+    RUN_TYPES as QUALITY_RUN_TYPES,
+    STATE_MODEL_VERSION,
+)
 
 
 SCHEMA_VERSION = "1.0"
-RUN_TYPES = {"MANUAL", "BATCH", "RETEST", "BASELINE"}
-CASE_STATUSES = {"PASS", "FAIL", "ERROR", "NOT_RUN", "REVIEW_REQUIRED"}
+RUN_TYPES = set(QUALITY_RUN_TYPES)
+RUN_LIFECYCLE_STATUS_SET = set(RUN_LIFECYCLE_STATUSES)
+CASE_STATUSES = set(CASE_EXECUTION_STATUSES)
 RUN_ID_PATTERN = re.compile(r"RUN-\d{8}-\d{6}-\d{6}-[a-f0-9]{4}")
 SAFE_CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _STORE_LOCK = threading.RLock()
@@ -115,6 +122,7 @@ def _index_entry(run_dir: Path) -> dict:
         summary = {}
     return {
         "run_id": manifest.get("run_id", run_dir.name),
+        "state_model_version": manifest.get("state_model_version", STATE_MODEL_VERSION),
         "run_type": manifest.get("run_type", "UNKNOWN"),
         "status": manifest.get("status", "ERROR"),
         "started_at": manifest.get("started_at", ""),
@@ -124,8 +132,10 @@ def _index_entry(run_dir: Path) -> dict:
         "selected_case_ids": manifest.get("selected_case_ids", []),
         "judge_enabled": bool(manifest.get("judge_enabled")),
         "validity_reviewed": bool(manifest.get("validity_reviewed")),
+        "parent_run_id": manifest.get("run_metadata", {}).get("parent_run_id", ""),
         "validity_state": summary.get("validity_state", "DRAFT"),
         "deployment_decision": summary.get("deployment_decision", "미판정"),
+        "verification_scope": manifest.get("run_metadata", {}).get("verification_scope", {}),
         "counts": summary.get("counts", {}),
         "judge_counts": summary.get("judge_counts", {}),
     }
@@ -192,6 +202,7 @@ def start_voc_run(
         started_at = _now_iso()
         manifest = {
             "schema_version": SCHEMA_VERSION,
+            "state_model_version": STATE_MODEL_VERSION,
             "run_id": run_id,
             "run_type": run_type,
             "status": "RUNNING",
@@ -213,6 +224,7 @@ def start_voc_run(
             run_dir / "summary.json",
             {
                 "run_id": run_id,
+                "state_model_version": STATE_MODEL_VERSION,
                 "status": "RUNNING",
                 "total": len(case_ids),
                 "counts": {status: 0 for status in sorted(CASE_STATUSES)},
@@ -280,6 +292,7 @@ def update_voc_run_progress(
                 judge_counts[judge_status] += 1
         summary = {
             "run_id": run_id,
+            "state_model_version": manifest.get("state_model_version", STATE_MODEL_VERSION),
             "status": "RUNNING",
             "total": len(selected),
             "completed": len(normalized),
@@ -379,18 +392,23 @@ def complete_voc_run(run_id: str, case_results: list[dict], *, lifecycle_status:
                 judge_counts[judge_status] += 1
         if lifecycle_status is None:
             lifecycle_status = "ERROR" if counts["ERROR"] else "COMPLETED"
+        if lifecycle_status not in RUN_LIFECYCLE_STATUS_SET:
+            raise ValueError(f"지원하지 않는 Run lifecycle 상태입니다: {lifecycle_status}")
         finished_at = _now_iso()
         manifest["status"] = lifecycle_status
         manifest["finished_at"] = finished_at
         _atomic_write_json(run_dir / "manifest.json", manifest)
         summary = {
             "run_id": run_id,
+            "state_model_version": manifest.get("state_model_version", STATE_MODEL_VERSION),
             "status": lifecycle_status,
             "total": len(normalized),
             "counts": counts,
             "judge_counts": judge_counts,
             "case_results": normalized,
             "finished_at": finished_at,
+            "validity_state": "DRAFT",
+            "deployment_decision": "미판정",
         }
         _atomic_write_json(run_dir / "summary.json", summary)
         _ACTIVE_RUN_IDS.discard(run_id)
@@ -457,7 +475,14 @@ def load_case_artifacts(run_id: str, case_id: str) -> dict:
     case_id = _safe_case_id(case_id)
     case_dir = run_dir / "cases" / case_id
     result = {"run_id": run_id, "case_id": case_id, "case_dir": str(case_dir)}
-    for name in ("pipeline_result", "trace", "rule_result", "judge_result", "validity_result"):
+    for name in (
+        "pipeline_result",
+        "trace",
+        "rule_result",
+        "judge_result",
+        "validity_supplement",
+        "validity_result",
+    ):
         path = case_dir / f"{name}.json"
         if not path.exists():
             continue
@@ -609,6 +634,33 @@ def save_judge_reevaluation(run_id: str, case_id: str, judge_result: dict) -> di
         _atomic_write_json(run_dir / "manifest.json", manifest)
         rebuild_run_index()
         return {"manifest": manifest, "summary": summary, "judge_result": saved}
+
+
+def save_validity_supplement(run_id: str, case_id: str, supplement: dict) -> dict:
+    """Store user-provided improvement validity evidence without changing the source A2A result."""
+    with _STORE_LOCK:
+        run_dir = _run_dir(run_id)
+        case_id = _safe_case_id(case_id)
+        manifest = _read_json(run_dir / "manifest.json")
+        summary = _read_json(run_dir / "summary.json")
+        if manifest.get("status") == "RUNNING":
+            raise ValueError("실행 중인 Run에는 타당성 보완 입력을 저장할 수 없습니다.")
+        case_dir = run_dir / "cases" / case_id
+        if not (case_dir / "pipeline_result.json").exists():
+            raise FileNotFoundError("타당성 보완 입력에 필요한 Pipeline 증적이 없습니다.")
+
+        saved = dict(supplement or {})
+        saved["run_id"] = run_id
+        saved["case_id"] = case_id
+        saved["updated_at"] = _now_iso()
+        path = case_dir / "validity_supplement.json"
+        _atomic_write_json(path, saved)
+        return {
+            "manifest": manifest,
+            "summary": summary,
+            "validity_supplement": saved,
+            "case_dir": str(case_dir),
+        }
 
 
 def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -> dict:

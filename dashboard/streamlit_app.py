@@ -8,6 +8,7 @@ from navigation import render_navigation
 from pages_top.knowledge_base import render_knowledge_db_page
 from pages_top.knowledge_base_view import render_knowledge_base_page
 from pages_top.docker_view import render_docker_page
+from pages_top.github_view import render_github_page
 from pages_top.jira_view import render_jira_page
 from pages_top.performance import render_performance_page
 from pages_top.placeholder import render_placeholder_page
@@ -408,6 +409,8 @@ elif active_menu in ("지식 파일 관리", "지식DB관리"):
     handled = render_knowledge_db_page(sidebar_sub_menu, render_knowledge_base_page)
 elif active_menu == "Jira관리":
     handled = render_jira_page(sidebar_sub_menu)
+elif active_menu == "GitHub 관리":
+    handled = render_github_page(sidebar_sub_menu)
 elif active_menu == "Docker 관리":
     handled = render_docker_page(sidebar_sub_menu)
 elif active_menu == "VOC 품질진단":

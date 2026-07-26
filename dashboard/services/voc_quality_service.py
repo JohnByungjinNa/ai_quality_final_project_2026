@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from copy import deepcopy
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,6 +26,12 @@ from services import (
     voc_run_store,
     voc_validity_service,
 )
+from services.voc_quality_state_model import (
+    STATE_MODEL_VERSION,
+    build_state_model_snapshot,
+    build_verification_scope,
+    validity_human_review_readiness,
+)
 
 
 REPORT_CATEGORIES = {
@@ -38,6 +45,57 @@ DIAGNOSTIC_MODES = {"all", "validation", "fault", "a2a"}
 AGENT_ACTIONS = {"init", "start", "status", "stop", "restart"}
 FAULT_TEST_CASES = {"TC-19": "FT-01", "TC-20": "FT-03"}
 DIRECT_FAULT_CASE_IDS = {f"FT-{number:02d}" for number in range(1, 7)}
+QUALITY_CASE_EXECUTION_TYPES = {
+    "voc_pipeline",
+    "fault_proxy",
+    "isolated_fault",
+    "agent_role_quality",
+    "quality_gate",
+    "defined_only",
+}
+QUALITY_CASE_EXECUTION_REQUIRED_FIELDS = {
+    "voc_pipeline": {
+        "category",
+        "question",
+        "expected_task",
+        "expected_intent",
+        "expected_keywords",
+        "expected_voc_ids",
+        "required_output",
+        "prohibited_output",
+        "expected_system_behavior",
+        "runner",
+        "mode",
+    },
+    "fault_proxy": {
+        "category",
+        "question",
+        "fault_case_id",
+        "setup",
+        "expected_system_behavior",
+        "runner",
+        "mode",
+    },
+    "isolated_fault": {
+        "category",
+        "fault_case_id",
+        "expected_system_behavior",
+        "runner",
+        "mode",
+    },
+    "agent_role_quality": {
+        "category",
+        "expected_system_behavior",
+        "implementation_note",
+        "mode",
+    },
+    "quality_gate": {
+        "category",
+        "expected_system_behavior",
+        "implementation_note",
+        "mode",
+    },
+}
 TRANSIENT_ERROR_MARKERS = (
     "429", "rate limit", "rate_limit", "too many requests", "timeout",
     "timed out", "deadline_exceeded", "deadline exceeded",
@@ -107,6 +165,93 @@ def _safe_text(value: str) -> str:
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[REDACTED_CREDENTIAL]", text)
     return text
+
+
+REWORK_INSTRUCTION_MAX_CHARS = 2400
+VALIDITY_SUPPLEMENT_MAX_CHARS = 1200
+VALIDITY_SUPPLEMENT_FIELDS = (
+    ("owner", "담당/오너"),
+    ("schedule", "일정/마일스톤"),
+    ("kpi", "정량 KPI"),
+    ("priority", "우선순위"),
+    ("evidence", "VOC·Trace 근거"),
+    ("risk", "리스크/우회방안"),
+    ("note", "검토 메모"),
+)
+
+
+def _normalize_rework_instruction(value: str | None) -> str:
+    text = _safe_text(str(value or "")).strip()
+    if len(text) > REWORK_INSTRUCTION_MAX_CHARS:
+        return text[:REWORK_INSTRUCTION_MAX_CHARS].rstrip()
+    return text
+
+
+def _normalize_validity_supplement(supplement: dict | None) -> dict:
+    payload = {}
+    source = supplement or {}
+    for key, label in VALIDITY_SUPPLEMENT_FIELDS:
+        value = _sanitize_evidence_value(source.get(key, ""))
+        if isinstance(value, str):
+            value = value.strip()
+            if len(value) > VALIDITY_SUPPLEMENT_MAX_CHARS:
+                value = value[:VALIDITY_SUPPLEMENT_MAX_CHARS].rstrip()
+        payload[key] = value
+        payload[f"{key}_label"] = label
+    payload["filled_fields"] = [
+        key for key, _label in VALIDITY_SUPPLEMENT_FIELDS
+        if str(payload.get(key) or "").strip()
+    ]
+    payload["is_empty"] = not payload["filled_fields"]
+    return payload
+
+
+def _validity_supplement_text(supplement: dict | None) -> str:
+    normalized = _normalize_validity_supplement(supplement)
+    lines = []
+    for key, label in VALIDITY_SUPPLEMENT_FIELDS:
+        value = str(normalized.get(key) or "").strip()
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines)
+
+
+def _execution_with_validity_supplement(execution: dict, supplement: dict | None) -> dict:
+    normalized = _normalize_validity_supplement(supplement)
+    if normalized["is_empty"]:
+        return execution
+
+    merged = deepcopy(execution or {})
+    result = merged.setdefault("result", {})
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+        merged["result"] = result
+
+    supplement_text = _validity_supplement_text(normalized)
+    original_policy = str(result.get("policy") or "").strip()
+    result["policy"] = (
+        f"{original_policy}\n\n[사용자 타당성 보완 입력]\n{supplement_text}"
+        if original_policy
+        else f"[사용자 타당성 보완 입력]\n{supplement_text}"
+    )
+    result["validity_supplement"] = normalized
+    result["validity_supplement_applied"] = True
+    return merged
+
+
+def _retest_question_with_instruction(question: str, rework_instruction: str | None) -> str:
+    instruction = _normalize_rework_instruction(rework_instruction)
+    base_question = (question or "").strip()
+    if not instruction:
+        return base_question
+
+    prefix = "\n\n[RETEST 보완 지시]\n"
+    available = 4000 - len(base_question) - len(prefix)
+    if available <= 0:
+        return base_question[:4000]
+    if len(instruction) > available:
+        instruction = instruction[:available].rstrip()
+    return f"{base_question}{prefix}{instruction}"
 
 
 def runtime_health() -> dict:
@@ -589,10 +734,13 @@ def run_test_case(
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict:
     """선택한 정의를 실제 VOC 실행 또는 안전한 격리 장애 시험으로 수행합니다."""
-    cases = load_test_cases().get("cases", [])
+    cases = load_unified_quality_cases().get("cases", [])
     case = next((item for item in cases if item.get("case_id") == case_id), None)
     if not case:
         raise ValueError(f"알 수 없는 테스트케이스: {case_id}")
+
+    if case.get("implementation_status") != "IMPLEMENTED":
+        raise ValueError(f"아직 실행 구현 전인 Case입니다: {case_id}")
 
     def notify_preparation(step: int, status: str) -> None:
         if progress_callback is None:
@@ -610,7 +758,7 @@ def run_test_case(
     notify_preparation(5, "active")
     run_id = run["run_id"]
     started_at = run["manifest"]["started_at"]
-    fault_id = FAULT_TEST_CASES.get(case_id)
+    fault_id = _fault_case_id_for_quality_case(case)
     mode = "fault" if fault_id else "voc"
     try:
         notify_preparation(5, "success")
@@ -794,6 +942,14 @@ def batch_preflight(case_ids: list[str] | None = None) -> dict:
     }
 
 
+def describe_batch_state_model(case_ids: list[str] | None = None) -> dict:
+    """Return the Step 3 verification cycle state model for documentation/UI use."""
+    catalog = load_quality_test_catalog()
+    cases = catalog.get("cases", [])
+    selected = list(case_ids or [item["case_id"] for item in cases if item.get("case_id")])
+    return build_state_model_snapshot(cases, selected)
+
+
 def start_batch_run(
     case_ids: list[str],
     *,
@@ -801,6 +957,7 @@ def start_batch_run(
     max_retries: int = 2,
     parent_run_id: str = "",
     judge_config: dict | None = None,
+    rework_instruction: str = "",
 ) -> dict:
     """중복 실행을 차단하고 BATCH/RETEST Run을 생성합니다."""
     catalog = load_quality_test_catalog()
@@ -815,6 +972,7 @@ def start_batch_run(
         raise ValueError("timeout은 1초 이상, 재시도는 0~5회로 설정해야 합니다.")
 
     judge_config = _normalize_judge_config(judge_config)
+    rework_instruction = _normalize_rework_instruction(rework_instruction)
     implemented_count = sum(
         catalog_cases[case_id].get("implementation_status") == "IMPLEMENTED"
         for case_id in selected
@@ -825,6 +983,9 @@ def start_batch_run(
         15 + implemented_count * seconds_per_case + pending_count,
         5,
     )
+    selected_catalog_cases = [catalog_cases[case_id] for case_id in selected]
+    verification_scope = build_verification_scope(catalog.get("cases", []), selected)
+    state_model_snapshot = build_state_model_snapshot(catalog.get("cases", []), selected)
     signature = tuple(sorted(selected))
     with _BATCH_LOCK:
         active_run_id = _ACTIVE_BATCH_SIGNATURES.get(signature)
@@ -832,16 +993,21 @@ def start_batch_run(
             raise RuntimeError(f"동일한 Case 조합이 이미 실행 중입니다: {active_run_id}")
         run_type = "RETEST" if parent_run_id else "BATCH"
         run = _start_voc_run(
-            [catalog_cases[case_id] for case_id in selected],
+            selected_catalog_cases,
             run_type=run_type,
             run_metadata={
+                "state_model_version": STATE_MODEL_VERSION,
                 "parent_run_id": parent_run_id,
                 "execution_policy": "SEQUENTIAL",
                 "timeout_seconds": timeout_seconds,
                 "max_retries": max_retries,
                 "transient_backoff": "exponential",
                 "judge_config": judge_config,
+                "rework_instruction": rework_instruction,
+                "rework_instruction_source": "validity_result" if rework_instruction else "",
                 "estimated_total_seconds": estimated_total_seconds,
+                "verification_scope": verification_scope,
+                "state_model": state_model_snapshot,
             },
             judge_config=judge_config,
         )
@@ -867,6 +1033,7 @@ def start_batch_run(
             "max_retries": max_retries,
             "parent_run_id": parent_run_id,
             "judge_config": judge_config,
+            "rework_instruction": rework_instruction,
             "estimated_total_seconds": estimated_total_seconds,
         }
 
@@ -891,6 +1058,7 @@ def get_batch_run_progress(run_id: str) -> dict:
     return {
         "run_id": run_id,
         "run_dir": stored.get("run_dir", ""),
+        "state_model_version": manifest.get("state_model_version", STATE_MODEL_VERSION),
         "status": manifest.get("status", summary.get("status", "ERROR")),
         "started_at": manifest.get("started_at", ""),
         "finished_at": manifest.get("finished_at", ""),
@@ -901,6 +1069,12 @@ def get_batch_run_progress(run_id: str) -> dict:
         "case_results": summary.get("case_results", []),
         "stop_requested": stop_requested,
         "judge_config": manifest.get("run_metadata", {}).get("judge_config", {}),
+        "rework_instruction": manifest.get("run_metadata", {}).get("rework_instruction", ""),
+        "rework_instruction_source": manifest.get("run_metadata", {}).get(
+            "rework_instruction_source", ""
+        ),
+        "verification_scope": manifest.get("run_metadata", {}).get("verification_scope", {}),
+        "state_model": manifest.get("run_metadata", {}).get("state_model", {}),
         "errors": stored.get("errors", []),
         "runtime_progress": summary.get("runtime_progress", {}),
         "estimated_total_seconds": manifest.get("run_metadata", {}).get(
@@ -925,12 +1099,14 @@ def execute_batch_run(
 
     try:
         run_manifest = voc_run_store.load_voc_run(run_id).get("manifest", {})
+        run_metadata = run_manifest.get("run_metadata", {})
         if judge_config is None:
-            judge_config = run_manifest.get("run_metadata", {}).get("judge_config")
+            judge_config = run_metadata.get("judge_config")
         judge_config = _normalize_judge_config(judge_config)
+        rework_instruction = _normalize_rework_instruction(run_metadata.get("rework_instruction", ""))
         catalog = load_quality_test_catalog()
         catalog_cases = {item["case_id"]: item for item in catalog.get("cases", [])}
-        test_cases = {item["case_id"]: item for item in load_test_cases().get("cases", [])}
+        test_cases = {item["case_id"]: item for item in load_unified_quality_cases().get("cases", [])}
         event = _BATCH_STOP_EVENTS.get(run_id) or threading.Event()
         voc_run_store.update_voc_run_progress(
             run_id,
@@ -986,6 +1162,7 @@ def execute_batch_run(
                 backoff_base_seconds=backoff_base_seconds,
                 judge_config=judge_config,
                 model_snapshot=run_manifest.get("model_snapshot", {}),
+                rework_instruction=rework_instruction,
             )
             results.append(case_result)
             voc_run_store.update_voc_run_progress(
@@ -1071,10 +1248,17 @@ def _execute_batch_case(
     backoff_base_seconds: float,
     judge_config: dict,
     model_snapshot: dict,
+    rework_instruction: str = "",
 ) -> dict:
     started_at = datetime.now().astimezone().isoformat()
-    fault_id = case_id if case_id in DIRECT_FAULT_CASE_IDS else FAULT_TEST_CASES.get(case_id)
+    fault_id = _fault_case_id_for_quality_case({"case_id": case_id, **case})
     mode = "fault" if fault_id else "voc"
+    rework_instruction = _normalize_rework_instruction(rework_instruction)
+    execution_question = (
+        _retest_question_with_instruction(case.get("question", ""), rework_instruction)
+        if mode == "voc"
+        else case.get("question", "")
+    )
     attempts = []
     execution = {}
     execution_ok = False
@@ -1090,7 +1274,7 @@ def _execute_batch_case(
                 )
             else:
                 execution = run_voc_analysis(
-                    case.get("question", ""),
+                    execution_question,
                     save_report=True,
                     timeout_seconds=timeout_seconds,
                     task_override=case.get("expected_task"),
@@ -1144,6 +1328,9 @@ def _execute_batch_case(
             "mode": mode,
             "fault_id": fault_id or "",
             "recorded_at": finished_at,
+            "execution_question": execution_question,
+            "rework_instruction": rework_instruction,
+            "rework_instruction_applied": bool(rework_instruction and mode == "voc"),
             "attempts": attempts,
             "execution": _sanitize_evidence_value(execution),
         },
@@ -1170,6 +1357,7 @@ def _execute_batch_case(
         "judge_status": judge_result.get("decision", "NOT_RUN"),
         "judge_score": judge_result.get("total_score"),
         "judge_independence_grade": judge_result.get("independence_grade", ""),
+        "rework_instruction_applied": bool(rework_instruction and mode == "voc"),
     }
 
 
@@ -1183,6 +1371,7 @@ def list_voc_run_history() -> list[dict]:
     rows = []
     for item in voc_run_store.list_voc_runs(recover=False):
         counts = item.get("counts", {})
+        verification_scope = item.get("verification_scope", {})
         selected_count = len(item.get("selected_case_ids", []))
         completed_count = sum(int(counts.get(status, 0)) for status in voc_run_store.CASE_STATUSES)
         decided = int(counts.get("PASS", 0)) + int(counts.get("FAIL", 0))
@@ -1193,6 +1382,11 @@ def list_voc_run_history() -> list[dict]:
                 "selected_count": selected_count,
                 "completed_count": completed_count,
                 "completion_rate": round(completed_count / selected_count * 100, 1) if selected_count else 0.0,
+                "state_model_version": item.get("state_model_version", STATE_MODEL_VERSION),
+                "executable_count": verification_scope.get("executable_count"),
+                "pending_count": verification_scope.get("pending_count"),
+                "verification_scope": verification_scope,
+                "parent_run_id": item.get("parent_run_id", ""),
                 "success_rate": success_rate,
                 "judge_status": "사용" if item.get("judge_enabled") else "미사용",
                 "deployment_decision": item.get("deployment_decision") or "미판정",
@@ -1209,6 +1403,13 @@ def load_voc_run_history_detail(run_id: str) -> dict:
 
 def load_voc_case_history_detail(run_id: str, case_id: str) -> dict:
     return voc_run_store.load_case_artifacts(run_id, case_id)
+
+
+def save_voc_validity_supplement(run_id: str, case_id: str, supplement: dict) -> dict:
+    normalized = _normalize_validity_supplement(supplement)
+    if normalized["is_empty"]:
+        raise ValueError("저장할 타당성 보완 입력이 없습니다.")
+    return voc_run_store.save_validity_supplement(run_id, case_id, normalized)
 
 
 def reevaluate_voc_run_case(
@@ -1274,6 +1475,17 @@ def list_improvement_validity_candidates() -> list[dict]:
             if pipeline.get("mode") != "voc" or not execution.get("ok") or not result.get("ok"):
                 continue
             validity = artifacts.get("validity_result", {})
+            immediate_holds = validity.get("immediate_hold_rules_triggered", []) or []
+            if isinstance(immediate_holds, str):
+                immediate_hold_count = 1 if immediate_holds.strip() else 0
+            else:
+                immediate_hold_count = len(immediate_holds) if hasattr(immediate_holds, "__len__") else int(bool(immediate_holds))
+            review_readiness = validity_human_review_readiness(
+                validity_status=validity.get("decision", "NOT_RUN"),
+                workflow_state=validity.get("workflow_state", "DRAFT"),
+                immediate_hold_count=immediate_hold_count,
+                formal_approval=bool(validity.get("formal_approval")),
+            )
             candidates.append(
                 {
                     "run_id": run["run_id"],
@@ -1288,6 +1500,12 @@ def list_improvement_validity_candidates() -> list[dict]:
                     "validity_score": validity.get("total_score"),
                     "workflow_state": validity.get("workflow_state", "DRAFT"),
                     "formal_approval": bool(validity.get("formal_approval")),
+                    "immediate_hold_count": immediate_hold_count,
+                    "qa_review_ready": review_readiness["can_qa_review"],
+                    "business_review_ready": review_readiness["can_business_approve"],
+                    "review_action": review_readiness["action"],
+                    "review_action_label": review_readiness["action_label"],
+                    "deployment_decision": review_readiness["deployment_decision"],
                 }
             )
     candidates.sort(key=lambda item: item.get("started_at", ""), reverse=True)
@@ -1325,9 +1543,11 @@ def evaluate_voc_improvement_validity(
     result = execution.get("result", {}) if isinstance(execution, dict) else {}
     if pipeline.get("mode") != "voc" or not execution.get("ok") or not result.get("ok"):
         raise ValueError("성공한 VOC Pipeline Case만 타당성을 평가할 수 있습니다.")
+    supplement = artifacts.get("validity_supplement", {})
+    evaluation_execution = _execution_with_validity_supplement(execution, supplement)
     validity = voc_validity_service.evaluate_improvement_validity(
         case=loaded["case"],
-        execution=execution,
+        execution=evaluation_execution,
         trace=artifacts.get("trace", {}),
         judge_result=artifacts.get("judge_result", {}),
         defects=loaded["stored"].get("defects", {}),
@@ -1335,6 +1555,10 @@ def evaluate_voc_improvement_validity(
         provider=provider,
         model=model,
     )
+    normalized_supplement = _normalize_validity_supplement(supplement)
+    validity["supplemental_evidence_applied"] = not normalized_supplement["is_empty"]
+    if not normalized_supplement["is_empty"]:
+        validity["supplemental_evidence"] = normalized_supplement
     saved = voc_run_store.save_validity_evaluation(run_id, case_id, validity)
     return {
         "run_id": run_id,
@@ -1774,6 +1998,83 @@ def load_quality_test_catalog() -> dict:
     return load_json("quality_diagnosis/quality_test_catalog.json")
 
 
+def _infer_quality_case_execution_type(case: dict, execution: dict) -> str:
+    case_id = str(case.get("case_id") or "")
+    group = str(case.get("group") or "")
+    if case_id in FAULT_TEST_CASES:
+        return "fault_proxy"
+    if case_id in DIRECT_FAULT_CASE_IDS or group == "isolated_fault":
+        return "isolated_fault"
+    if group == "agent_role":
+        return "agent_role_quality"
+    if group == "quality_gate":
+        return "quality_gate"
+    if execution.get("question"):
+        return "voc_pipeline"
+    return "defined_only"
+
+
+def _flatten_quality_case(case: dict) -> dict:
+    flattened = deepcopy(case)
+    execution = flattened.get("execution")
+    if not isinstance(execution, dict):
+        execution = {}
+    flattened["execution"] = execution
+    flattened["execution_type"] = str(
+        flattened.get("execution_type") or _infer_quality_case_execution_type(flattened, execution)
+    )
+    for key, value in execution.items():
+        flattened.setdefault(key, deepcopy(value))
+    if flattened["execution_type"] in {"agent_role_quality", "quality_gate"}:
+        flattened.setdefault("category", flattened["execution_type"])
+    return flattened
+
+
+def load_unified_quality_cases() -> dict:
+    """Return the 35-case catalog with executable details flattened per case.
+
+    `test_cases.json` remains a compatibility file. New dashboard and run
+    paths should consume this merged view so every menu shares the same
+    35-case catalog source.
+    """
+    catalog = load_quality_test_catalog()
+    legacy = load_test_cases()
+    legacy_cases = {
+        str(item.get("case_id")): item
+        for item in legacy.get("cases", [])
+        if item.get("case_id")
+    }
+    merged = deepcopy(catalog)
+    merged["dataset"] = legacy.get("dataset", "")
+    merged["legacy_test_cases_version"] = legacy.get("version", "")
+    merged_cases = []
+    for item in catalog.get("cases", []):
+        case = deepcopy(item)
+        execution = case.get("execution")
+        if not isinstance(execution, dict) or not execution:
+            legacy_detail = deepcopy(legacy_cases.get(str(case.get("case_id")), {}))
+            if legacy_detail:
+                legacy_detail.pop("case_id", None)
+                execution = legacy_detail
+            else:
+                execution = {}
+            case["execution"] = execution
+        case["execution_type"] = str(
+            case.get("execution_type") or _infer_quality_case_execution_type(case, execution)
+        )
+        merged_cases.append(_flatten_quality_case(case))
+    merged["cases"] = merged_cases
+    return merged
+
+
+def _fault_case_id_for_quality_case(case: dict) -> str:
+    case_id = str(case.get("case_id") or "")
+    execution = case.get("execution") if isinstance(case.get("execution"), dict) else {}
+    return str(execution.get("fault_case_id") or (
+        case_id if case_id in DIRECT_FAULT_CASE_IDS else FAULT_TEST_CASES.get(case_id, "")
+    ))
+
+
 def validate_quality_test_catalog(payload: dict) -> list[str]:
     if not isinstance(payload, dict):
         return ["테스트케이스 카탈로그 JSON의 최상위 값은 객체여야 합니다."]
@@ -1802,6 +2103,8 @@ def validate_quality_test_catalog(payload: dict) -> list[str]:
         "source_ref",
         "implementation_status",
         "acceptance",
+        "execution_type",
+        "execution",
     }
     valid_statuses = {"IMPLEMENTED", "DEFINED"}
     for index, case in enumerate(cases, start=1):
@@ -1822,6 +2125,23 @@ def validate_quality_test_catalog(payload: dict) -> list[str]:
         status = str(case.get("implementation_status") or "").strip()
         if status not in valid_statuses:
             errors.append(f"{case_id}: implementation_status는 IMPLEMENTED 또는 DEFINED여야 합니다.")
+        execution_type = str(case.get("execution_type") or "").strip()
+        execution = case.get("execution")
+        if execution_type not in QUALITY_CASE_EXECUTION_TYPES:
+            errors.append(f"{case_id}: unsupported execution_type {execution_type}")
+        if not isinstance(execution, dict):
+            errors.append(f"{case_id}: execution must be an object")
+            execution = {}
+        for field in sorted(QUALITY_CASE_EXECUTION_REQUIRED_FIELDS.get(execution_type, set())):
+            value = execution.get(field)
+            if value is None or value == "" or value == []:
+                errors.append(f"{case_id}: execution.{field} is required for {execution_type}")
+        if execution_type == "voc_pipeline" and execution.get("expected_task") not in {"summary", "policy", "both"}:
+            errors.append(f"{case_id}: execution.expected_task must be summary, policy, or both")
+        if execution_type in {"fault_proxy", "isolated_fault"}:
+            fault_case_id = str(execution.get("fault_case_id") or "")
+            if not fault_case_id.startswith("FT-"):
+                errors.append(f"{case_id}: execution.fault_case_id must reference an FT case")
         for field in ("name", "source_ref", "acceptance"):
             if not str(case.get(field) or "").strip():
                 errors.append(f"{case_id}: {field}가 필요합니다.")
@@ -1852,6 +2172,7 @@ def save_quality_test_catalog(payload: dict, *, source: str) -> dict:
             "changed": False,
             "path": str(target),
             "sha256": after_hash,
+            "total_cases": len(payload.get("cases", [])),
             "message": "현재 테스트케이스 카탈로그와 동일합니다.",
         }
 
@@ -1891,6 +2212,7 @@ def save_quality_test_catalog(payload: dict, *, source: str) -> dict:
         "path": str(target),
         "backup_path": str(backup_path) if before_bytes else "",
         "sha256": after_hash,
+        "total_cases": len(payload.get("cases", [])),
         "message": "테스트케이스 카탈로그를 저장했습니다.",
     }
 
@@ -2100,7 +2422,7 @@ def save_quality_rubric(rubric_type: str, payload: dict, *, source: str) -> dict
 
 
 def test_case_summary() -> dict:
-    cases = load_test_cases().get("cases", [])
+    cases = load_unified_quality_cases().get("cases", [])
     return {"total": len(cases), "categories": dict(Counter(case.get("category", "unknown") for case in cases))}
 
 

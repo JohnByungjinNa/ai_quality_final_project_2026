@@ -146,7 +146,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_dashboard.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_dashboard.ps1 -Restart
 ```
 
-### 5.3 VOC 품질진단 사용 순서
+### 5.3 GitHub 환경 등록
+
+다른 사용자가 저장소를 clone하거나 ZIP으로 전달받은 경우, 대시보드의
+`GitHub 관리 > 환경 설정`에서 Git 설치 상태, 저장소, 사용자 이름·이메일,
+원격 저장소(origin)를 순서대로 점검하고 등록할 수 있습니다.
+
+- 사용자 이름과 이메일은 이 프로젝트의 로컬 Git 설정에만 저장됩니다.
+- ZIP으로 받은 폴더는 사용자가 동의한 경우에만 Git 저장소로 초기화됩니다.
+- 인증 토큰과 비밀번호는 화면이나 프로젝트 파일에 저장하지 않습니다.
+- 자세한 내용은 [GitHub 관리 메뉴 사용 가이드](docs/github_management_guide.md)를 참고합니다.
+
+### 5.4 VOC 품질진단 사용 순서
 
 1. `Agent 관리`에서 6개 Agent 상태를 확인합니다.
 2. `수동 TC 수행`에서 대표 Case와 독립 Judge 사용 여부를 선택합니다.
