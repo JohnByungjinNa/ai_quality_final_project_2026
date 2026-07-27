@@ -167,6 +167,85 @@ def _safe_text(value: str) -> str:
     return text
 
 
+def _agent_env_value(name: str) -> tuple[str, str]:
+    candidates = (VOC_RUNTIME_DIR / ".env", VOC_RUNTIME_DIR.parent / ".env")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            trimmed = line.strip()
+            if not trimmed or trimmed.startswith("#") or "=" not in trimmed:
+                continue
+            key, value = trimmed.split("=", 1)
+            if key.strip() != name:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            return value, str(path)
+    return "", ""
+
+
+def check_openai_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
+    """Agent와 같은 .env의 OpenAI 키를 노출하지 않고 인증 가능 여부만 확인합니다."""
+    checked_at = datetime.now().astimezone().isoformat()
+    api_key, source = _agent_env_value("OPENAI_API_KEY")
+    if not api_key or api_key.startswith("YOUR_"):
+        return {
+            "ok": False,
+            "status": "NOT_CONFIGURED",
+            "message": "OPENAI_API_KEY가 설정되지 않았습니다.",
+            "source": source or "미확인",
+            "checked_at": checked_at,
+        }
+    try:
+        from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI
+
+        OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0).models.list()
+    except AuthenticationError:
+        return {
+            "ok": False,
+            "status": "AUTH_FAILED",
+            "message": (
+                "OpenAI API 키 인증에 실패했습니다(HTTP 401). `.env`의 OPENAI_API_KEY를 "
+                "유효한 키로 교체한 뒤 Agent 관리에서 전체 재시작하세요."
+            ),
+            "source": source,
+            "checked_at": checked_at,
+        }
+    except APIConnectionError:
+        return {
+            "ok": False,
+            "status": "CONNECTION_ERROR",
+            "message": "OpenAI 연결에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 점검하세요.",
+            "source": source,
+            "checked_at": checked_at,
+        }
+    except APIStatusError as exc:
+        return {
+            "ok": False,
+            "status": f"HTTP_{exc.status_code}",
+            "message": f"OpenAI 자격 증명 점검이 HTTP {exc.status_code}로 실패했습니다.",
+            "source": source,
+            "checked_at": checked_at,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "CHECK_ERROR",
+            "message": _safe_text(f"OpenAI 자격 증명 점검 오류: {type(exc).__name__}"),
+            "source": source,
+            "checked_at": checked_at,
+        }
+    return {
+        "ok": True,
+        "status": "PASS",
+        "message": "OpenAI API 키 인증에 성공했습니다. 키 변경 후에는 Agent 전체 재시작이 필요합니다.",
+        "source": source,
+        "checked_at": checked_at,
+    }
+
+
 REWORK_INSTRUCTION_MAX_CHARS = 2400
 VALIDITY_SUPPLEMENT_MAX_CHARS = 1200
 VALIDITY_SUPPLEMENT_FIELDS = (
@@ -451,6 +530,33 @@ async def _test_agent_rpc_async(agent_name: str, port: int, timeout: float):
     return rpc_name, input_summary, _safe_text(_summarize_agent_test_response(agent_name, response))
 
 
+def _agent_rpc_error_details(error_text: str) -> tuple[str, str]:
+    lowered = str(error_text or "").lower()
+    if (
+        "incorrect api key" in lowered
+        or "authentication_error" in lowered
+        or "statuscode.unauthenticated" in lowered
+        or ("401" in lowered and ("openai" in lowered or "api key" in lowered))
+    ):
+        return (
+            "OPENAI_AUTH_FAILED",
+            "OpenAI API 키 인증 실패(HTTP 401) · `.env`의 OPENAI_API_KEY를 "
+            "유효한 키로 교체한 뒤 Agent 관리에서 전체 재시작하세요.",
+        )
+    if "rate limit" in lowered or "statuscode.resource_exhausted" in lowered or "429" in lowered:
+        return (
+            "RATE_LIMITED",
+            "OpenAI 호출 한도 초과(HTTP 429) · 잠시 후 다시 시도하고 사용량·결제 한도를 확인하세요.",
+        )
+    if "deadline_exceeded" in lowered or "deadline exceeded" in lowered:
+        return (
+            "TIMEOUT",
+            "응답 시간 초과 · Agent 프로세스는 RUNNING이지만 실제 처리 또는 외부 LLM 응답이 "
+            "제한 시간 안에 끝나지 않았습니다. Agent 재시작 후 다시 시도하세요.",
+        )
+    return "RPC_ERROR", _safe_text(error_text)[:300]
+
+
 def test_agent_rpc(agent_name: str, port: int, *, timeout: float = 12.0) -> dict:
     started = time.perf_counter()
     try:
@@ -467,17 +573,14 @@ def test_agent_rpc(agent_name: str, port: int, *, timeout: float = 12.0) -> dict
         }
     except Exception as exc:
         error_text = _safe_text(f"{type(exc).__name__}: {exc}")
-        if "DEADLINE_EXCEEDED" in error_text or "Deadline Exceeded" in error_text:
-            error_text = (
-                "응답 시간 초과 · Agent 프로세스는 RUNNING이지만 실제 처리 또는 외부 LLM 응답이 "
-                "제한 시간 안에 끝나지 않았습니다. 최신 헬스체크 코드 반영을 위해 Agent 재시작 후 다시 시도하세요."
-            )
+        error_code, error_text = _agent_rpc_error_details(error_text)
         return {
             "ok": False,
             "agent": agent_name,
             "rpc": "-",
             "input": "-",
-            "summary": error_text[:220],
+            "error_code": error_code,
+            "summary": error_text,
             "duration_seconds": round(time.perf_counter() - started, 2),
         }
 

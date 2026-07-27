@@ -31,6 +31,7 @@ from services.voc_quality_service import (
     batch_preflight,
     build_voc_acceptance_snapshot,
     build_voc_quality_report,
+    check_openai_agent_credential,
     compare_voc_runs,
     compare_voc_improvement_answers,
     create_voc_defect,
@@ -2101,6 +2102,26 @@ def render_agents():
                 _run_agent_control_and_refresh("restart")
             if st.button("전체 중지", disabled=not confirmed, width="stretch", icon=":material/stop:"):
                 _run_agent_control_and_refresh("stop")
+            if st.button(
+                "OpenAI 인증 점검",
+                width="stretch",
+                icon=":material/key:",
+                key="check_agent_openai_credential",
+            ):
+                with st.spinner("Agent가 사용할 OpenAI 자격 증명을 점검하고 있습니다..."):
+                    st.session_state["agent_openai_credential_result"] = (
+                        check_openai_agent_credential()
+                    )
+        credential_result = st.session_state.get("agent_openai_credential_result")
+        if credential_result:
+            if credential_result.get("ok"):
+                st.success(credential_result.get("message", "OpenAI 인증 점검 성공"))
+            else:
+                st.error(credential_result.get("message", "OpenAI 인증 점검 실패"))
+            st.caption(
+                f"설정 파일: {credential_result.get('source', '미확인')} · "
+                f"점검 시각: {credential_result.get('checked_at', '-')}"
+            )
     _show_command_result(show_success=False)
 
     snapshot = _load_agent_management_snapshot()

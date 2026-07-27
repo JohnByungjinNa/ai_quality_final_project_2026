@@ -1,7 +1,9 @@
-// Start the local dashboard and qa-observer services. This script is intended to be run from the project root directory.
-// must be used with PowerShell 7 or newer. The script will start the dashboard and observer if they are not already running, or reuse the existing processes if they are healthy. If the `-Restart` switch is provided, it will stop any existing dashboard process before starting a new one.
-// The script will throw an error if the dashboard or observer cannot be started, or if the existing processes are not healthy. The script will also check that the project virtual environment exists and that Streamlit is at least version 1.59.0.
-// before running this script, ensure that the project virtual environment is created and that the required Python packages are installed. The script will create a `logs\local_services` directory to store the stdout and stderr logs of the dashboard and observer processes.
+<#
+Start the local dashboard and qa-observer services from the project root.
+PowerShell 7 or newer is recommended. The script reuses healthy services, or
+restarts the dashboard when -Restart is provided. Logs are written beneath
+logs\local_services.
+#>
 
 param(
     [switch]$Restart
@@ -111,6 +113,10 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw "Project virtual environment was not found: $Python"
 }
 
+$StreamlitAvailable = & $Python -c "import importlib.util; print(importlib.util.find_spec('streamlit') is not None)"
+if ($StreamlitAvailable -ne "True") {
+    throw "Streamlit is not installed in the project virtual environment. Run: .\.venv\Scripts\python.exe -m pip install -r requirements.txt"
+}
 $StreamlitVersion = & $Python -c "import streamlit; print(streamlit.__version__)"
 if ([version]$StreamlitVersion -lt [version]"1.59.0") {
     throw "Streamlit 1.59.0 or newer is required. Installed: $StreamlitVersion"
