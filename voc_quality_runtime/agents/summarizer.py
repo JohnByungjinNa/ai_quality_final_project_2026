@@ -18,6 +18,7 @@ import grpc
 # voc.proto 파일로부터 생성된 메시지 및 서비스 정의
 import voc_pb2
 import voc_pb2_grpc
+from utils.agent_errors import agent_rpc_error
 
 # ============ 프로젝트 내부 모듈 임포트 ============
 # OpenAI Chat API를 사용하기 위한 래퍼 클래스
@@ -396,10 +397,8 @@ class SummarizerServicer(voc_pb2_grpc.SummarizerServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(
-                grpc.StatusCode.INTERNAL,  # 내부 서버 오류 상태 코드
-                f"Summarizer.MakeCandidates error: {e}"  # 에러 메시지
-            )
+            status, message = agent_rpc_error(e, "Summarizer.MakeCandidates")
+            await context.abort(status, message)
 
     # ============ Refine RPC 구현 ============
     async def Refine(self, request, context):
@@ -430,10 +429,8 @@ class SummarizerServicer(voc_pb2_grpc.SummarizerServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(
-                grpc.StatusCode.INTERNAL,  # 내부 서버 오류 상태 코드
-                f"Summarizer.Refine error: {e}"  # 에러 메시지
-            )
+            status, message = agent_rpc_error(e, "Summarizer.Refine")
+            await context.abort(status, message)
 
     # ============ RunPipeline RPC 구현 ============
     async def RunPipeline(self, request, context):
@@ -475,10 +472,8 @@ class SummarizerServicer(voc_pb2_grpc.SummarizerServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(
-                grpc.StatusCode.INTERNAL,  # 내부 서버 오류 상태 코드
-                f"Summarizer.RunPipeline error: {e}"  # 에러 메시지
-            )
+            status, message = agent_rpc_error(e, "Summarizer.RunPipeline")
+            await context.abort(status, message)
 
 
 # ============ gRPC 서버 실행 함수 ============

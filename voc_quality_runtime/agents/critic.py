@@ -28,6 +28,7 @@ import voc_pb2_grpc
 from utils.settings import MODEL_SUMMARY, openai_client
 # JSON 파싱 유틸리티 함수
 from utils.json_utils import safe_json_loads
+from utils.agent_errors import agent_rpc_error
 
 
 # ============ 비즈니스 로직 ============
@@ -230,7 +231,8 @@ class CriticServicer(voc_pb2_grpc.CriticServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(grpc.StatusCode.INTERNAL, f"Critic error: {e}")
+            status, message = agent_rpc_error(e, "Critic.Review")
+            await context.abort(status, message)
 
 
 # ============ gRPC 서버 실행 함수 ============

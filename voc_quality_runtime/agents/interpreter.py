@@ -28,6 +28,7 @@ import voc_pb2_grpc
 from utils.settings import DEFAULT_CSV, openai_client, MODEL_SUMMARY
 # JSON 추출 유틸리티 함수
 from utils.json_utils import extract_json
+from utils.agent_errors import agent_rpc_error
 
 
 # ============ 비즈니스 로직 ============
@@ -248,7 +249,8 @@ class InterpreterServicer(voc_pb2_grpc.InterpreterServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(grpc.StatusCode.INTERNAL, f"Interpreter error: {e}")
+            status, message = agent_rpc_error(e, "Interpreter.ParseQuestion")
+            await context.abort(status, message)
 
 
 # ============ gRPC 서버 실행 함수 ============

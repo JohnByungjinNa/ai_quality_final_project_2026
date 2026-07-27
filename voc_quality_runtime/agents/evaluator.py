@@ -22,6 +22,7 @@ import voc_pb2_grpc
 from llm_wrappers.openai_chat import OpenAIChat
 # JSON 추출 유틸리티 함수
 from utils.json_utils import extract_json
+from utils.agent_errors import agent_rpc_error
 
 
 # ============ Evaluator Agent 비즈니스 로직 ============
@@ -182,10 +183,8 @@ class EvaluatorServicer(voc_pb2_grpc.EvaluatorServicer):
         except Exception as e:
             # ============ 에러 처리 ============
             # 예외 발생 시 gRPC 에러로 변환하여 클라이언트에 전달합니다
-            await context.abort(
-                grpc.StatusCode.INTERNAL,  # 내부 서버 오류 상태 코드
-                f"Evaluator error: {e}"   # 에러 메시지
-            )
+            status, message = agent_rpc_error(e, "Evaluator.Evaluate")
+            await context.abort(status, message)
 
 
 # ============ gRPC 서버 실행 함수 ============
