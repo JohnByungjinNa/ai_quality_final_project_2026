@@ -16,6 +16,7 @@ from services.github_service import (
     create_commit,
     download_project_from_github,
     fetch_origin,
+    collect_sync_preflight,
     merge_origin_into_current_branch,
     pull_current_branch,
     push_current_branch,
@@ -23,6 +24,7 @@ from services.github_service import (
     run_git,
     run_github_sync_validation,
     save_project_to_github,
+    stash_and_download_project_from_github,
     verify_remote_connection,
 )
 
@@ -689,7 +691,161 @@ def _render_project_sync_panel(snapshot):
         if not remote_ready:
             st.caption("Git 저장/다운로드를 사용하려면 GitHub 관리 > 환경 설정에서 origin 원격 저장소를 먼저 등록하세요.")
         st.caption("ZIP에는 .env, secrets, .git, .venv, 캐시, 실행 로그 폴더를 포함하지 않습니다.")
+        _render_sync_preflight_panel(snapshot, remote_ready=remote_ready)
         _render_safe_sync_wizard(snapshot, remote_ready=remote_ready, changed_count=changed_count)
+
+
+def _render_sync_preflight_panel(snapshot, *, remote_ready):
+    if not remote_ready:
+        return
+
+    sync = snapshot.get("ahead_behind") or {}
+    needs_detail = bool(snapshot.get("changed_files")) and (
+        int(sync.get("behind") or 0) > 0 or sync.get("state") == "diverged"
+    )
+    if needs_detail:
+        preflight = collect_sync_preflight(refresh_remote=False)
+    else:
+        local_count = len(snapshot.get("changed_files") or [])
+        remote_count = int(sync.get("behind") or 0)
+        local_commit_count = int(sync.get("ahead") or 0)
+        recommendation = (
+            "로컬 변경사항이 있습니다. Git 저장 또는 stash 백업 후 다운로드를 선택할 수 있습니다."
+            if local_count
+            else "GitHub에 새 커밋이 있습니다. Git 다운로드를 진행할 수 있습니다."
+            if remote_count
+            else "GitHub와 로컬 상태가 안정적입니다."
+        )
+        preflight = {
+            "ok": True,
+            "recommendation": recommendation,
+            "counts": {
+                "local": local_count,
+                "remote": remote_count,
+                "local_commits": local_commit_count,
+                "actual_conflicts": 0,
+                "conflict_candidates": 0,
+            },
+            "index_lock": {"exists": False},
+            "conflict_candidates": [],
+        }
+    counts = preflight.get("counts", {})
+    conflict_count = counts.get("conflict_candidates", 0)
+    actual_conflict_count = counts.get("actual_conflicts", 0)
+    index_lock = preflight.get("index_lock") or {}
+    has_lock = bool(index_lock.get("exists"))
+    risk_color = "red" if actual_conflict_count or has_lock else "orange" if conflict_count else "green"
+    risk_label = (
+        "실제 충돌"
+        if actual_conflict_count
+        else "잠금 확인"
+        if has_lock
+        else "충돌 가능"
+        if conflict_count
+        else "안정"
+    )
+
+    with st.container(border=True):
+        title_col, action_col = st.columns([1.5, 0.75], gap="small", vertical_alignment="center")
+        with title_col:
+            st.markdown("##### :material/rule_settings: 동기화 사전 점검")
+            st.caption("GitHub 다운로드·저장 전에 로컬 변경, GitHub 변경, 같은 파일 변경 여부를 먼저 확인합니다.")
+        with action_col:
+            if st.button(
+                "사전 점검 새로고침",
+                icon=":material/refresh:",
+                width="stretch",
+                key="github_sync_preflight_refresh",
+            ):
+                st.rerun()
+
+        metric_cols = st.columns(5, gap="small")
+        metric_cols[0].metric("로컬 변경", f"{counts.get('local', 0)}건", border=True)
+        metric_cols[1].metric("GitHub 변경", f"{counts.get('remote', 0)}건", border=True)
+        metric_cols[2].metric("로컬 커밋", f"{counts.get('local_commits', 0)}건", border=True)
+        metric_cols[3].metric("충돌 가능", f"{conflict_count}건", border=True)
+        metric_cols[4].metric("판정", risk_label, border=True)
+
+        st.markdown(f":{risk_color}-badge[{risk_label}] {preflight.get('recommendation', '')}")
+        if has_lock:
+            st.warning(
+                f"Git 잠금 파일이 감지되었습니다. 실행 중인 Git 작업이 없다면 확인이 필요합니다: {index_lock.get('path')}",
+                icon=":material/lock:",
+            )
+
+        candidates = preflight.get("conflict_candidates", [])
+        if candidates:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "파일": item["path"],
+                            "위험도": item["risk"],
+                            "로컬": item.get("local_status") or "-",
+                            "GitHub": item.get("remote_status") or "-",
+                            "로컬 커밋": item.get("local_commit_status") or "-",
+                            "원인": item.get("reason") or "-",
+                        }
+                        for item in candidates
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "파일": st.column_config.TextColumn("파일", pinned=True, width="medium"),
+                    "원인": st.column_config.TextColumn("원인", width="large"),
+                },
+            )
+            selected_path = st.selectbox(
+                "상세 확인 파일",
+                [item["path"] for item in candidates],
+                key="github_sync_preflight_selected_path",
+            )
+            selected = next((item for item in candidates if item["path"] == selected_path), candidates[0])
+            local_tab, remote_tab = st.tabs(["내 PC 변경", "GitHub 변경"])
+            with local_tab:
+                st.code(selected.get("local_diff") or "표시할 로컬 diff가 없습니다.", language="diff")
+            with remote_tab:
+                st.code(selected.get("remote_diff") or "표시할 GitHub diff가 없습니다.", language="diff")
+        else:
+            if counts.get("local", 0) and counts.get("remote", 0):
+                st.info(
+                    "로컬과 GitHub 양쪽에 변경이 있지만 같은 파일은 아닙니다. 그래도 다운로드 전 백업을 권장합니다.",
+                    icon=":material/info:",
+                )
+            elif counts.get("local", 0):
+                st.info("로컬 변경사항이 있습니다. Git 저장 또는 stash 백업 후 다운로드를 선택할 수 있습니다.", icon=":material/edit:")
+            elif counts.get("remote", 0):
+                st.info("GitHub에 새 변경사항이 있습니다. Git 다운로드를 진행할 수 있습니다.", icon=":material/download:")
+            else:
+                st.success("충돌 가능 파일이 없습니다.", icon=":material/check_circle:")
+
+        action_cols = st.columns([1.0, 1.0, 1.2], gap="small")
+        with action_cols[0]:
+            if st.button(
+                "내 변경 백업 후 Git 다운로드",
+                icon=":material/safety_check:",
+                width="stretch",
+                disabled=not preflight.get("ok") or actual_conflict_count > 0 or has_lock,
+                key="github_stash_then_download",
+                help="현재 PC 변경사항을 git stash에 보관한 뒤 GitHub 최신 변경사항을 다운로드합니다.",
+            ):
+                _run_and_rerun(
+                    stash_and_download_project_from_github,
+                    "로컬 변경사항을 백업하고 GitHub 최신 변경사항을 다운로드하는 중입니다...",
+                )
+        with action_cols[1]:
+            if st.button(
+                "GitHub 변경만 다운로드",
+                icon=":material/download:",
+                width="stretch",
+                disabled=not preflight.get("ok") or counts.get("local", 0) > 0,
+                key="github_plain_download_from_preflight",
+                help="로컬 변경사항이 없을 때만 GitHub 최신 변경사항을 다운로드합니다.",
+            ):
+                _run_and_rerun(download_project_from_github, "GitHub 최신 변경사항을 다운로드하는 중입니다...")
+        with action_cols[2]:
+            st.caption("stash 백업은 `git stash list`에서 다시 확인할 수 있습니다. 자동 덮어쓰기는 하지 않습니다.")
 
 
 def _project_sync_state(sync):

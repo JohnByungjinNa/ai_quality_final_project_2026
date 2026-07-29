@@ -6,14 +6,45 @@ import os
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 
-SUPPORTED_PROVIDERS = ("anthropic", "openai")
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini")
 TRANSIENT_MARKERS = (
     "429", "rate limit", "rate_limit", "too many requests", "timeout",
     "timed out", "deadline_exceeded", "overloaded",
 )
-AUTH_MARKERS = ("authentication", "unauthorized", "invalid api key", "credentials missing", "401")
+AUTH_MARKERS = (
+    "authentication", "unauthorized", "invalid api key", "api key not valid",
+    "credentials missing", "permission denied", "401", "403",
+)
+
+
+def gemini_api_key() -> str:
+    configured = (
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_GENAI_API_KEY")
+        or ""
+    )
+    if configured:
+        return configured
+    project_root = Path(__file__).resolve().parents[2]
+    for path in (project_root / "voc_quality_runtime" / ".env", project_root / ".env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            trimmed = line.strip()
+            if not trimmed or trimmed.startswith("#") or "=" not in trimmed:
+                continue
+            key, value = trimmed.split("=", 1)
+            if key.strip() not in {"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"}:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            return value
+    return ""
 
 
 def _now_iso() -> str:
@@ -35,6 +66,14 @@ def judge_provider_options() -> list[dict]:
             "default_model": os.environ.get("A2A_MODEL_JUDGE_OPENAI")
             or os.environ.get("A2A_MODEL_SUMMARY", "gpt-5.2"),
             "credential_configured": bool(os.environ.get("OPENAI_API_KEY")),
+        },
+        {
+            "provider": "gemini",
+            "label": "Gemini",
+            "default_model": os.environ.get("A2A_MODEL_JUDGE_GEMINI")
+            or os.environ.get("A2A_MODEL_GEMINI")
+            or "gemini-2.5-pro",
+            "credential_configured": bool(gemini_api_key()),
         },
     ]
 
@@ -270,6 +309,34 @@ def _invoke_provider(*, provider: str, model: str, prompt: str, timeout_seconds:
         usage = {
             "input_tokens": int(getattr(response.usage, "input_tokens", 0) or 0),
             "output_tokens": int(getattr(response.usage, "output_tokens", 0) or 0),
+        }
+        return text, usage
+
+    if provider == "gemini":
+        from google import genai
+        from google.genai import types
+
+        api_key = gemini_api_key()
+        if not api_key:
+            raise RuntimeError("Gemini credentials missing")
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
+        )
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=4096,
+                response_mime_type="application/json",
+            ),
+        )
+        text = str(getattr(response, "text", "") or "").strip()
+        usage_obj = getattr(response, "usage_metadata", None)
+        usage = {
+            "input_tokens": int(getattr(usage_obj, "prompt_token_count", 0) or 0),
+            "output_tokens": int(getattr(usage_obj, "candidates_token_count", 0) or 0),
         }
         return text, usage
 

@@ -16,6 +16,7 @@ $WorkspaceEnvFile = Join-Path $WorkspaceRoot ".env"
 $RuntimeDir = Join-Path $ProjectRoot ".runtime"
 $LogDir = Join-Path $RuntimeDir "logs"
 $PidFile = Join-Path $RuntimeDir "agents.json"
+$DefaultStartTimeoutSeconds = 45
 
 $Agents = @(
     @{ Name = "interpreter"; Module = "agents.interpreter"; Port = 6101 },
@@ -91,6 +92,18 @@ function Test-TcpPort {
     }
     catch { return $false }
     finally { $client.Dispose() }
+}
+
+function Get-AgentStartTimeoutSeconds {
+    $configured = [Environment]::GetEnvironmentVariable("VOC_AGENT_START_TIMEOUT_SECONDS", "Process")
+    $seconds = 0
+    if (-not [string]::IsNullOrWhiteSpace($configured) -and
+        [int]::TryParse($configured, [ref]$seconds) -and
+        $seconds -ge 15 -and
+        $seconds -le 180) {
+        return $seconds
+    }
+    return $DefaultStartTimeoutSeconds
 }
 
 function Read-AgentState {
@@ -192,7 +205,9 @@ function Start-OneAgent {
     $newState = @($state | Where-Object { $_.name -ne $agent.Name }) + @($entry)
     Write-AgentState -State $newState
 
-    $deadline = (Get-Date).AddSeconds(15)
+    $startTimeoutSeconds = Get-AgentStartTimeoutSeconds
+    Write-Host "[STARTING] $($agent.Name) (PID $($process.Id), port $($agent.Port), timeout ${startTimeoutSeconds}s)"
+    $deadline = (Get-Date).AddSeconds($startTimeoutSeconds)
     do {
         if (Test-TcpPort -Port $agent.Port) {
             Write-Host "[RUNNING] $($agent.Name) (PID $($process.Id), port $($agent.Port))"
@@ -251,15 +266,28 @@ function Start-Agents {
     Import-DotEnv
     $python = Get-PythonExecutable
 
-    $occupied = @($Agents | Where-Object { Test-TcpPort -Port $_.Port })
-    if ($occupied.Count -gt 0) {
-        throw "Ports already in use: $($occupied.Port -join ', '). Close the existing agent terminals before starting this managed set."
-    }
-
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $state = Read-AgentState
+    $alreadyRunning = @()
     $started = @()
     try {
         foreach ($agent in $Agents) {
+            $saved = $state | Where-Object { $_.name -eq $agent.Name } | Select-Object -First 1
+            $processRunning = $saved -and ($null -ne (Get-Process -Id $saved.pid -ErrorAction SilentlyContinue))
+            $portOpen = Test-TcpPort -Port $agent.Port
+
+            if ($processRunning -and $portOpen) {
+                $alreadyRunning += $saved
+                Write-Host "[RUNNING] $($agent.Name) is already running (PID $($saved.pid), port $($agent.Port))."
+                continue
+            }
+            if ($portOpen) {
+                throw "Port $($agent.Port) is already in use by an unmanaged process. It was not stopped."
+            }
+            if ($processRunning) {
+                throw "$($agent.Name) process exists but port $($agent.Port) is not ready. Stop it before starting again."
+            }
+
             $stdout = Join-Path $LogDir "$($agent.Name).out.log"
             $stderr = Join-Path $LogDir "$($agent.Name).err.log"
             $process = Start-Process -FilePath $python `
@@ -279,18 +307,24 @@ function Start-Agents {
             Write-Host "[STARTING] $($agent.Name) (PID $($process.Id), port $($agent.Port))"
         }
 
-        $started | ConvertTo-Json | Set-Content -LiteralPath $PidFile -Encoding UTF8
+        Write-AgentState -State @($alreadyRunning + $started)
 
-        $deadline = (Get-Date).AddSeconds(15)
+        $startTimeoutSeconds = Get-AgentStartTimeoutSeconds
+        $deadline = (Get-Date).AddSeconds($startTimeoutSeconds)
+        $lastReady = -1
         do {
             $ready = @($Agents | Where-Object { Test-TcpPort -Port $_.Port }).Count
+            if ($ready -ne $lastReady) {
+                Write-Host "[READY] $ready / $($Agents.Count) agents"
+                $lastReady = $ready
+            }
             if ($ready -eq $Agents.Count) { break }
-            Start-Sleep -Milliseconds 300
+            Start-Sleep -Milliseconds 500
         } while ((Get-Date) -lt $deadline)
 
         $failed = @($Agents | Where-Object { -not (Test-TcpPort -Port $_.Port) })
         if ($failed.Count -gt 0) {
-            throw "Agents failed to start: $($failed.Name -join ', '). Check .runtime\logs."
+            throw "Agents failed to start within ${startTimeoutSeconds}s: $($failed.Name -join ', '). Check .runtime\logs."
         }
         Write-Host "All 6 agents are running."
         Show-Status
@@ -299,7 +333,7 @@ function Start-Agents {
         foreach ($item in $started) {
             Stop-Process -Id $item.pid -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+        Write-AgentState -State @($alreadyRunning)
         throw
     }
 }

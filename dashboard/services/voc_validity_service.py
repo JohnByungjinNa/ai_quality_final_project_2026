@@ -35,6 +35,15 @@ def validity_provider_options() -> list[dict]:
             or "gpt-5.2",
             "credential_configured": bool(os.environ.get("OPENAI_API_KEY")),
         },
+        {
+            "provider": "gemini",
+            "label": "Gemini",
+            "default_model": os.environ.get("A2A_MODEL_VALIDITY_GEMINI")
+            or os.environ.get("A2A_MODEL_JUDGE_GEMINI")
+            or os.environ.get("A2A_MODEL_GEMINI")
+            or "gemini-2.5-pro",
+            "credential_configured": bool(voc_judge_service.gemini_api_key()),
+        },
     ]
 
 

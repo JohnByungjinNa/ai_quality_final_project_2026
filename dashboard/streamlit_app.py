@@ -20,6 +20,7 @@ from pages_top.testcase_upload_view import render_testcase_upload_page
 from pages_top.voc_quality import render_voc_quality_page
 from pages_top.overview_dashboard import render_overview_dashboard_page
 from components.shutdown_overlay import render_shutdown_overlay
+from components.streamlit_shortcut_guard import render_streamlit_shortcut_guard
 from core.app_state import initialize_session_state
 from core.constants import SYSTEM_NAME
 from core.paths import TOPBAR_HEIGHT
@@ -56,6 +57,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+render_streamlit_shortcut_guard()
 
 if _version_tuple(st.__version__) < MIN_STREAMLIT_VERSION:
     st.error(

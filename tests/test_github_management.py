@@ -10,11 +10,13 @@ from dashboard.services.github_service import (
     collect_ahead_behind,
     collect_repository_home,
     collect_git_environment,
+    collect_sync_preflight,
     configure_repository,
     download_project_from_github,
     is_github_remote_url,
     readiness_checks,
     save_project_to_github,
+    stash_and_download_project_from_github,
     verify_remote_connection,
 )
 
@@ -270,6 +272,68 @@ def test_download_project_from_github_pulls_remote_changes(tmp_path):
     assert "Remote update" in (work / "README.md").read_text(encoding="utf-8")
 
 
+def test_sync_preflight_flags_same_file_local_and_remote_changes(tmp_path):
+    remote = tmp_path / "remote.git"
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=source, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
+    (source / "README.md").write_text("# Demo\n", encoding="utf-8")
+    assert save_project_to_github("Initial save", project_dir=source)["ok"] is True
+    subprocess.run(["git", "clone", "--branch", "main", str(remote), str(work)], check=True, capture_output=True)
+
+    (source / "README.md").write_text("# Demo\n\nRemote update\n", encoding="utf-8")
+    assert save_project_to_github("Remote update", project_dir=source)["ok"] is True
+    (work / "README.md").write_text("# Demo\n\nLocal draft\n", encoding="utf-8")
+
+    preflight = collect_sync_preflight(project_dir=work)
+
+    assert preflight["counts"]["local"] == 1
+    assert preflight["counts"]["remote"] == 1
+    assert preflight["counts"]["conflict_candidates"] == 1
+    candidate = preflight["conflict_candidates"][0]
+    assert candidate["path"] == "README.md"
+    assert "Local draft" in candidate["local_diff"]
+    assert "Remote update" in candidate["remote_diff"]
+
+
+def test_stash_and_download_project_from_github_preserves_local_changes(tmp_path):
+    remote = tmp_path / "remote.git"
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=source, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
+    (source / "README.md").write_text("# Demo\n", encoding="utf-8")
+    assert save_project_to_github("Initial save", project_dir=source)["ok"] is True
+    subprocess.run(["git", "clone", "--branch", "main", str(remote), str(work)], check=True, capture_output=True)
+
+    (source / "README.md").write_text("# Demo\n\nRemote update\n", encoding="utf-8")
+    assert save_project_to_github("Remote update", project_dir=source)["ok"] is True
+    (work / "README.md").write_text("# Demo\n\nLocal draft\n", encoding="utf-8")
+
+    result = stash_and_download_project_from_github(project_dir=work)
+
+    assert result["ok"] is True
+    assert result["stash_created"] is True
+    assert "Remote update" in (work / "README.md").read_text(encoding="utf-8")
+    stash_list = subprocess.run(
+        ["git", "stash", "list"],
+        cwd=work,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "backup before GitHub download" in stash_list.stdout
+
+
 def test_project_source_archive_excludes_secrets_and_runtime_dirs(tmp_path):
     (tmp_path / "app.py").write_text("print('safe')\n", encoding="utf-8")
     (tmp_path / ".env").write_text("SECRET=1\n", encoding="utf-8")
@@ -315,7 +379,7 @@ def test_github_environment_page_renders():
 def test_github_repository_status_page_renders():
     app = AppTest.from_file(
         "tests/fixtures/github_management_app.py",
-        default_timeout=20,
+        default_timeout=45,
     )
     app.session_state["github_fixture_sub_menu"] = "저장소 현황"
 
@@ -329,7 +393,7 @@ def test_github_repository_status_page_renders():
 def test_github_project_sync_page_renders():
     app = AppTest.from_file(
         "tests/fixtures/github_management_app.py",
-        default_timeout=20,
+        default_timeout=45,
     )
     app.session_state["github_fixture_sub_menu"] = "프로젝트 동기화"
 

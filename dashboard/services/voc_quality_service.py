@@ -123,6 +123,7 @@ REQUIRED_A2A_LINKS = (
 SECRET_PATTERNS = (
     re.compile(r"sk-proj-[A-Za-z0-9_-]{12,}"),
     re.compile(r"sk-ant-[A-Za-z0-9_-]{12,}"),
+    re.compile(r"AIza[A-Za-z0-9_-]{20,}"),
     re.compile(r"tvly-[A-Za-z0-9_-]{12,}"),
 )
 PERSONAL_DATA_PATTERNS = (
@@ -186,6 +187,14 @@ def _agent_env_value(name: str) -> tuple[str, str]:
     return "", ""
 
 
+def _agent_env_first(names: tuple[str, ...]) -> tuple[str, str, str]:
+    for name in names:
+        value, source = _agent_env_value(name)
+        if value:
+            return value, source, name
+    return "", "", ""
+
+
 def check_openai_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
     """Agent와 같은 .env의 OpenAI 키를 노출하지 않고 인증 가능 여부만 확인합니다."""
     checked_at = datetime.now().astimezone().isoformat()
@@ -242,6 +251,251 @@ def check_openai_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
         "status": "PASS",
         "message": "OpenAI API 키 인증에 성공했습니다. 키 변경 후에는 Agent 전체 재시작이 필요합니다.",
         "source": source,
+        "checked_at": checked_at,
+    }
+
+
+def check_anthropic_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
+    """Agent와 같은 .env의 Anthropic 키를 노출하지 않고 실제 호출 가능 여부만 확인합니다."""
+    checked_at = datetime.now().astimezone().isoformat()
+    api_key, source = _agent_env_value("ANTHROPIC_API_KEY")
+    model = os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6")
+    if not api_key or api_key.startswith("YOUR_"):
+        return {
+            "ok": False,
+            "status": "NOT_CONFIGURED",
+            "message": "ANTHROPIC_API_KEY가 설정되지 않았습니다.",
+            "source": source or "미확인",
+            "model": model,
+            "checked_at": checked_at,
+        }
+    try:
+        from anthropic import (
+            APIConnectionError,
+            APIStatusError,
+            AuthenticationError,
+            BadRequestError,
+            PermissionDeniedError,
+            RateLimitError,
+            Anthropic,
+        )
+
+        client = Anthropic(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+        client.messages.create(
+            model=model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+    except AuthenticationError:
+        return {
+            "ok": False,
+            "status": "AUTH_FAILED",
+            "message": (
+                "Anthropic API 키 인증에 실패했습니다. `.env`의 ANTHROPIC_API_KEY를 "
+                "유효한 키로 교체한 뒤 Agent 관리에서 전체 재시작하세요."
+            ),
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except PermissionDeniedError:
+        return {
+            "ok": False,
+            "status": "PERMISSION_DENIED",
+            "message": "Anthropic 키 권한이 부족합니다. 키의 Workspace·권한·결제 상태를 확인하세요.",
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except RateLimitError:
+        return {
+            "ok": False,
+            "status": "RATE_LIMITED",
+            "message": "Anthropic 요청 한도에 도달했습니다. 잠시 후 다시 점검하세요.",
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except BadRequestError as exc:
+        message = _safe_text(str(exc))
+        if "credit balance" in message.lower() or "too low" in message.lower():
+            return {
+                "ok": False,
+                "status": "INSUFFICIENT_CREDIT",
+                "message": "Anthropic API 키는 감지됐지만 사용 가능 크레딧이 부족합니다. Plans & Billing에서 크레딧을 확인하세요.",
+                "source": source,
+                "model": model,
+                "checked_at": checked_at,
+            }
+        return {
+            "ok": False,
+            "status": "BAD_REQUEST",
+            "message": _safe_text(f"Anthropic 요청이 거부되었습니다: {message}"),
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except APIConnectionError:
+        return {
+            "ok": False,
+            "status": "CONNECTION_ERROR",
+            "message": "Anthropic 연결에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 점검하세요.",
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except APIStatusError as exc:
+        return {
+            "ok": False,
+            "status": f"HTTP_{exc.status_code}",
+            "message": f"Anthropic 자격 증명 점검이 HTTP {exc.status_code}로 실패했습니다.",
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "CHECK_ERROR",
+            "message": _safe_text(f"Anthropic 자격 증명 점검 오류: {type(exc).__name__}"),
+            "source": source,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    return {
+        "ok": True,
+        "status": "PASS",
+        "message": "Anthropic API 키 실제 호출에 성공했습니다. 키 변경 후에는 Agent 전체 재시작이 필요합니다.",
+        "source": source,
+        "model": model,
+        "checked_at": checked_at,
+    }
+
+
+def check_gemini_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
+    """Agent와 같은 .env의 Gemini 키를 노출하지 않고 실제 호출 가능 여부만 확인합니다."""
+    checked_at = datetime.now().astimezone().isoformat()
+    api_key, source, env_name = _agent_env_first(
+        ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY")
+    )
+    model = (
+        os.environ.get("A2A_MODEL_JUDGE_GEMINI")
+        or os.environ.get("A2A_MODEL_GEMINI")
+        or "gemini-2.5-pro"
+    )
+    if not api_key or api_key.startswith("YOUR_"):
+        return {
+            "ok": False,
+            "status": "NOT_CONFIGURED",
+            "message": "GEMINI_API_KEY 또는 GOOGLE_API_KEY가 설정되지 않았습니다.",
+            "source": source or "미확인",
+            "env_name": env_name or "미확인",
+            "model": model,
+            "checked_at": checked_at,
+        }
+    try:
+        from google import genai
+        from google.genai import types
+        from google.genai.errors import ClientError, ServerError
+
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
+        )
+        client.models.generate_content(
+            model=model,
+            contents="ping",
+            config=types.GenerateContentConfig(
+                max_output_tokens=1,
+                temperature=0,
+            ),
+        )
+    except ModuleNotFoundError:
+        return {
+            "ok": False,
+            "status": "SDK_MISSING",
+            "message": "Gemini SDK가 설치되어 있지 않습니다. `pip install google-genai` 후 다시 점검하세요.",
+            "source": source,
+            "env_name": env_name,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except ClientError as exc:
+        status_code = int(getattr(exc, "code", 0) or 0)
+        message = _safe_text(str(exc))
+        lowered = message.lower()
+        if status_code in {400, 401, 403} and (
+            "api key" in lowered
+            or "permission" in lowered
+            or "unauthorized" in lowered
+            or "authentication" in lowered
+        ):
+            status = "AUTH_FAILED" if status_code in {400, 401} else "PERMISSION_DENIED"
+            return {
+                "ok": False,
+                "status": status,
+                "message": "Gemini API 키 인증 또는 권한 확인에 실패했습니다. `.env`의 Gemini 키와 Google AI Studio 프로젝트 권한을 확인하세요.",
+                "source": source,
+                "env_name": env_name,
+                "model": model,
+                "checked_at": checked_at,
+            }
+        if status_code == 429 or "quota" in lowered or "rate" in lowered:
+            return {
+                "ok": False,
+                "status": "RATE_OR_QUOTA_LIMITED",
+                "message": "Gemini 요청 한도 또는 할당량에 도달했습니다. Google AI Studio의 quota/billing 상태를 확인하세요.",
+                "source": source,
+                "env_name": env_name,
+                "model": model,
+                "checked_at": checked_at,
+            }
+        if "billing" in lowered or "credit" in lowered:
+            return {
+                "ok": False,
+                "status": "BILLING_REQUIRED",
+                "message": "Gemini 키는 감지됐지만 결제 또는 사용 가능 상태 확인이 필요합니다.",
+                "source": source,
+                "env_name": env_name,
+                "model": model,
+                "checked_at": checked_at,
+            }
+        return {
+            "ok": False,
+            "status": f"HTTP_{status_code}" if status_code else "CLIENT_ERROR",
+            "message": _safe_text(f"Gemini 자격 증명 점검이 실패했습니다: {message}"),
+            "source": source,
+            "env_name": env_name,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except ServerError as exc:
+        return {
+            "ok": False,
+            "status": "SERVER_ERROR",
+            "message": _safe_text(f"Gemini 서버 응답 오류입니다. 잠시 후 다시 점검하세요: {type(exc).__name__}"),
+            "source": source,
+            "env_name": env_name,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "CHECK_ERROR",
+            "message": _safe_text(f"Gemini 자격 증명 점검 오류: {type(exc).__name__}"),
+            "source": source,
+            "env_name": env_name,
+            "model": model,
+            "checked_at": checked_at,
+        }
+    return {
+        "ok": True,
+        "status": "PASS",
+        "message": "Gemini API 키 실제 호출에 성공했습니다. 키 변경 후에는 화면을 새로고침해 Provider 선택 상태를 확인하세요.",
+        "source": source,
+        "env_name": env_name,
+        "model": model,
         "checked_at": checked_at,
     }
 
@@ -414,6 +668,53 @@ def _run_cmd(script: Path, argument: str | list[str], timeout: int) -> dict:
         }
 
 
+def _run_cmd_without_output_capture(script: Path, argument: str | list[str], timeout: int) -> dict:
+    """Run commands that spawn long-lived child processes without holding stdout pipes open."""
+    if not script.exists():
+        return {"ok": False, "return_code": -1, "output": f"실행 파일 없음: {script}", "duration_seconds": 0}
+
+    arguments = [argument] if isinstance(argument, str) else list(argument)
+    command = [str(script), *arguments]
+    if os.name == "nt":
+        command = ["cmd.exe", "/d", "/c", str(script), *arguments]
+
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=VOC_RUNTIME_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        action_text = " ".join(arguments)
+        output = "Agent 제어 명령이 완료되었습니다. 최신 상태를 다시 확인합니다."
+        if completed.returncode != 0:
+            output = f"Agent 제어 명령이 비정상 종료되었습니다. 명령: {action_text}"
+        return {
+            "ok": completed.returncode == 0,
+            "return_code": completed.returncode,
+            "output": _safe_text(output),
+            "duration_seconds": round(time.perf_counter() - started, 2),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "return_code": -2,
+            "output": f"허용시간 {timeout}초를 초과했습니다. Agent 로그와 현재 상태를 확인하세요.",
+            "duration_seconds": round(time.perf_counter() - started, 2),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "return_code": -3,
+            "output": _safe_text(f"{type(exc).__name__}: {exc}"),
+            "duration_seconds": round(time.perf_counter() - started, 2),
+        }
+
+
 def run_agent_action(action: str, agent_name: str | None = None) -> dict:
     if action not in AGENT_ACTIONS:
         raise ValueError(f"허용되지 않은 Agent 명령: {action}")
@@ -425,6 +726,12 @@ def run_agent_action(action: str, agent_name: str | None = None) -> dict:
         if action == "init":
             raise ValueError("환경 파일 초기화는 개별 Agent를 지정할 수 없습니다.")
         arguments.append(agent_name)
+    if action in {"start", "restart"}:
+        return _run_cmd_without_output_capture(
+            VOC_RUNTIME_DIR / "scripts" / "agents.cmd",
+            arguments,
+            timeout=90,
+        )
     return _run_cmd(VOC_RUNTIME_DIR / "scripts" / "agents.cmd", arguments, timeout=40)
 
 

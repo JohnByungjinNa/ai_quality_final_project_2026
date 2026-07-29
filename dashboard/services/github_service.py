@@ -702,6 +702,297 @@ def collect_ahead_behind(project_dir, branch):
     return {"ahead": ahead, "behind": behind, "label": upstream_label, "state": state}
 
 
+def collect_sync_preflight(
+    project_dir=PROJECT_DIR,
+    *,
+    include_diffs=True,
+    max_diff_chars=5000,
+    refresh_remote=True,
+):
+    snapshot = collect_git_environment(project_dir)
+    repository_root = Path(snapshot.get("repository_root") or project_dir)
+    preflight = {
+        "ok": bool(snapshot.get("git_installed") and snapshot.get("is_repository")),
+        "message": "동기화 사전 점검을 완료했습니다.",
+        "repository_root": str(repository_root),
+        "branch": snapshot.get("branch", ""),
+        "upstream": "",
+        "sync": {"ahead": 0, "behind": 0, "label": "", "state": "unknown"},
+        "remote_refresh": {"ok": None, "message": "", "detail": ""},
+        "local_changes": [],
+        "remote_changes": [],
+        "local_commit_changes": [],
+        "actual_conflicts": [],
+        "conflict_candidates": [],
+        "index_lock": _index_lock_snapshot(repository_root),
+        "counts": {
+            "local": 0,
+            "remote": 0,
+            "local_commits": 0,
+            "actual_conflicts": 0,
+            "conflict_candidates": 0,
+        },
+        "recommendation": "Git 저장 또는 Git 다운로드를 진행할 수 있습니다.",
+    }
+    if not snapshot.get("git_installed"):
+        preflight.update(ok=False, message="Git 실행 파일을 찾을 수 없습니다.")
+        return preflight
+    if not snapshot.get("is_repository"):
+        preflight.update(ok=False, message="현재 폴더가 Git 저장소가 아닙니다.")
+        return preflight
+    if not snapshot.get("remote_url"):
+        preflight.update(ok=False, message="origin 원격 저장소가 등록되어 있지 않습니다.")
+        return preflight
+    if not snapshot.get("branch"):
+        preflight.update(ok=False, message="현재 브랜치를 확인할 수 없습니다.")
+        return preflight
+
+    preflight["remote_refresh"] = (
+        refresh_origin_reference(project_dir)
+        if refresh_remote
+        else {"ok": None, "message": "화면에서 이미 확인한 GitHub 기준을 사용합니다.", "detail": ""}
+    )
+    preflight["upstream"] = upstream_reference(project_dir, snapshot["branch"])
+    preflight["sync"] = collect_ahead_behind(project_dir, snapshot["branch"])
+    upstream = preflight["upstream"] or preflight["sync"].get("label") or ""
+
+    local_entries = parse_status_entries(
+        _output_lines(run_git(["status", "--short", "--untracked-files=all"], project_dir=project_dir))
+    )
+    remote_entries = []
+    local_commit_entries = []
+    if upstream and preflight["sync"].get("state") not in {"no_branch", "no_upstream", "unknown"}:
+        remote_entries = parse_name_status_entries(
+            _output_lines(run_git(["diff", "--name-status", f"HEAD..{upstream}"], project_dir=project_dir))
+        )
+        local_commit_entries = parse_name_status_entries(
+            _output_lines(run_git(["diff", "--name-status", f"{upstream}..HEAD"], project_dir=project_dir))
+        )
+
+    actual_conflict_paths = _output_lines(
+        run_git(["diff", "--name-only", "--diff-filter=U"], project_dir=project_dir)
+    )
+    actual_conflicts = [
+        {"path": path, "status": "U", "label": "병합 충돌"}
+        for path in actual_conflict_paths
+    ]
+
+    preflight["local_changes"] = local_entries
+    preflight["remote_changes"] = remote_entries
+    preflight["local_commit_changes"] = local_commit_entries
+    preflight["actual_conflicts"] = actual_conflicts
+
+    local_paths = {entry["path"].replace("\\", "/") for entry in local_entries}
+    remote_paths = {entry["path"].replace("\\", "/") for entry in remote_entries}
+    local_commit_paths = {entry["path"].replace("\\", "/") for entry in local_commit_entries}
+    actual_paths = {entry["path"].replace("\\", "/") for entry in actual_conflicts}
+
+    candidates = {}
+
+    def ensure_candidate(path):
+        normalized = str(path or "").replace("\\", "/")
+        if normalized not in candidates:
+            candidates[normalized] = {
+                "path": normalized,
+                "risk": "주의",
+                "reason": [],
+                "local_status": "",
+                "remote_status": "",
+                "local_commit_status": "",
+                "local_diff": "",
+                "remote_diff": "",
+            }
+        return candidates[normalized]
+
+    for path in sorted(actual_paths):
+        candidate = ensure_candidate(path)
+        candidate["risk"] = "실제 충돌"
+        candidate["reason"].append("이미 Git 병합 충돌 상태로 표시된 파일입니다.")
+
+    for path in sorted(local_paths & remote_paths):
+        candidate = ensure_candidate(path)
+        candidate["risk"] = "충돌 가능 높음"
+        candidate["reason"].append("현재 PC의 미커밋 변경과 GitHub 변경이 같은 파일을 수정했습니다.")
+
+    for path in sorted(local_commit_paths & remote_paths):
+        candidate = ensure_candidate(path)
+        if candidate["risk"] == "주의":
+            candidate["risk"] = "충돌 가능"
+        candidate["reason"].append("로컬 커밋과 GitHub 커밋이 같은 파일을 수정했습니다.")
+
+    local_by_path = {entry["path"].replace("\\", "/"): entry for entry in local_entries}
+    remote_by_path = {entry["path"].replace("\\", "/"): entry for entry in remote_entries}
+    local_commit_by_path = {entry["path"].replace("\\", "/"): entry for entry in local_commit_entries}
+    for path, candidate in candidates.items():
+        if path in local_by_path:
+            candidate["local_status"] = local_by_path[path]["label"]
+        if path in remote_by_path:
+            candidate["remote_status"] = remote_by_path[path]["label"]
+        if path in local_commit_by_path:
+            candidate["local_commit_status"] = local_commit_by_path[path]["label"]
+        candidate["reason"] = " / ".join(dict.fromkeys(candidate["reason"]))
+        if include_diffs:
+            candidate["local_diff"] = _limited_git_diff_for_path(
+                project_dir,
+                path,
+                upstream=upstream,
+                include_committed=path in local_commit_paths,
+                max_chars=max_diff_chars,
+            )
+            candidate["remote_diff"] = _limited_remote_diff_for_path(
+                project_dir,
+                path,
+                upstream=upstream,
+                max_chars=max_diff_chars,
+            )
+
+    preflight["conflict_candidates"] = list(candidates.values())
+    preflight["counts"] = {
+        "local": len(local_entries),
+        "remote": len(remote_entries),
+        "local_commits": len(local_commit_entries),
+        "actual_conflicts": len(actual_conflicts),
+        "conflict_candidates": len(preflight["conflict_candidates"]),
+    }
+    preflight["recommendation"] = sync_preflight_recommendation(preflight)
+    return preflight
+
+
+def stash_and_download_project_from_github(project_dir=PROJECT_DIR):
+    snapshot = collect_git_environment(project_dir)
+    if not snapshot["git_installed"]:
+        return {"ok": False, "message": "Git 실행 파일을 찾을 수 없습니다.", "detail": ""}
+    if not snapshot["is_repository"]:
+        return {"ok": False, "message": "현재 폴더가 Git 저장소가 아닙니다.", "detail": ""}
+    if not snapshot["remote_url"]:
+        return {"ok": False, "message": "origin 원격 저장소가 등록되어 있지 않습니다.", "detail": ""}
+
+    details = []
+    stash_created = False
+    if snapshot["changed_files"]:
+        stash_message = f"backup before GitHub download {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        stash_result = run_git(
+            ["stash", "push", "-u", "-m", stash_message],
+            project_dir=project_dir,
+            timeout=60,
+        )
+        details.append(f"[stash] {stash_result['stdout'] or stash_result['stderr']}".strip())
+        if not stash_result["ok"]:
+            return {
+                "ok": False,
+                "message": "로컬 변경사항 백업(stash)에 실패해 Git 다운로드를 중단했습니다.",
+                "detail": "\n\n".join(details),
+            }
+        stash_created = "No local changes" not in (stash_result["stdout"] or stash_result["stderr"])
+
+    pull_result = download_project_from_github(project_dir=project_dir)
+    details.append(f"[download] {pull_result['message']}\n{pull_result.get('detail', '')}".strip())
+    if not pull_result["ok"]:
+        return {
+            "ok": False,
+            "message": (
+                "로컬 변경은 stash에 백업했지만 Git 다운로드에 실패했습니다."
+                if stash_created
+                else pull_result["message"]
+            ),
+            "detail": "\n\n".join(details),
+        }
+
+    return {
+        "ok": True,
+        "message": (
+            "로컬 변경을 stash에 백업한 뒤 GitHub 최신 변경사항을 다운로드했습니다."
+            if stash_created
+            else "GitHub 최신 변경사항을 다운로드했습니다."
+        ),
+        "detail": "\n\n".join(details),
+        "stash_created": stash_created,
+    }
+
+
+def parse_name_status_entries(lines):
+    entries = []
+    for raw in lines:
+        parts = str(raw or "").split("\t")
+        if len(parts) < 2:
+            continue
+        status_code = parts[0].strip()
+        path = parts[-1].strip()
+        old_path = parts[1].strip() if status_code.startswith("R") and len(parts) >= 3 else ""
+        entries.append(
+            {
+                "status": status_code,
+                "label": status_label(status_code),
+                "path": path,
+                "old_path": old_path,
+            }
+        )
+    return entries
+
+
+def sync_preflight_recommendation(preflight):
+    counts = preflight.get("counts", {})
+    sync = preflight.get("sync", {})
+    if counts.get("actual_conflicts", 0) > 0:
+        return "이미 병합 충돌이 발생했습니다. 충돌 파일을 먼저 수동 정리해야 합니다."
+    if preflight.get("index_lock", {}).get("exists"):
+        return "Git 잠금 파일(index.lock)이 있습니다. 실행 중인 Git 작업이 끝났는지 확인하세요."
+    if counts.get("conflict_candidates", 0) > 0:
+        return "같은 파일이 로컬과 GitHub 양쪽에서 변경되었습니다. 내 변경 백업 후 비교하거나 수동 병합하세요."
+    if counts.get("local", 0) > 0 and sync.get("behind", 0) > 0:
+        return "로컬 변경과 GitHub 새 커밋이 함께 있습니다. stash 백업 후 다운로드가 가장 안전합니다."
+    if sync.get("state") == "remote_ahead":
+        return "GitHub에 새 커밋이 있습니다. Git 다운로드를 진행하세요."
+    if sync.get("state") == "local_ahead":
+        return "로컬에만 있는 커밋이 있습니다. 검증 후 Push를 진행하세요."
+    if counts.get("local", 0) > 0:
+        return "로컬 변경사항이 있습니다. Git 저장 또는 Commit 후 Push할 수 있습니다."
+    return "GitHub와 로컬 상태가 안정적입니다."
+
+
+def _index_lock_snapshot(repository_root):
+    lock_path = Path(repository_root) / ".git" / "index.lock"
+    if not lock_path.exists():
+        return {"exists": False, "path": str(lock_path), "modified_at": ""}
+    try:
+        modified_at = datetime.fromtimestamp(lock_path.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        modified_at = ""
+    return {"exists": True, "path": str(lock_path), "modified_at": modified_at}
+
+
+def _limited_git_diff_for_path(project_dir, path, *, upstream="", include_committed=False, max_chars=5000):
+    diffs = []
+    if include_committed and upstream:
+        committed = run_git(["diff", f"{upstream}..HEAD", "--", path], project_dir=project_dir, timeout=20)
+        if committed["stdout"]:
+            diffs.append("[로컬 커밋 기준]\n" + committed["stdout"])
+    worktree = run_git(["diff", "HEAD", "--", path], project_dir=project_dir, timeout=20)
+    if worktree["stdout"]:
+        diffs.append("[미커밋 변경 기준]\n" + worktree["stdout"])
+    text = "\n\n".join(diffs).strip()
+    if not text:
+        return "표시할 로컬 diff가 없습니다. 새 파일이거나 상태 코드만 변경되었을 수 있습니다."
+    return _truncate_text(text, max_chars)
+
+
+def _limited_remote_diff_for_path(project_dir, path, *, upstream="", max_chars=5000):
+    if not upstream:
+        return "GitHub 기준 브랜치를 확인할 수 없어 remote diff를 표시할 수 없습니다."
+    result = run_git(["diff", f"HEAD..{upstream}", "--", path], project_dir=project_dir, timeout=20)
+    text = result["stdout"].strip()
+    if not text:
+        return "표시할 GitHub diff가 없습니다."
+    return _truncate_text(text, max_chars)
+
+
+def _truncate_text(value, max_chars):
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n... diff가 길어 일부만 표시했습니다."
+
+
 def create_commit(message, project_dir=PROJECT_DIR):
     if not str(message).strip():
         return {"ok": False, "message": "커밋 메시지를 입력하세요.", "detail": ""}

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import threading
 import time
@@ -191,10 +192,10 @@ def test_agent_management_reuses_dashboard_agent_icon():
 @pytest.mark.parametrize(
     ("action", "agent_name", "expected"),
     [
-        ("start", None, "Interpreter 등 6개 Agent 프로세스를 기동하고 있습니다..."),
+        ("start", None, "Interpreter 등 6개 Agent 프로세스를 시작하고 있습니다..."),
         ("restart", None, "Interpreter 등 6개 Agent 프로세스를 재기동하고 있습니다..."),
         ("stop", None, "Interpreter 등 6개 Agent 프로세스를 중지하고 있습니다..."),
-        ("start", "retriever", "retriever Agent 프로세스를 기동하고 있습니다..."),
+        ("start", "retriever", "retriever Agent 프로세스를 시작하고 있습니다..."),
     ],
 )
 def test_agent_control_uses_agent_specific_progress_message(action, agent_name, expected):
@@ -227,6 +228,25 @@ def test_agent_control_refreshes_after_command_completion(monkeypatch):
     reruns = []
     management_snapshot = Clearable()
     monitor_snapshot = Clearable()
+    stopped_snapshot = {
+        "checked_at": "2026-07-29T20:00:00+09:00",
+        "total": 6,
+        "running": 0,
+        "agents": [
+            {"key": key, "status": "STOPPED"}
+            for key in ("interpreter", "retriever", "summarizer", "evaluator", "critic", "improver")
+        ],
+    }
+    running_snapshot = {
+        "checked_at": "2026-07-29T20:00:05+09:00",
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"key": key, "status": "RUNNING"}
+            for key in ("interpreter", "retriever", "summarizer", "evaluator", "critic", "improver")
+        ],
+    }
+    snapshots = iter([stopped_snapshot, running_snapshot])
     monkeypatch.setattr(voc_quality_view.st, "session_state", state)
     monkeypatch.setattr(
         voc_quality_view.st,
@@ -238,13 +258,14 @@ def test_agent_control_refreshes_after_command_completion(monkeypatch):
         "run_agent_action",
         lambda action, agent_name=None: {"ok": True, "action": action, "agent_name": agent_name},
     )
+    monkeypatch.setattr(voc_quality_view, "agent_status_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(voc_quality_view, "_load_agent_management_snapshot", management_snapshot)
     monkeypatch.setattr(voc_quality_view, "_load_goal_monitor_snapshot", monitor_snapshot)
     monkeypatch.setattr(voc_quality_view.st, "rerun", lambda: reruns.append(True))
 
     voc_quality_view._run_agent_control_and_refresh("start")
 
-    assert spinner_messages == ["Interpreter 등 6개 Agent 프로세스를 기동하고 있습니다..."]
+    assert spinner_messages == ["Interpreter 등 6개 Agent 프로세스를 시작하고 있습니다..."]
     assert state["voc_command_result"]["ok"] is True
     assert state["agent_control_confirm_nonce"] == 5
     assert "agent_quick_test_result_interpreter" not in state
@@ -253,6 +274,230 @@ def test_agent_control_refreshes_after_command_completion(monkeypatch):
     assert management_snapshot.clear_count == 1
     assert monitor_snapshot.clear_count == 1
     assert reruns == [True]
+    assert state["agent_control_feedback"]["title"] == "전체 Agent 시작 완료"
+    assert state["agent_control_latest_snapshot"] == running_snapshot
+
+
+def test_agent_control_start_skips_already_running_agents(monkeypatch):
+    snapshot = {
+        "checked_at": "2026-07-29T20:00:00+09:00",
+        "total": 6,
+        "running": 5,
+        "agents": [
+            {"key": "interpreter", "status": "RUNNING"},
+            {"key": "retriever", "status": "RUNNING"},
+            {"key": "summarizer", "status": "RUNNING"},
+            {"key": "evaluator", "status": "RUNNING"},
+            {"key": "critic", "status": "RUNNING"},
+            {"key": "improver", "status": "STOPPED"},
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(voc_quality_view, "agent_status_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "run_agent_action",
+        lambda action, agent_name=None: calls.append((action, agent_name)) or {
+            "ok": True,
+            "return_code": 0,
+            "output": f"{agent_name} started",
+            "duration_seconds": 0.2,
+        },
+    )
+
+    result = voc_quality_view._run_agent_control_command("start")
+
+    assert result["ok"] is True
+    assert calls == [("start", "improver")]
+    assert "[SKIPPED] interpreter already RUNNING" in result["output"]
+    assert "improver started" in result["output"]
+
+
+def test_agent_control_can_complete_without_forced_rerun(monkeypatch):
+    class Clearable:
+        def __init__(self):
+            self.clear_count = 0
+
+        def clear(self):
+            self.clear_count += 1
+
+    class Spinner:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    state = {"agent_control_confirm_nonce": 0}
+    running_snapshot = {
+        "checked_at": "2026-07-29T20:00:05+09:00",
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"key": key, "status": "RUNNING"}
+            for key in ("interpreter", "retriever", "summarizer", "evaluator", "critic", "improver")
+        ],
+    }
+    reruns = []
+    management_snapshot = Clearable()
+    monitor_snapshot = Clearable()
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view.st, "spinner", lambda message: Spinner())
+    monkeypatch.setattr(voc_quality_view, "agent_status_snapshot", lambda: running_snapshot)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "run_agent_action",
+        lambda action, agent_name=None: {
+            "ok": True,
+            "return_code": 0,
+            "output": "already running",
+            "duration_seconds": 0,
+        },
+    )
+    monkeypatch.setattr(voc_quality_view, "_load_agent_management_snapshot", management_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_load_goal_monitor_snapshot", monitor_snapshot)
+    monkeypatch.setattr(voc_quality_view.st, "rerun", lambda: reruns.append(True))
+
+    voc_quality_view._run_agent_control_and_refresh("start", rerun_after=False)
+
+    assert reruns == []
+    assert state["agent_control_feedback"]["title"] == "전체 Agent 시작 완료"
+    assert state["agent_control_latest_snapshot"] == running_snapshot
+    assert management_snapshot.clear_count == 1
+    assert monitor_snapshot.clear_count == 1
+
+
+def test_agent_management_hides_stale_start_error_when_all_agents_are_running(monkeypatch):
+    state = {
+        "agent_control_feedback": {
+            "ok": False,
+            "command_ok": False,
+            "action": "start",
+        },
+        "agent_control_log": {
+            "command_ok": False,
+            "action": "start",
+        },
+    }
+    snapshot = {
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"status": "RUNNING", "healthy": True}
+            for _ in range(6)
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *args, **kwargs: calls.append("heading"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_control_feedback", lambda: calls.append("feedback"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_control_log", lambda: calls.append("log"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_credential_feedback", lambda: calls.append("credential"))
+
+    voc_quality_view._render_agent_management_messages(snapshot)
+
+    assert calls == []
+
+
+def test_agent_management_shows_recent_success_log_without_redundant_success_card(monkeypatch):
+    state = {
+        "agent_control_feedback": {
+            "ok": True,
+            "command_ok": True,
+            "action": "start",
+        },
+        "agent_control_log": {
+            "command_ok": True,
+            "action": "start",
+        },
+    }
+    snapshot = {
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"status": "RUNNING", "healthy": True}
+            for _ in range(6)
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *args, **kwargs: calls.append("heading"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_control_feedback", lambda: calls.append("feedback"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_control_log", lambda: calls.append("log"))
+    monkeypatch.setattr(voc_quality_view, "_render_agent_credential_feedback", lambda: calls.append("credential"))
+
+    voc_quality_view._render_agent_management_messages(snapshot)
+
+    assert calls == ["heading", "log"]
+
+
+def test_agent_management_bulk_controls_use_background_job_instead_of_blocking_spinner():
+    render_source = inspect.getsource(voc_quality_view.render_agents)
+    monitor_source = inspect.getsource(voc_quality_view._render_agent_control_job_monitor)
+
+    assert '_start_agent_control_background("start")' in render_source
+    assert '_start_agent_control_background("restart")' in render_source
+    assert '_start_agent_control_background("stop")' in render_source
+    assert "rerun_after=False" not in render_source
+    assert '@st.fragment(run_every="1s")' in monitor_source
+    assert 'st.rerun(scope="app")' in monitor_source
+
+
+def test_start_agent_control_background_creates_job_and_resets_transient_state(monkeypatch):
+    class Clearable:
+        def __init__(self):
+            self.clear_count = 0
+
+        def clear(self):
+            self.clear_count += 1
+
+    state = {
+        "agent_control_confirm_nonce": 2,
+        "agent_control_feedback": {"title": "old"},
+        "agent_quick_test_result_interpreter": {"ok": True},
+    }
+    calls = []
+    management_snapshot = Clearable()
+    monitor_snapshot = Clearable()
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view, "_load_agent_management_snapshot", management_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_load_goal_monitor_snapshot", monitor_snapshot)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "start_background_job",
+        lambda kind, target_id, worker, *args, progress=None, **kwargs: calls.append(
+            {
+                "kind": kind,
+                "target_id": target_id,
+                "worker": worker,
+                "args": args,
+                "progress": progress,
+            }
+        ) or "agent-job-1",
+    )
+
+    voc_quality_view._start_agent_control_background("start")
+
+    assert state[voc_quality_view.AGENT_CONTROL_JOB_KEY] == "agent-job-1"
+    assert state["agent_control_confirm_nonce"] == 3
+    assert "agent_control_feedback" not in state
+    assert "agent_quick_test_result_interpreter" not in state
+    assert management_snapshot.clear_count == 1
+    assert monitor_snapshot.clear_count == 1
+    assert calls[0]["kind"] == "agent-control"
+    assert calls[0]["target_id"] == "start:all"
+    assert calls[0]["args"] == ("start", None, None)
+    assert "요청 접수" in calls[0]["progress"]["lines"][0]
+
+
+def test_agent_quick_test_uses_fragment_to_avoid_full_card_rerender():
+    fragment_source = inspect.getsource(voc_quality_view._render_agent_quick_test_fragment)
+    render_source = inspect.getsource(voc_quality_view.render_agents)
+
+    assert "@st.fragment" in fragment_source
+    assert "test_agent_rpc" in fragment_source
+    assert "_render_agent_quick_test_fragment(agent)" in render_source
+    assert "test_agent_rpc(" not in render_source
 
 
 def test_agent_management_hides_success_command_details(monkeypatch):
@@ -1667,10 +1912,10 @@ def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
         app.radio[0].set_value(stage).run()
 
         assert not app.exception
-        header_columns = app.get("column")[:6]
-        expected_weights = [1.0, 1.8, 1.4, 0.8, 0.8, 1.35]
+        header_columns = app.get("column")[:7]
+        expected_weights = [1.0, 1.8, 1.4, 0.8, 0.8, 0.78, 1.32]
         expected_total = sum(expected_weights)
-        assert len(app.get("column")) == 8
+        assert len(app.get("column")) == 9
         assert [column.proto.weight for column in header_columns] == pytest.approx(
             [weight / expected_total for weight in expected_weights]
         )
@@ -1678,9 +1923,10 @@ def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
             column.proto.vertical_alignment == Block.Column.BOTTOM
             for column in header_columns
         )
-        save_column_children = list(header_columns[5].children.values())
-        assert getattr(save_column_children[0], "type", None) == "flex_container"
-        assert save_column_children[1].label == "평가 기준 저장"
+        save_state_column_children = list(header_columns[5].children.values())
+        save_column_children = list(header_columns[6].children.values())
+        assert getattr(save_state_column_children[0], "type", None) == "flex_container"
+        assert save_column_children[0].label == "평가 기준 저장"
         assert [item.label for item in app.text_input[:2]] == ["Rubric 버전", "기준명"]
         provider = next(
             item for item in app.selectbox if item.label == "기본 Judge Provider"
@@ -2393,6 +2639,93 @@ def test_batch_execution_uses_list_selector_instead_of_dropdowns():
     assert "group_column, case_column" in selector_source
     assert "선택된 TC" in selector_source
     assert "Judge 옵션" in selector_source
+    assert "_render_batch_judge_selection_badge(judge_config)" in selector_source
+
+
+def test_batch_judge_selection_summary_shows_selected_provider_and_model(monkeypatch):
+    monkeypatch.setattr(
+        voc_quality_view,
+        "judge_provider_options",
+        lambda: [
+            {
+                "provider": "anthropic",
+                "label": "Anthropic",
+                "default_model": "claude-opus-4-6",
+            },
+            {
+                "provider": "openai",
+                "label": "OpenAI",
+                "default_model": "gpt-5.2",
+            },
+        ],
+    )
+
+    enabled_summary = voc_quality_view._judge_config_summary(
+        {"enabled": True, "provider": "openai", "model": "gpt-5.2"}
+    )
+    disabled_summary = voc_quality_view._judge_config_summary(
+        {"enabled": False, "provider": "anthropic", "model": "claude-opus-4-6"}
+    )
+
+    assert enabled_summary["label"] == "OpenAI · gpt-5.2"
+    assert disabled_summary["label"] == "독립 LLM Judge 미실행"
+
+
+def test_batch_execution_explains_close_and_server_shutdown_behavior():
+    import inspect
+
+    source = inspect.getsource(voc_quality_view._render_batch_execution_safety_notice)
+
+    assert "일괄 수행 중 화면을 닫으면?" in source
+    assert "st.expander" in source
+    assert "expanded=False" in source
+    assert "Streamlit 서버가 살아 있으면" in source
+    assert "서버 프로세스를 끄면" in source
+    assert "완료된 Case 결과는 즉시 저장" in source
+    assert "중지 요청" in source
+
+
+def test_batch_preflight_readiness_replaces_count_metrics_with_actionable_state():
+    good_state = voc_quality_view._batch_preflight_display_state(
+        {
+            "ok": True,
+            "selected_count": 3,
+            "implemented_count": 3,
+            "pending_count": 0,
+            "warnings": [],
+            "blockers": [],
+        }
+    )
+    pending_state = voc_quality_view._batch_preflight_display_state(
+        {
+            "ok": True,
+            "selected_count": 4,
+            "implemented_count": 3,
+            "pending_count": 1,
+            "warnings": [],
+            "blockers": [],
+        }
+    )
+    blocked_state = voc_quality_view._batch_preflight_display_state(
+        {
+            "ok": False,
+            "selected_count": 4,
+            "implemented_count": 4,
+            "pending_count": 0,
+            "warnings": [],
+            "blockers": ["6개 Agent가 모두 RUNNING 상태가 아닙니다."],
+        }
+    )
+    render_source = inspect.getsource(voc_quality_view.render_batch_execution)
+
+    assert good_state["title"] == "실행 준비 완료"
+    assert pending_state["title"] == "실행 가능 · 후속 구현 포함"
+    assert blocked_state["title"] == "실행 차단"
+    assert "_render_batch_preflight_readiness(preflight)" in render_source
+    assert 'st.metric("선택"' not in render_source
+    assert 'st.metric("실행 가능"' not in render_source
+    assert 'st.metric("후속 구현"' not in render_source
+    assert 'st.metric("에이전트"' not in render_source
 
 
 def test_batch_active_run_restores_from_running_history(monkeypatch):

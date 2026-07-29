@@ -4,6 +4,7 @@ import ast
 import base64
 import json
 import re
+import time
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -31,6 +32,8 @@ from services.voc_quality_service import (
     batch_preflight,
     build_voc_acceptance_snapshot,
     build_voc_quality_report,
+    check_anthropic_agent_credential,
+    check_gemini_agent_credential,
     check_openai_agent_credential,
     compare_voc_runs,
     compare_voc_improvement_answers,
@@ -105,6 +108,12 @@ MANUAL_JUDGE_PROVIDERS = (
         "label": "Anthropic",
         "model": "claude-opus-4-6",
         "number": 2,
+    },
+    {
+        "provider": "gemini",
+        "label": "Gemini",
+        "model": "gemini-2.5-pro",
+        "number": 3,
     },
 )
 
@@ -454,6 +463,7 @@ def _render_voc_page_header(sub_menu: str) -> None:
                         icon=":material/refresh:",
                         key="agent_header_refresh",
                     ):
+                        _clear_agent_control_messages()
                         _load_agent_management_snapshot.clear()
                         _load_goal_monitor_snapshot.clear()
                         st.rerun()
@@ -602,6 +612,60 @@ def _judge_config_controls(key_prefix: str, *, fault_only: bool = False) -> dict
     }
 
 
+def _judge_config_summary(judge_config: dict) -> dict:
+    options = {item["provider"]: item for item in judge_provider_options()}
+    provider = str(judge_config.get("provider") or "anthropic")
+    option = options.get(provider, {})
+    provider_label = str(option.get("label") or provider)
+    model = str(judge_config.get("model") or option.get("default_model") or "-")
+    enabled = bool(judge_config.get("enabled"))
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "provider_label": provider_label,
+        "model": model,
+        "label": f"{provider_label} · {model}" if enabled else "독립 LLM Judge 미실행",
+    }
+
+
+def _render_batch_judge_selection_badge(judge_config: dict) -> None:
+    summary = _judge_config_summary(judge_config)
+    tone = "on" if summary["enabled"] else "off"
+    icon = "gavel" if summary["enabled"] else "block"
+    st.markdown(
+        f"""
+        <div class="vqa-batch-judge-summary {tone}">
+            <span class="material-symbols-rounded">{icon}</span>
+            <div>
+                <small>선택 Judge</small>
+                <strong>{escape(summary["label"])}</strong>
+            </div>
+        </div>
+        <style>
+        .vqa-batch-judge-summary{{
+            height:46px;margin:7px 0 8px;padding:7px 10px;border-radius:10px;
+            display:flex;align-items:center;gap:8px;box-sizing:border-box;
+            border:1px solid #c8d9ee;background:linear-gradient(135deg,#f8fbff,#ffffff);
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;overflow:hidden;
+        }}
+        .vqa-batch-judge-summary span{{
+            flex:0 0 24px;font-size:24px;color:#155a96;
+        }}
+        .vqa-batch-judge-summary.off span{{color:#8a98aa}}
+        .vqa-batch-judge-summary small{{
+            display:block;font-size:9px;line-height:1.1;color:#708096;font-weight:800;
+        }}
+        .vqa-batch-judge-summary strong{{
+            display:block;margin-top:2px;font-size:12px;line-height:1.18;color:#173f68;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+        }}
+        .vqa-batch-judge-summary.off strong{{color:#617083}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _select_manual_judge(state_key: str, provider: str):
     st.session_state[state_key] = provider
 
@@ -653,26 +717,28 @@ def _manual_judge_config_controls(key_prefix: str, *, fault_only: bool = False) 
     st.caption(
         "내부 Agent Pipeline과 실행 이벤트를 확인한 다음, 독립 Provider를 선택해 동일한 결과를 평가합니다."
     )
-    columns = st.columns(2, gap="medium")
+    columns = st.columns(len(MANUAL_JUDGE_PROVIDERS), gap="medium")
     for column, item in zip(columns, MANUAL_JUDGE_PROVIDERS):
         provider = item["provider"]
         selected = provider == selected_provider
         option = options.get(provider, {})
-        independence = judge_independence_preview(provider, item["model"])
+        display_model = str(option.get("default_model") or item["model"])
+        independence = judge_independence_preview(provider, display_model)
         with column:
             st.button(
-                f"Judge Provider {item['number']}\n\n{item['label']} · {item['model']}\n\n"
+                f"Judge Provider {item['number']}\n\n{item['label']} · {display_model}\n\n"
                 + ("✓ 현재 선택" if selected else "카드를 클릭하여 선택"),
                 key=f"{key_prefix}_judge_select_{provider}",
                 width="stretch",
                 on_click=_select_manual_judge,
                 args=(state_key, provider),
-                help=f"{item['label']} {item['model']}을 독립 평가 Provider로 사용합니다.",
+                help=f"{item['label']} {display_model}을 독립 평가 Provider로 사용합니다.",
             )
             credential_text = "API 자격 증명 설정됨" if option.get("credential_configured") else "API 자격 증명 미설정"
             st.caption(f"{credential_text} · 예상 독립성 {independence['grade']}")
 
     selected = next(item for item in MANUAL_JUDGE_PROVIDERS if item["provider"] == selected_provider)
+    selected_model = str(options.get(selected_provider, {}).get("default_model") or selected["model"])
     credential_configured = bool(options.get(selected_provider, {}).get("credential_configured"))
     if fault_only:
         st.info(
@@ -687,7 +753,7 @@ def _manual_judge_config_controls(key_prefix: str, *, fault_only: bool = False) 
     return {
         "enabled": not fault_only,
         "provider": selected_provider,
-        "model": selected["model"],
+        "model": selected_model,
         "timeout_seconds": 90,
         "max_retries": 2,
         "credential_configured": credential_configured or fault_only,
@@ -1579,7 +1645,7 @@ def _run_and_store(callback, *args):
 
 def _agent_control_progress_message(action: str, agent_name: str | None = None) -> str:
     action_labels = {
-        "start": "기동",
+        "start": "시작",
         "restart": "재기동",
         "stop": "중지",
     }
@@ -1587,6 +1653,14 @@ def _agent_control_progress_message(action: str, agent_name: str | None = None) 
         raise ValueError(f"허용되지 않은 Agent 제어 작업: {action}")
     target = f"{agent_name} Agent" if agent_name else "Interpreter 등 6개 Agent"
     return f"{target} 프로세스를 {action_labels[action]}하고 있습니다..."
+
+
+def _agent_control_action_label(action: str) -> str:
+    return {
+        "start": "시작",
+        "restart": "재시작",
+        "stop": "중지",
+    }.get(action, action)
 
 
 def _agent_control_confirmation_key() -> str:
@@ -1600,6 +1674,23 @@ def _reset_agent_control_confirmation() -> None:
     )
 
 
+AGENT_CONTROL_JOB_KEY = "agent_control_job_id"
+
+
+def _clear_agent_control_messages() -> None:
+    for key in (
+        "agent_control_feedback",
+        "agent_control_latest_snapshot",
+        "agent_control_log",
+        "voc_command_result",
+        "agent_openai_credential_result",
+        "agent_anthropic_credential_result",
+        "agent_gemini_credential_result",
+        AGENT_CONTROL_JOB_KEY,
+    ):
+        st.session_state.pop(key, None)
+
+
 def _clear_agent_quick_test_results(agent_key: str | None = None) -> None:
     if agent_key:
         st.session_state.pop(f"agent_quick_test_result_{agent_key}", None)
@@ -1609,14 +1700,499 @@ def _clear_agent_quick_test_results(agent_key: str | None = None) -> None:
             st.session_state.pop(key, None)
 
 
+def _agent_control_target_label(agent_name: str | None, display_name: str | None = None) -> str:
+    if display_name:
+        return f"{display_name} Agent"
+    if agent_name:
+        return f"{agent_name} Agent"
+    return "전체 Agent"
+
+
+def _agent_management_all_running(snapshot: dict) -> bool:
+    agents = snapshot.get("agents", [])
+    total = int(snapshot.get("total") or len(agents) or 0)
+    running = int(snapshot.get("running") or 0)
+    if total <= 0 or running != total:
+        return False
+    return all(
+        str(agent.get("status") or "") == "RUNNING" and bool(agent.get("healthy", True))
+        for agent in agents
+    )
+
+
+def _agent_control_output_lines(output: str, *, max_lines: int = 80) -> list[str]:
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return lines
+    hidden_count = len(lines) - max_lines
+    return [*lines[:max_lines], f"... {hidden_count}줄 생략"]
+
+
+def _agent_control_log_title(action: str, target: str) -> str:
+    return f"{target} {_agent_control_action_label(action)} 처리 로그"
+
+
+def _store_agent_control_log(
+    *,
+    action: str,
+    target: str,
+    result: dict,
+    snapshot: dict,
+    ok: bool,
+) -> None:
+    command_ok = bool(result.get("ok"))
+    action_label = _agent_control_action_label(action)
+    lines = [
+        f"요청 접수 · {target} {action_label}",
+        f"명령 실행 · {'정상 종료' if command_ok else '오류 종료'}",
+    ]
+    lines.extend(_agent_control_output_lines(result.get("output", "")))
+    lines.append(
+        f"상태 확인 · RUNNING {snapshot.get('running', 0)} / {snapshot.get('total', 0)}"
+    )
+    lines.append("최종 판정 · 완료" if ok else "최종 판정 · 확인 필요")
+    st.session_state["agent_control_log"] = {
+        "ok": ok,
+        "command_ok": command_ok,
+        "action": action,
+        "target": target,
+        "title": _agent_control_log_title(action, target),
+        "duration_seconds": result.get("duration_seconds", "-"),
+        "checked_at": snapshot.get("checked_at", "-"),
+        "lines": lines,
+    }
+
+
+def _find_agent_status(snapshot: dict, agent_key: str | None) -> dict | None:
+    if not agent_key:
+        return None
+    for agent in snapshot.get("agents", []):
+        if agent.get("key") == agent_key:
+            return agent
+    return None
+
+
+def _agent_control_reached_desired_state(
+    action: str,
+    snapshot: dict,
+    agent_key: str | None = None,
+) -> bool:
+    agents = snapshot.get("agents", [])
+    total = int(snapshot.get("total") or len(agents) or 0)
+    running = int(snapshot.get("running") or 0)
+    if agent_key:
+        agent = _find_agent_status(snapshot, agent_key)
+        status = str((agent or {}).get("status") or "")
+        if action == "stop":
+            return status == "STOPPED"
+        return status == "RUNNING"
+    if action == "stop":
+        return total > 0 and running == 0
+    return total > 0 and running == total
+
+
+def _run_agent_control_command(action: str, agent_name: str | None = None) -> dict:
+    """Agent 제어 명령을 실행합니다.
+
+    전체 시작은 이미 실행 중인 Agent가 있으면 기존 bulk start 스크립트가
+    포트 점유로 실패할 수 있어, 부분 RUNNING 상태에서는 중지된 Agent만
+    개별 시작합니다.
+    """
+    if agent_name or action != "start":
+        return run_agent_action(action, agent_name)
+
+    before = agent_status_snapshot()
+    agents = before.get("agents", [])
+    total = int(before.get("total") or len(agents) or 0)
+    running = int(before.get("running") or 0)
+    if total > 0 and running == total:
+        return {
+            "ok": True,
+            "return_code": 0,
+            "output": "이미 모든 Agent가 RUNNING 상태입니다.",
+            "duration_seconds": 0,
+        }
+    if running == 0:
+        return run_agent_action("start")
+
+    started = time.perf_counter()
+    outputs = [f"이미 실행 중인 Agent {running}건은 유지하고, 중지된 Agent만 시작합니다."]
+    ok = True
+    return_code = 0
+    for agent in agents:
+        status = str(agent.get("status") or "")
+        if status == "RUNNING":
+            outputs.append(f"[SKIPPED] {agent.get('key')} already RUNNING")
+            continue
+        result = run_agent_action("start", str(agent.get("key")))
+        outputs.append(result.get("output") or "출력 없음")
+        if not result.get("ok"):
+            ok = False
+            return_code = int(result.get("return_code") or 1)
+
+    return {
+        "ok": ok,
+        "return_code": return_code,
+        "output": "\n".join(outputs),
+        "duration_seconds": round(time.perf_counter() - started, 2),
+    }
+
+
+def _store_agent_control_feedback(
+    *,
+    action: str,
+    agent_name: str | None,
+    display_name: str | None,
+    result: dict,
+    snapshot: dict,
+) -> None:
+    reached = _agent_control_reached_desired_state(action, snapshot, agent_name)
+    ok = bool(result.get("ok")) and reached
+    target = _agent_control_target_label(agent_name, display_name)
+    action_label = _agent_control_action_label(action)
+    if ok:
+        title = f"{target} {action_label} 완료"
+    elif result.get("ok"):
+        title = f"{target} {action_label} 처리 후 상태 확인 필요"
+    else:
+        title = f"{target} {action_label} 실패"
+
+    st.session_state["agent_control_feedback"] = {
+        "ok": ok,
+        "command_ok": bool(result.get("ok")),
+        "title": title,
+        "action": action,
+        "target": target,
+        "duration_seconds": result.get("duration_seconds", "-"),
+        "running": snapshot.get("running", 0),
+        "total": snapshot.get("total", 0),
+        "checked_at": snapshot.get("checked_at", "-"),
+        "error": "" if result.get("ok") else str(result.get("output") or ""),
+    }
+    _store_agent_control_log(
+        action=action,
+        target=target,
+        result=result,
+        snapshot=snapshot,
+        ok=ok,
+    )
+    st.session_state["agent_control_latest_snapshot"] = snapshot
+
+
+def _render_agent_control_feedback() -> None:
+    feedback = st.session_state.get("agent_control_feedback")
+    if not feedback:
+        return
+    icon = ":material/check_circle:" if feedback.get("ok") else ":material/error:"
+    badge_color = "green" if feedback.get("ok") else "orange"
+    if not feedback.get("command_ok"):
+        badge_color = "red"
+
+    with st.container(border=True, height=94):
+        cols = st.columns([1.8, 0.9, 0.9, 1.4], vertical_alignment="center")
+        with cols[0]:
+            st.markdown(f"{icon} **{feedback.get('title', 'Agent 제어 결과')}**")
+            st.caption(f"확인 시각 · {feedback.get('checked_at', '-')}")
+        with cols[1]:
+            st.badge(
+                "완료" if feedback.get("ok") else "확인 필요",
+                color=badge_color,
+                icon=icon,
+            )
+        with cols[2]:
+            st.metric("RUNNING", f"{feedback.get('running', 0)} / {feedback.get('total', 0)}")
+        with cols[3]:
+            st.metric("처리 시간", f"{feedback.get('duration_seconds', '-')}초")
+
+
+def _render_agent_control_log() -> None:
+    log = st.session_state.get("agent_control_log")
+    if not log:
+        return
+    tone = "good" if log.get("ok") else "bad" if not log.get("command_ok") else "warn"
+    icon = "check_circle" if log.get("ok") else "error" if not log.get("command_ok") else "warning"
+    lines = "".join(
+        f"<li>{escape(str(line))}</li>"
+        for line in log.get("lines", [])
+    )
+    st.markdown(
+        f"""
+        <section class="vqa-agent-log {tone}">
+            <div class="vqa-agent-log-head">
+                <span class="material-symbols-rounded">{icon}</span>
+                <div>
+                    <strong>{escape(str(log.get('title') or 'Agent 제어 처리 로그'))}</strong>
+                    <small>처리 시간 {escape(str(log.get('duration_seconds', '-')))}초 · 확인 시각 {escape(str(log.get('checked_at', '-')))}</small>
+                </div>
+            </div>
+            <ol>{lines}</ol>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_agent_credential_feedback() -> None:
+    credential_items = [
+        ("OpenAI", st.session_state.get("agent_openai_credential_result")),
+        ("Anthropic", st.session_state.get("agent_anthropic_credential_result")),
+        ("Gemini", st.session_state.get("agent_gemini_credential_result")),
+    ]
+    credential_items = [(label, result) for label, result in credential_items if result]
+    if not credential_items:
+        return
+    columns = st.columns(len(credential_items), gap="small")
+    for column, (label, credential_result) in zip(columns, credential_items):
+        with column.container(border=True, height=112):
+            if credential_result.get("ok"):
+                st.success(credential_result.get("message", f"{label} 인증 점검 성공"))
+            else:
+                st.error(credential_result.get("message", f"{label} 인증 점검 실패"))
+            meta = [
+                f"상태: {credential_result.get('status', '-')}",
+                f"설정 파일: {credential_result.get('source', '미확인')}",
+            ]
+            if credential_result.get("env_name"):
+                meta.append(f"환경변수: {credential_result.get('env_name')}")
+            if credential_result.get("model"):
+                meta.append(f"모델: {credential_result.get('model')}")
+            meta.append(f"점검 시각: {credential_result.get('checked_at', '-')}")
+            st.caption(" · ".join(meta))
+
+
+def _render_agent_management_messages(snapshot: dict) -> None:
+    feedback = st.session_state.get("agent_control_feedback")
+    log = st.session_state.get("agent_control_log")
+    current_all_running = _agent_management_all_running(snapshot)
+    show_feedback = False
+    if feedback:
+        action = feedback.get("action")
+        if current_all_running and action in {"start", "restart"}:
+            show_feedback = False
+        else:
+            show_feedback = (
+                not feedback.get("ok")
+                or not current_all_running
+                or action == "stop"
+            )
+    show_log = False
+    if log:
+        action = log.get("action")
+        show_log = bool(log.get("command_ok")) or not current_all_running or action == "stop"
+
+    if (
+        not show_feedback
+        and not show_log
+        and not st.session_state.get("agent_openai_credential_result")
+        and not st.session_state.get("agent_anthropic_credential_result")
+        and not st.session_state.get("agent_gemini_credential_result")
+    ):
+        return
+
+    st.markdown("#### 최근 처리 상태")
+    if show_feedback:
+        _render_agent_control_feedback()
+    if show_log:
+        _render_agent_control_log()
+    if st.session_state.get("agent_openai_credential_result"):
+        _render_agent_credential_feedback()
+
+
+@st.fragment
+def _render_agent_quick_test_fragment(agent: dict) -> None:
+    test_result_key = f"agent_quick_test_result_{agent['key']}"
+    quick_test_requested = st.button(
+        "간편 테스트",
+        key=f"quick_test_agent_{agent['key']}",
+        icon=":material/network_check:",
+        disabled=agent["status"] != "RUNNING",
+        width="stretch",
+    )
+
+    with st.container(height=148, border=False, key=f"agent_quick_test_result_{agent['key']}"):
+        if quick_test_requested:
+            with st.spinner(f"{agent['name']} Agent를 실제 호출하고 있습니다..."):
+                st.session_state[test_result_key] = test_agent_rpc(
+                    agent["name"],
+                    int(agent["port"]),
+                    timeout=12.0,
+                )
+        test_result = st.session_state.get(test_result_key)
+        if not test_result:
+            st.caption("RUNNING 상태에서 간편 테스트로 실제 RPC 응답을 확인할 수 있습니다.")
+        elif test_result.get("ok"):
+            st.success(
+                f"{test_result.get('rpc', '-')} 호출 성공 · "
+                f"{test_result.get('duration_seconds', '-')}초"
+            )
+            st.caption(f"IN: {test_result.get('input', '-')}")
+            st.caption(f"OUT: {test_result.get('summary', '-')}")
+        else:
+            st.error(
+                f"호출 실패 · {test_result.get('duration_seconds', '-')}초"
+            )
+            st.caption(test_result.get("summary", "-"))
+
+
+def _execute_agent_control_background(
+    job_id: str,
+    action: str,
+    agent_name: str | None = None,
+    display_name: str | None = None,
+) -> dict:
+    target = _agent_control_target_label(agent_name, display_name)
+    action_label = _agent_control_action_label(action)
+    update_background_job(
+        job_id,
+        progress={
+            "action": action,
+            "target": target,
+            "message": f"{target} {action_label} 명령을 실행하고 있습니다.",
+            "lines": [
+                f"요청 접수 · {target} {action_label}",
+                "Agent 제어 명령 실행 중",
+            ],
+        },
+    )
+    result = _run_agent_control_command(action, agent_name)
+    update_background_job(
+        job_id,
+        progress={
+            "message": "Agent 상태를 다시 확인하고 있습니다.",
+            "lines": [
+                f"요청 접수 · {target} {action_label}",
+                "Agent 제어 명령 완료",
+                "최신 Agent 상태 확인 중",
+            ],
+        },
+    )
+    snapshot = agent_status_snapshot()
+    return {
+        "action": action,
+        "agent_name": agent_name,
+        "display_name": display_name,
+        "result": result,
+        "snapshot": snapshot,
+    }
+
+
+def _start_agent_control_background(
+    action: str,
+    agent_name: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    target = _agent_control_target_label(agent_name, display_name)
+    action_label = _agent_control_action_label(action)
+    _clear_agent_control_messages()
+    _clear_agent_quick_test_results(agent_name)
+    _reset_agent_control_confirmation()
+    _load_agent_management_snapshot.clear()
+    _load_goal_monitor_snapshot.clear()
+    job_id = start_background_job(
+        "agent-control",
+        f"{action}:{agent_name or 'all'}",
+        _execute_agent_control_background,
+        action,
+        agent_name,
+        display_name,
+        progress={
+            "action": action,
+            "target": target,
+            "message": f"{target} {action_label} 작업을 준비하고 있습니다.",
+            "lines": [f"요청 접수 · {target} {action_label}"],
+        },
+    )
+    st.session_state[AGENT_CONTROL_JOB_KEY] = job_id
+
+
+def _render_agent_control_running_panel(job: dict) -> None:
+    progress = job.get("progress") or {}
+    target = str(progress.get("target") or "전체 Agent")
+    action = str(progress.get("action") or "")
+    action_label = _agent_control_action_label(action)
+    message = str(progress.get("message") or f"{target} {action_label} 작업을 처리하고 있습니다.")
+    started_at = str(job.get("started_at") or "").replace("T", " ")[:19] or "-"
+    lines = "".join(
+        f"<li>{escape(str(line))}</li>"
+        for line in progress.get("lines", [])
+    )
+    st.markdown(
+        f"""
+        <section class="vqa-agent-log warn">
+            <div class="vqa-agent-log-head">
+                <span class="material-symbols-rounded">progress_activity</span>
+                <div>
+                    <strong>{escape(target)} {escape(action_label)} 처리 중</strong>
+                    <small>시작 시각 {escape(started_at)} · 완료되면 Agent 상태를 자동으로 갱신합니다.</small>
+                </div>
+            </div>
+            <p class="vqa-agent-log-message">{escape(message)}</p>
+            <ol>{lines}</ol>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.fragment(run_every="1s")
+def _render_agent_control_job_monitor() -> None:
+    job_id = st.session_state.get(AGENT_CONTROL_JOB_KEY)
+    if not job_id:
+        return
+    job = background_job_snapshot(job_id)
+    if not job:
+        st.session_state.pop(AGENT_CONTROL_JOB_KEY, None)
+        return
+    if job.get("status") == "RUNNING":
+        _render_agent_control_running_panel(job)
+        return
+
+    payload = job.get("result") or {}
+    action = str(payload.get("action") or (job.get("progress") or {}).get("action") or "start")
+    agent_name = payload.get("agent_name")
+    display_name = payload.get("display_name")
+    if job.get("status") == "COMPLETED":
+        result = payload.get("result") or {
+            "ok": False,
+            "return_code": -1,
+            "output": "Agent 제어 작업 결과를 찾을 수 없습니다.",
+            "duration_seconds": "-",
+        }
+        snapshot = payload.get("snapshot") or agent_status_snapshot()
+    else:
+        result = {
+            "ok": False,
+            "return_code": -1,
+            "output": job.get("error") or "Agent 제어 작업이 실패했습니다.",
+            "duration_seconds": "-",
+        }
+        snapshot = agent_status_snapshot()
+
+    st.session_state["voc_command_result"] = result
+    _load_agent_management_snapshot.clear()
+    _load_goal_monitor_snapshot.clear()
+    _store_agent_control_feedback(
+        action=action,
+        agent_name=agent_name,
+        display_name=display_name,
+        result=result,
+        snapshot=snapshot,
+    )
+    st.session_state.pop(AGENT_CONTROL_JOB_KEY, None)
+    discard_background_job(job_id)
+    st.rerun(scope="app")
+
+
 def _run_agent_control_and_refresh(
     action: str,
     agent_name: str | None = None,
     display_name: str | None = None,
+    *,
+    rerun_after: bool = True,
 ):
     try:
         with st.spinner(_agent_control_progress_message(action, display_name or agent_name)):
-            result = run_agent_action(action, agent_name)
+            result = _run_agent_control_command(action, agent_name)
     except Exception as exc:
         result = {
             "ok": False,
@@ -1628,7 +2204,16 @@ def _run_agent_control_and_refresh(
     _reset_agent_control_confirmation()
     _load_agent_management_snapshot.clear()
     _load_goal_monitor_snapshot.clear()
-    st.rerun()
+    snapshot = agent_status_snapshot()
+    _store_agent_control_feedback(
+        action=action,
+        agent_name=agent_name,
+        display_name=display_name,
+        result=result,
+        snapshot=snapshot,
+    )
+    if rerun_after:
+        st.rerun()
 
 
 @st.cache_data(ttl=5, max_entries=1, show_spinner=False)
@@ -2086,6 +2671,27 @@ def render_agents():
         div[class*="st-key-agent_quick_test_result_"]{
             overflow:hidden!important;
         }
+        .vqa-agent-log{
+            margin:8px 0 2px;padding:12px 14px;border:1px solid #c8d9ee;border-left:4px solid #155a96;
+            border-radius:10px;background:linear-gradient(135deg,#f8fbff,#ffffff);
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;box-shadow:0 4px 12px rgba(22,78,128,.05);
+        }
+        .vqa-agent-log.good{border-left-color:#299049}
+        .vqa-agent-log.warn{border-left-color:#b36a08}
+        .vqa-agent-log.bad{border-left-color:#d83f36}
+        .vqa-agent-log-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+        .vqa-agent-log-head span{font-size:24px;color:#155a96}
+        .vqa-agent-log.good .vqa-agent-log-head span{color:#299049}
+        .vqa-agent-log.warn .vqa-agent-log-head span{color:#b36a08}
+        .vqa-agent-log.bad .vqa-agent-log-head span{color:#d83f36}
+        .vqa-agent-log-head strong{display:block;color:#173f68;font-size:13px}
+        .vqa-agent-log-head small{display:block;margin-top:2px;color:#718096;font-size:10px}
+        .vqa-agent-log ol{
+            margin:0;padding:8px 8px 8px 27px;max-height:190px;overflow:auto;border-radius:8px;background:#f3f7fc;
+            color:#30465f;font-size:11px;line-height:1.55;
+        }
+        .vqa-agent-log-message{margin:0 0 8px;color:#40536d;font-size:12px;line-height:1.35}
+        .vqa-agent-log li{padding:1px 0}
         </style>
         """,
         unsafe_allow_html=True,
@@ -2095,13 +2701,32 @@ def render_agents():
             "Agent 프로세스 상태 변경",
             key=_agent_control_confirmation_key(),
         )
+        agent_control_job_active = bool(st.session_state.get(AGENT_CONTROL_JOB_KEY))
         with st.container(horizontal=True):
-            if st.button("전체 시작", disabled=not confirmed, width="stretch", icon=":material/play_arrow:"):
-                _run_agent_control_and_refresh("start")
-            if st.button("전체 재시작", disabled=not confirmed, width="stretch", icon=":material/restart_alt:"):
-                _run_agent_control_and_refresh("restart")
-            if st.button("전체 중지", disabled=not confirmed, width="stretch", icon=":material/stop:"):
-                _run_agent_control_and_refresh("stop")
+            if st.button(
+                "전체 시작",
+                disabled=not confirmed or agent_control_job_active,
+                width="stretch",
+                icon=":material/play_arrow:",
+            ):
+                _start_agent_control_background("start")
+                st.rerun()
+            if st.button(
+                "전체 재시작",
+                disabled=not confirmed or agent_control_job_active,
+                width="stretch",
+                icon=":material/restart_alt:",
+            ):
+                _start_agent_control_background("restart")
+                st.rerun()
+            if st.button(
+                "전체 중지",
+                disabled=not confirmed or agent_control_job_active,
+                width="stretch",
+                icon=":material/stop:",
+            ):
+                _start_agent_control_background("stop")
+                st.rerun()
             if st.button(
                 "OpenAI 인증 점검",
                 width="stretch",
@@ -2112,19 +2737,30 @@ def render_agents():
                     st.session_state["agent_openai_credential_result"] = (
                         check_openai_agent_credential()
                     )
-        credential_result = st.session_state.get("agent_openai_credential_result")
-        if credential_result:
-            if credential_result.get("ok"):
-                st.success(credential_result.get("message", "OpenAI 인증 점검 성공"))
-            else:
-                st.error(credential_result.get("message", "OpenAI 인증 점검 실패"))
-            st.caption(
-                f"설정 파일: {credential_result.get('source', '미확인')} · "
-                f"점검 시각: {credential_result.get('checked_at', '-')}"
-            )
-    _show_command_result(show_success=False)
+            if st.button(
+                "Anthropic 인증 점검",
+                width="stretch",
+                icon=":material/vpn_key:",
+                key="check_agent_anthropic_credential",
+            ):
+                with st.spinner("Agent가 사용할 Anthropic 자격 증명을 실제 호출로 점검하고 있습니다..."):
+                    st.session_state["agent_anthropic_credential_result"] = (
+                        check_anthropic_agent_credential()
+                    )
+            if st.button(
+                "Gemini 인증 점검",
+                width="stretch",
+                icon=":material/travel_explore:",
+                key="check_agent_gemini_credential",
+            ):
+                with st.spinner("Agent가 사용할 Gemini 자격 증명을 실제 호출로 점검하고 있습니다..."):
+                    st.session_state["agent_gemini_credential_result"] = (
+                        check_gemini_agent_credential()
+                    )
 
-    snapshot = _load_agent_management_snapshot()
+    snapshot = st.session_state.pop("agent_control_latest_snapshot", None)
+    if not snapshot:
+        snapshot = _load_agent_management_snapshot()
     stop_impacts = {
         "interpreter": "질문 의도와 검색 조건을 해석할 수 없어 VOC Pipeline을 시작할 수 없습니다.",
         "retriever": "관련 VOC 근거를 검색할 수 없어 요약과 개선안 생성을 진행할 수 없습니다.",
@@ -2194,38 +2830,13 @@ def render_agents():
             if agent["status"] == "STOPPED":
                 st.markdown(f":red-badge[중지 영향] {stop_impacts[agent['key']]}")
 
-            test_result_key = f"agent_quick_test_result_{agent['key']}"
-            quick_test_requested = st.button(
-                "간편 테스트",
-                key=f"quick_test_agent_{agent['key']}",
-                icon=":material/network_check:",
-                disabled=agent["status"] != "RUNNING",
-                width="stretch",
-            )
+            _render_agent_quick_test_fragment(agent)
 
-            with st.container(height=148, border=False, key=f"agent_quick_test_result_{agent['key']}"):
-                if quick_test_requested:
-                    with st.spinner(f"{agent['name']} Agent를 실제 호출하고 있습니다..."):
-                        st.session_state[test_result_key] = test_agent_rpc(
-                            agent["name"],
-                            int(agent["port"]),
-                            timeout=12.0,
-                        )
-                test_result = st.session_state.get(test_result_key)
-                if not test_result:
-                    st.caption("RUNNING 상태에서 간편 테스트로 실제 RPC 응답을 확인할 수 있습니다.")
-                elif test_result.get("ok"):
-                    st.success(
-                        f"{test_result.get('rpc', '-')} 호출 성공 · "
-                        f"{test_result.get('duration_seconds', '-')}초"
-                    )
-                    st.caption(f"IN: {test_result.get('input', '-')}")
-                    st.caption(f"OUT: {test_result.get('summary', '-')}")
-                else:
-                    st.error(
-                        f"호출 실패 · {test_result.get('duration_seconds', '-')}초"
-                    )
-                    st.caption(test_result.get("summary", "-"))
+    if st.session_state.get(AGENT_CONTROL_JOB_KEY):
+        st.markdown("#### 최근 처리 상태")
+        _render_agent_control_job_monitor()
+    else:
+        _render_agent_management_messages(snapshot)
 
 
 def _status_badge(label: str, decision: str, help_text: str = ""):
@@ -2260,7 +2871,7 @@ def _confirm_agent_action(agent: dict, action: str):
             key=f"confirm_{action}_{agent['key']}",
             type="primary",
         ):
-            _run_agent_control_and_refresh(action, agent["key"], agent["name"])
+            _run_agent_control_and_refresh(action, agent["key"], agent["name"], rerun_after=True)
 
 
 def _set_goal_testcase_selection(selected_case_id: str):
@@ -2922,6 +3533,7 @@ def _start_goal_testcase_pipeline(selected_case_id: str):
 
 def _start_goal_testcase_pipeline_and_rerun(selected_case_id: str):
     _start_goal_testcase_pipeline(selected_case_id)
+    st.rerun(scope="app")
 
 
 def _render_goal_pipeline_focus_anchor_once():
@@ -3641,6 +4253,7 @@ def _render_batch_case_selector(cases: list[dict], groups: dict) -> dict:
                 "voc_batch",
                 fault_only=bool(selected_ids) and all(case_id.startswith("FT-") for case_id in selected_ids),
             )
+        _render_batch_judge_selection_badge(judge_config)
         preflight = _load_batch_preflight(tuple(selected_ids)) if selected_ids else {
             "ok": False,
             "selected_count": 0,
@@ -4003,11 +4616,130 @@ def _render_batch_running_summary(active_state: dict):
         )
 
 
+def _render_batch_execution_safety_notice() -> None:
+    with st.expander(
+        "일괄 수행 중 화면을 닫으면?",
+        expanded=False,
+        icon=":material/help:",
+    ):
+        cols = st.columns(3, gap="small", vertical_alignment="top")
+        with cols[0]:
+            st.badge("계속 실행", color="green", icon=":material/check_circle:")
+            st.markdown("**팝업·브라우저 탭 닫기**")
+            st.caption("Streamlit 서버가 살아 있으면 일괄 TC는 백그라운드에서 계속 수행됩니다.")
+        with cols[1]:
+            st.badge("중단 가능", color="orange", icon=":material/warning:")
+            st.markdown("**Streamlit 서버 종료**")
+            st.caption("서버 프로세스를 끄면 실행 중인 백그라운드 작업은 이어서 수행되지 않을 수 있습니다.")
+        with cols[2]:
+            st.badge("증적 보존", color="blue", icon=":material/folder_open:")
+            st.markdown("**다시 확인하는 방법**")
+            st.caption("완료된 Case 결과는 즉시 저장되며, 수행 이력에서 Run ID 기준으로 확인합니다.")
+        st.caption(
+            "안전하게 중단하려면 진행 화면의 `중지 요청`을 사용하세요. "
+            "강제 종료된 Run은 완료된 Case까지만 증적이 남고, 남은 Case는 재실행 또는 RETEST 대상으로 확인합니다."
+        )
+
+
+def _batch_preflight_display_state(preflight: dict) -> dict:
+    blockers = list(preflight.get("blockers", []))
+    warnings = list(preflight.get("warnings", []))
+    pending_count = int(preflight.get("pending_count") or 0)
+    selected_count = int(preflight.get("selected_count") or 0)
+    implemented_count = int(preflight.get("implemented_count") or 0)
+
+    if blockers:
+        return {
+            "tone": "bad",
+            "icon": "error",
+            "title": "실행 차단",
+            "message": blockers[0],
+            "items": blockers[1:] + warnings,
+        }
+    if selected_count <= 0:
+        return {
+            "tone": "idle",
+            "icon": "touch_app",
+            "title": "대상 선택 필요",
+            "message": "왼쪽 목록에서 일괄 수행할 Test Case를 선택하세요.",
+            "items": [],
+        }
+    if warnings:
+        return {
+            "tone": "warn",
+            "icon": "warning",
+            "title": "실행 가능 · 확인 필요",
+            "message": warnings[0],
+            "items": warnings[1:],
+        }
+    if pending_count > 0:
+        return {
+            "tone": "warn",
+            "icon": "rule",
+            "title": "실행 가능 · 후속 구현 포함",
+            "message": "선택 대상 중 아직 구현되지 않은 Case는 이번 Run에서 미실행으로 기록됩니다.",
+            "items": [],
+        }
+    return {
+        "tone": "good",
+        "icon": "check_circle",
+        "title": "실행 준비 완료",
+        "message": f"선택한 {implemented_count}건은 현재 조건에서 일괄 수행할 수 있습니다.",
+        "items": [],
+    }
+
+
+def _render_batch_preflight_readiness(preflight: dict) -> None:
+    state = _batch_preflight_display_state(preflight)
+    detail_items = "".join(
+        f"<li>{escape(str(item))}</li>"
+        for item in state.get("items", [])
+    )
+    detail_markup = f"<ul>{detail_items}</ul>" if detail_items else ""
+    checked_at = str(preflight.get("checked_at") or "").replace("T", " ")[:19] or "-"
+    st.markdown(
+        f"""
+        <section class="vqa-batch-preflight {state['tone']}">
+            <span class="material-symbols-rounded">{state['icon']}</span>
+            <div>
+                <strong>{escape(state["title"])}</strong>
+                <p>{escape(state["message"])}</p>
+                {detail_markup}
+                <small>점검 시각 · {escape(checked_at)}</small>
+            </div>
+        </section>
+        <style>
+        .vqa-batch-preflight{{
+            min-height:82px;margin:0;padding:12px 14px;border-radius:12px;
+            border:1px solid #c8d9ee;border-left:4px solid #155a96;
+            background:linear-gradient(135deg,#f8fbff,#fff);display:flex;gap:12px;
+            align-items:flex-start;box-sizing:border-box;font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }}
+        .vqa-batch-preflight.good{{border-left-color:#299049;background:linear-gradient(135deg,#f3fbf5,#fff)}}
+        .vqa-batch-preflight.warn{{border-left-color:#b36a08;background:linear-gradient(135deg,#fff8ec,#fff)}}
+        .vqa-batch-preflight.bad{{border-left-color:#d83f36;background:linear-gradient(135deg,#fff4f2,#fff)}}
+        .vqa-batch-preflight.idle{{border-left-color:#8a98aa;background:linear-gradient(135deg,#f6f8fb,#fff)}}
+        .vqa-batch-preflight>span{{flex:0 0 28px;font-size:28px;color:#155a96;margin-top:1px}}
+        .vqa-batch-preflight.good>span{{color:#299049}}
+        .vqa-batch-preflight.warn>span{{color:#b36a08}}
+        .vqa-batch-preflight.bad>span{{color:#d83f36}}
+        .vqa-batch-preflight.idle>span{{color:#8a98aa}}
+        .vqa-batch-preflight strong{{display:block;color:#173f68;font-size:14px;line-height:1.2}}
+        .vqa-batch-preflight p{{margin:4px 0 0;color:#40536d;font-size:12px;line-height:1.35}}
+        .vqa-batch-preflight ul{{margin:6px 0 0;padding-left:16px;color:#40536d;font-size:11px;line-height:1.35}}
+        .vqa-batch-preflight small{{display:block;margin-top:6px;color:#7a889a;font-size:10px}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_batch_execution():
     st.markdown("### 실행 대상 선택")
     st.caption(
         "기본은 순차 실행입니다. 실행 결과와 재시도 내역은 테스트케이스별 증적으로 즉시 저장됩니다."
     )
+    _render_batch_execution_safety_notice()
     catalog = load_quality_test_catalog()
     cases = catalog.get("cases", [])
     groups = catalog.get("groups", {})
@@ -4020,15 +4752,7 @@ def render_batch_execution():
     preflight = selection["preflight"]
     with st.container(border=True):
         st.markdown("#### 사전 점검")
-        with st.container(horizontal=True):
-            st.metric("선택", preflight["selected_count"])
-            st.metric("실행 가능", preflight["implemented_count"])
-            st.metric("후속 구현", preflight["pending_count"])
-            st.metric("에이전트", f"{preflight['agents'].get('running', 0)}/6")
-        for warning in preflight.get("warnings", []):
-            st.warning(warning)
-        for blocker in preflight.get("blockers", []):
-            st.error(blocker)
+        _render_batch_preflight_readiness(preflight)
 
     active_state = _active_batch_run_state()
     active_run_id = active_state["run_id"] or selection["active_run_id"]
@@ -6994,7 +7718,7 @@ def _rubric_save_state_pill(label: str, *, tone: str) -> str:
     return (
         "<div style=\""
         "display:inline-flex;align-items:center;justify-content:center;"
-        "height:30px;min-width:86px;padding:0 12px;border-radius:999px;"
+        "height:38px;min-width:86px;padding:0 14px;border-radius:999px;"
         f"border:1px solid {border};background:{background};color:{color};"
         "font-size:12px;font-weight:800;line-height:1;white-space:nowrap;"
         "box-sizing:border-box;max-width:100%;overflow:hidden;text-overflow:ellipsis;"
@@ -7053,19 +7777,43 @@ def _stabilize_rubric_header_layout(rubric_type: str) -> None:
         f".st-key-{widget_key} [data-testid='stSelectbox']"
         for widget_key in widget_keys
     )
+    label_selectors = ",\n".join(
+        f".st-key-{widget_key} [data-testid='stWidgetLabel']"
+        for widget_key in widget_keys
+    )
     st.markdown(
         f"""
         <style>
         {selectors} {{
-            min-height:72px!important;
+            min-height:78px!important;
         }}
-        .st-key-rubric_edit_{rubric_type}_save_state {{
+        {label_selectors} {{
             min-height:32px!important;
             display:flex!important;
+            align-items:flex-start!important;
+            margin-bottom:4px!important;
+        }}
+        .st-key-rubric_download_{rubric_type},
+        .st-key-rubric_upload_popover_{rubric_type},
+        .st-key-rubric_edit_{rubric_type}_save,
+        .st-key-rubric_edit_{rubric_type}_save_state {{
+            min-height:78px!important;
+            display:flex!important;
+            flex-direction:column!important;
+            justify-content:flex-end!important;
+        }}
+        .st-key-rubric_edit_{rubric_type}_save_state {{
             align-items:center!important;
             justify-content:flex-end!important;
             overflow:hidden!important;
         }}
+        .st-key-rubric_edit_{rubric_type}_save_state [data-testid="stMarkdownContainer"] {{
+            width:100%!important;
+            display:flex!important;
+            justify-content:flex-end!important;
+        }}
+        .st-key-rubric_download_{rubric_type} button,
+        .st-key-rubric_upload_popover_{rubric_type} button,
         .st-key-rubric_edit_{rubric_type}_save button {{
             min-height:38px!important;
         }}
@@ -7934,9 +8682,10 @@ def _render_rubric_management(stage: str):
         provider_col,
         download_col,
         upload_col,
+        save_state_col,
         save_col,
     ) = st.columns(
-        [1.0, 1.8, 1.4, 0.8, 0.8, 1.35],
+        [1.0, 1.8, 1.4, 0.8, 0.8, 0.78, 1.32],
         gap="small",
         vertical_alignment="bottom",
     )
@@ -8023,7 +8772,7 @@ def _render_rubric_management(stage: str):
         download_container=download_col,
         upload_container=upload_col,
     )
-    with save_col:
+    with save_state_col:
         with st.container(
             horizontal=True,
             horizontal_alignment="right",
@@ -8036,6 +8785,7 @@ def _render_rubric_management(stage: str):
                 ),
                 unsafe_allow_html=True,
             )
+    with save_col:
         if st.button(
             "평가 기준 저장",
             type="primary",

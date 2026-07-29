@@ -17,3 +17,6 @@ baseFontSize = 14
 baseRadius = "8px"
 buttonRadius = "6px"
 showWidgetBorder = true
+
+[client]
+toolbarMode = "viewer"
