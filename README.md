@@ -290,6 +290,12 @@ Get-Content .\.runtime\logs\retriever.err.log -Tail 50
 
 `.env` 필수값과 6101~6106 포트 점유 여부를 확인합니다. 스크립트가 관리하지 않는 프로세스가 포트를 사용하면 자동 종료하지 않습니다.
 
+### Agent 간편 테스트가 OpenAI 401로 실패
+
+`홈 > VOC 품질진단 > Agent 관리`에서 `OpenAI 인증 점검`을 실행합니다. 인증 실패라면 프로젝트 루트 `.env`의 `OPENAI_API_KEY`를 새로 발급한 유효한 키로 교체한 뒤 `Agent 프로세스 상태 변경`을 선택하고 `전체 재시작`합니다.
+
+Interpreter·Summarizer·Evaluator·Critic은 OpenAI 호출이 포함되어 있어 프로세스가 `RUNNING`이어도 키가 잘못되면 간편 테스트가 실패합니다. Retriever의 로컬 검색 성공은 OpenAI 인증 성공을 의미하지 않습니다. 키 값은 화면·로그·보고서·Notion에 기록하지 않습니다.
+
 ### Judge 또는 타당성 평가가 ERROR
 
 - 공급자 API 자격 증명과 모델 사용 권한을 확인합니다.

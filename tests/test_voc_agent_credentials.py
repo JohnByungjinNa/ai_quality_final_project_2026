@@ -17,7 +17,7 @@ def test_agent_rpc_error_maps_openai_401_without_key_fragment():
     status, message = agent_rpc_error(
         RuntimeError(
             "Error code: 401 - Incorrect API key provided: "
-            "sk-proj-examplecredential123456789"
+            "sk-proj-****************"
         ),
         "Summarizer.MakeCandidates",
     )
@@ -31,7 +31,7 @@ def test_agent_rpc_error_maps_openai_401_without_key_fragment():
 def test_dashboard_rpc_error_maps_authentication_to_actionable_message():
     code, message = voc_quality_service._agent_rpc_error_details(
         "AioRpcError status=StatusCode.UNAUTHENTICATED "
-        "details=Incorrect API key provided: sk-proj-examplecredential123456789"
+        "details=Incorrect API key provided: sk-proj-****************"
     )
 
     assert code == "OPENAI_AUTH_FAILED"
@@ -44,7 +44,7 @@ def test_test_agent_rpc_does_not_return_raw_credential(monkeypatch):
     def raise_auth_error(_awaitable):
         _awaitable.close()
         raise RuntimeError(
-            "401 Incorrect API key provided: sk-proj-examplecredential123456789"
+            "401 Incorrect API key provided: sk-proj-****************"
         )
 
     monkeypatch.setattr(voc_quality_service.asyncio, "run", raise_auth_error)

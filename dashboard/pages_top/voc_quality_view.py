@@ -6673,16 +6673,19 @@ def render_testcases():
             },
         )
 
-    selected_rows = event.selection.rows if event else []
-    if not selected_rows and visible_cases:
-        selected_rows = [default_index]
+    selected_row = _table_selected_row_index(
+        event,
+        len(visible_cases),
+    )
+    if selected_row is None and visible_cases:
+        selected_row = default_index
     with browser_columns[2].container(
         border=True,
         height=380,
         key="voc_testcase_detail",
     ):
         st.markdown("#### :material/description: Case 상세")
-        if not selected_rows:
+        if selected_row is None:
             st.caption("목록에서 Case ID를 선택하세요.")
             st.markdown(
                 """
@@ -6692,7 +6695,7 @@ def render_testcases():
                 """
             )
         else:
-            selected = visible_cases[selected_rows[0]]
+            selected = visible_cases[selected_row]
             detail = testcase_details.get(selected.get("case_id"), {})
             group_label = groups.get(selected.get("group"), {}).get(
                 "label", selected.get("group", "-")
@@ -7060,7 +7063,7 @@ def _stabilize_rubric_header_layout(rubric_type: str) -> None:
             min-height:32px!important;
             display:flex!important;
             align-items:center!important;
-            justify-content:flex-start!important;
+            justify-content:flex-end!important;
             overflow:hidden!important;
         }}
         .st-key-rubric_edit_{rubric_type}_save button {{
@@ -7069,6 +7072,42 @@ def _stabilize_rubric_header_layout(rubric_type: str) -> None:
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _render_rubric_stage_tab_style() -> None:
+    st.html(
+        """
+        <style>
+        .st-key-voc_quality_rubric_stage div[data-testid="stRadio"] > label {
+            display:none;
+        }
+        .st-key-voc_quality_rubric_stage div[role="radiogroup"] {
+            gap:4px;
+            border-bottom:1px solid #c7d8ef;
+            margin-bottom:14px;
+            flex-wrap:wrap;
+        }
+        .st-key-voc_quality_rubric_stage div[role="radiogroup"] label {
+            padding:10px 14px 9px;
+            border-bottom:3px solid transparent;
+            border-radius:6px 6px 0 0;
+            margin-bottom:-1px;
+            color:#5b6b82;
+            font-weight:700;
+            transition:color .15s ease, background-color .15s ease;
+        }
+        .st-key-voc_quality_rubric_stage div[role="radiogroup"] label:hover {
+            color:#245f99;
+            background:#f4f8fd;
+        }
+        .st-key-voc_quality_rubric_stage div[role="radiogroup"] label:has(input:checked) {
+            color:#174b7a;
+            background:#eaf3fc;
+            border-bottom-color:#2f6fb0;
+        }
+        </style>
+        """
     )
 
 
@@ -7889,8 +7928,15 @@ def _render_rubric_management(stage: str):
     _stabilize_rubric_header_layout(rubric_type)
     _sync_rubric_score_widgets_to_draft(draft, rubric_type, spec)
 
-    version_col, title_col, provider_col, action_col = st.columns(
-        [1.0, 1.8, 1.4, 2.6],
+    (
+        version_col,
+        title_col,
+        provider_col,
+        download_col,
+        upload_col,
+        save_col,
+    ) = st.columns(
+        [1.0, 1.8, 1.4, 0.8, 0.8, 1.35],
         gap="small",
         vertical_alignment="bottom",
     )
@@ -7945,74 +7991,72 @@ def _render_rubric_management(stage: str):
                 disabled=True,
                 key=f"rubric_edit_{rubric_type}_widget_provider",
             )
-    with action_col:
-        download_col, upload_col, spacer_col, save_col = st.columns(
-            [1.0, 1.0, 0.35, 1.45],
-            gap="small",
-            vertical_alignment="bottom",
-        )
-        _render_rubric_transfer_tools(
-            draft,
-            rubric_type,
-            spec,
-            download_container=download_col,
-            upload_container=upload_col,
-        )
-        with spacer_col:
-            st.empty()
-        header_validation_errors = validate_quality_rubric(
-            rubric_type,
-            draft,
-        )
-        draft_signature = _rubric_signature(draft)
-        payload_signature = _rubric_signature(payload)
-        saved_signature = st.session_state.get(
-            f"voc_rubric_last_saved_signature_{rubric_type}"
-        )
-        has_rubric_changes = draft_signature != payload_signature
-        needs_version_change = has_rubric_changes and draft.get("version", "") == original_version
-        save_state = _rubric_save_control_state(
-            has_changes=has_rubric_changes,
-            needs_version_change=needs_version_change,
-            validation_errors=header_validation_errors,
-            last_save_message=st.session_state.get(
-                f"voc_rubric_last_save_message_{rubric_type}"
-            ),
-            saved_signature=saved_signature,
-            draft_signature=draft_signature,
-        )
-        if save_state.get("focus_version"):
-            _highlight_rubric_version_input(rubric_type)
-        with save_col:
-            with st.container(key=f"rubric_edit_{rubric_type}_save_state"):
-                st.markdown(
-                    _rubric_save_state_pill(
-                        save_state["label"],
-                        tone=save_state["tone"],
-                    ),
-                    unsafe_allow_html=True,
-                )
-            if st.button(
-                "평가 기준 저장",
-                type="primary",
-                icon=":material/save:",
-                key=f"rubric_edit_{rubric_type}_save",
-                width="stretch",
-                help=save_state["help"],
-                disabled=bool(save_state["disabled"]),
-            ):
-                saved_payload = deepcopy(draft)
-                saved = _show_rubric_save_result(
+
+    header_validation_errors = validate_quality_rubric(
+        rubric_type,
+        draft,
+    )
+    draft_signature = _rubric_signature(draft)
+    payload_signature = _rubric_signature(payload)
+    saved_signature = st.session_state.get(
+        f"voc_rubric_last_saved_signature_{rubric_type}"
+    )
+    has_rubric_changes = draft_signature != payload_signature
+    needs_version_change = has_rubric_changes and draft.get("version", "") == original_version
+    save_state = _rubric_save_control_state(
+        has_changes=has_rubric_changes,
+        needs_version_change=needs_version_change,
+        validation_errors=header_validation_errors,
+        last_save_message=st.session_state.get(
+            f"voc_rubric_last_save_message_{rubric_type}"
+        ),
+        saved_signature=saved_signature,
+        draft_signature=draft_signature,
+    )
+    if save_state.get("focus_version"):
+        _highlight_rubric_version_input(rubric_type)
+
+    _render_rubric_transfer_tools(
+        draft,
+        rubric_type,
+        spec,
+        download_container=download_col,
+        upload_container=upload_col,
+    )
+    with save_col:
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="right",
+            key=f"rubric_edit_{rubric_type}_save_state",
+        ):
+            st.markdown(
+                _rubric_save_state_pill(
+                    save_state["label"],
+                    tone=save_state["tone"],
+                ),
+                unsafe_allow_html=True,
+            )
+        if st.button(
+            "평가 기준 저장",
+            type="primary",
+            icon=":material/save:",
+            key=f"rubric_edit_{rubric_type}_save",
+            width="stretch",
+            help=save_state["help"],
+            disabled=bool(save_state["disabled"]),
+        ):
+            saved_payload = deepcopy(draft)
+            saved = _show_rubric_save_result(
+                rubric_type,
+                save_quality_rubric(
                     rubric_type,
-                    save_quality_rubric(
-                        rubric_type,
-                        saved_payload,
-                        source="screen_editor",
-                    ),
                     saved_payload,
-                )
-                if saved:
-                    st.rerun()
+                    source="screen_editor",
+                ),
+                saved_payload,
+            )
+            if saved:
+                st.rerun()
 
     score_col, decision_col = st.columns(
         2,
@@ -8032,10 +8076,12 @@ def _render_rubric_management(stage: str):
 
 
 def render_rubric():
-    stage = st.segmented_control(
+    _render_rubric_stage_tab_style()
+    stage = st.radio(
         "수정할 평가 단계",
         RUBRIC_STAGE_OPTIONS,
-        default=RUBRIC_STAGE_OPTIONS[0],
+        index=0,
+        horizontal=True,
         key="voc_quality_rubric_stage",
         label_visibility="collapsed",
         on_change=_dismiss_rubric_detail_dialog,

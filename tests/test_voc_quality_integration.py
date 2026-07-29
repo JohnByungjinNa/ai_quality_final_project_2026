@@ -1363,6 +1363,26 @@ def test_testcase_page_uses_same_35_case_catalog_as_batch_execution():
     assert "**TC-01** · 모바일 앱 자동차보험 갱신 오류" in headings
 
 
+def test_testcase_page_ignores_stale_row_selection_after_group_filter_change():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_testcase_catalog_app.py", default_timeout=15
+    )
+    app.run()
+    app.session_state["voc_testcase_catalog_table"] = {
+        "selection": {"rows": [34], "columns": [], "cells": []}
+    }
+    app.session_state["voc_testcase_selected_case_id"] = "QG-03"
+
+    app.selectbox[0].set_value("quality_gate").run()
+
+    assert not app.exception
+    catalog_table = app.dataframe[0].value
+    assert len(catalog_table) == 3
+    assert set(catalog_table["Case ID"]) == {"QG-01", "QG-02", "QG-03"}
+    headings = [item.value for item in app.markdown]
+    assert "**QG-03** · 개선안 타당성·배포 게이트" in headings
+
+
 def test_testcase_group_chart_hides_validation_area_axis_title():
     rows = pd.DataFrame(
         [
@@ -1509,24 +1529,25 @@ def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
     assert all("PASS 하한" in row for row in judge_rows + validity_rows)
 
     rendered = []
-    segmented_labels = []
+    tab_labels = []
     monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(voc_quality_view, "_render_rubric_stage_tab_style", lambda: None)
 
     def select_stage(label, *_args, **_kwargs):
-        segmented_labels.append(label)
+        tab_labels.append(label)
         return "독립 LLM Judge"
 
     monkeypatch.setattr(
         voc_quality_view.st,
-        "segmented_control",
+        "radio",
         select_stage,
     )
     monkeypatch.setattr(voc_quality_view, "_render_rubric_management", rendered.append)
 
     voc_quality_view.render_rubric()
 
-    assert segmented_labels == ["수정할 평가 단계"]
+    assert tab_labels == ["수정할 평가 단계"]
     assert rendered == ["독립 LLM Judge"]
 
 
@@ -1559,7 +1580,10 @@ def test_unified_rubric_page_renders_gauges_without_exceptions():
     app.run()
 
     assert not app.exception
-    assert [control.label for control in app.segmented_control] == ["수정할 평가 단계"]
+    assert [control.label for control in app.radio] == ["수정할 평가 단계"]
+    stage_tab_css = app.get("html")[0].proto.body
+    assert "border-bottom-color:#2f6fb0" in stage_tab_css
+    assert "background:#eaf3fc" in stage_tab_css
     markdown = [item.value for item in app.markdown]
     captions = [item.value for item in app.caption]
     assert "## 평가 기준 구분 선택" not in markdown
@@ -1570,7 +1594,7 @@ def test_unified_rubric_page_renders_gauges_without_exceptions():
         item.value != "총점·세부 배점·판정 구간 검증을 통과했습니다."
         for item in app.success
     )
-    assert app.segmented_control[0].proto.label_visibility.value == LabelVisibility.COLLAPSED
+    assert app.radio[0].proto.label_visibility.value == LabelVisibility.COLLAPSED
     assert all(slider.label != "의도 파악 (intent)" for slider in app.slider)
     assert any(slider.label == "배포 가능 시작 점수" for slider in app.slider)
     assert any(button.label == "평가 기준 저장" for button in app.button)
@@ -1640,9 +1664,23 @@ def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
         "개선안 타당성": "improvement_validity",
     }
     for stage, expected_provider in expected_provider_states.items():
-        app.segmented_control[0].set_value(stage).run()
+        app.radio[0].set_value(stage).run()
 
         assert not app.exception
+        header_columns = app.get("column")[:6]
+        expected_weights = [1.0, 1.8, 1.4, 0.8, 0.8, 1.35]
+        expected_total = sum(expected_weights)
+        assert len(app.get("column")) == 8
+        assert [column.proto.weight for column in header_columns] == pytest.approx(
+            [weight / expected_total for weight in expected_weights]
+        )
+        assert all(
+            column.proto.vertical_alignment == Block.Column.BOTTOM
+            for column in header_columns
+        )
+        save_column_children = list(header_columns[5].children.values())
+        assert getattr(save_column_children[0], "type", None) == "flex_container"
+        assert save_column_children[1].label == "평가 기준 저장"
         assert [item.label for item in app.text_input[:2]] == ["Rubric 버전", "기준명"]
         provider = next(
             item for item in app.selectbox if item.label == "기본 Judge Provider"
@@ -1723,6 +1761,14 @@ def test_rubric_detail_dialog_navigates_to_previous_and_next_items():
 
 
 def test_improver_detail_dialog_has_stable_content_height_without_scroll():
+    def criteria_panel(app):
+        dialog = next(
+            child
+            for child in app._tree[2].children.values()
+            if getattr(child, "type", None) == "dialog"
+        )
+        return dialog[0][1]
+
     app = AppTest.from_file("tests/fixtures/voc_rubric_app.py", default_timeout=30)
     app.session_state[
         "rubric_edit_internal_pipeline_selected_item_detail_dialog_request"
@@ -1734,12 +1780,16 @@ def test_improver_detail_dialog_has_stable_content_height_without_scroll():
         for slider in app.slider
         if "widget_improver_criterion" in str(slider.key)
     ]
-    criteria_panel = app._tree[2][0][0][1]
-    navigation_style = app.get("html")[0].proto.body
+    improver_criteria_panel = criteria_panel(app)
+    navigation_style = next(
+        item.proto.body
+        for item in app.get("html")
+        if "min-height: 430px" in item.proto.body
+    )
 
     assert not app.exception
     assert len(improver_sliders) == 5
-    assert criteria_panel.proto.height_config.use_content
+    assert improver_criteria_panel.proto.height_config.use_content
     assert "min-height: 430px" in navigation_style
     assert "overflow: visible" in navigation_style
 
@@ -1753,7 +1803,7 @@ def test_improver_detail_dialog_has_stable_content_height_without_scroll():
     assert "#### Agent 연계 품질" in [
         item.value for item in app.markdown
     ]
-    assert app._tree[2][0][0][1].proto.height_config.use_content
+    assert criteria_panel(app).proto.height_config.use_content
 
 
 def test_rubric_detail_dialog_closes_after_navigation_with_one_done_click():
@@ -1818,7 +1868,7 @@ def test_rubric_stage_switch_clears_all_open_dialog_state():
         for button in app.button
         if button.key == "rubric_detail_next_internal_pipeline_interpreter"
     ).click().run()
-    app.segmented_control[0].set_value("독립 LLM Judge").run()
+    app.radio[0].set_value("독립 LLM Judge").run()
 
     assert not app.exception
     assert all(
