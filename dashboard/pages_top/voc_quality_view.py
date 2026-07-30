@@ -16,6 +16,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from components.quality_report_template import build_voc_quality_report_html
 from services.voc_background_job_service import (
     background_job_snapshot,
     discard_background_job,
@@ -106,13 +107,13 @@ MANUAL_JUDGE_PROVIDERS = (
     {
         "provider": "anthropic",
         "label": "Anthropic",
-        "model": "claude-opus-4-6",
+        "model": "claude-haiku-4-5",
         "number": 2,
     },
     {
         "provider": "gemini",
         "label": "Gemini",
-        "model": "gemini-2.5-pro",
+        "model": "gemini-3.5-flash-lite",
         "number": 3,
     },
 )
@@ -178,16 +179,16 @@ VOC_STATUS_LABELS = {
     "RETEST": "재시험",
     "VOC": "VOC",
     "FAULT": "장애 시험",
-    "AI_PASS": "AI 통과",
-    "AI_REVIEWED": "AI 검토 완료",
+    "AI_PASS": "AI 평가 통과",
+    "AI_REVIEWED": "AI 평가 완료",
     "QA_REVIEWED": "QA 검토 완료",
-    "REVISION_REQUIRED": "수정 필요",
+    "REVISION_REQUIRED": "보완 필요",
     "REJECTED": "반려",
     "APPROVE": "승인",
     "APPROVED": "승인 완료",
     "FORMAL_APPROVED": "정식 승인",
     "NOT_APPROVED": "미승인",
-    "BUSINESS_APPROVED": "업무 승인",
+    "BUSINESS_APPROVED": "업무 승인 완료",
     "BUSINESS_REVIEW_REQUIRED": "업무 검토 필요",
     "HUMAN_REVIEW_REQUIRED": "사람 검토 필요",
     "REMAINING_CASE_REVIEW_REQUIRED": "잔여 Case 검토 필요",
@@ -535,7 +536,7 @@ def _execute_goal_testcase(job_id: str, case_id: str | None = None) -> dict:
         judge_config = {
             "enabled": False,
             "provider": "anthropic",
-            "model": "claude-opus-4-6",
+            "model": "claude-haiku-4-5",
         }
         if job_id:
             testcase_result = run_test_case(
@@ -1675,6 +1676,15 @@ def _reset_agent_control_confirmation() -> None:
 
 
 AGENT_CONTROL_JOB_KEY = "agent_control_job_id"
+AGENT_CREDENTIAL_RESULT_KEYS = (
+    "agent_openai_credential_result",
+    "agent_anthropic_credential_result",
+    "agent_gemini_credential_result",
+)
+
+
+def _has_agent_credential_feedback() -> bool:
+    return any(st.session_state.get(key) for key in AGENT_CREDENTIAL_RESULT_KEYS)
 
 
 def _clear_agent_control_messages() -> None:
@@ -1983,9 +1993,7 @@ def _render_agent_management_messages(snapshot: dict) -> None:
     if (
         not show_feedback
         and not show_log
-        and not st.session_state.get("agent_openai_credential_result")
-        and not st.session_state.get("agent_anthropic_credential_result")
-        and not st.session_state.get("agent_gemini_credential_result")
+        and not _has_agent_credential_feedback()
     ):
         return
 
@@ -1994,7 +2002,7 @@ def _render_agent_management_messages(snapshot: dict) -> None:
         _render_agent_control_feedback()
     if show_log:
         _render_agent_control_log()
-    if st.session_state.get("agent_openai_credential_result"):
+    if _has_agent_credential_feedback():
         _render_agent_credential_feedback()
 
 
@@ -4904,6 +4912,345 @@ def _render_history_verification_scope(manifest: dict, summary: dict):
                 st.altair_chart(chart, theme=None)
 
 
+HISTORY_ARTIFACT_LABELS = {
+    "pipeline_result": "Pipeline 결과",
+    "trace": "Agent Trace",
+    "rule_result": "내부 규칙 판정",
+    "judge_result": "독립 LLM Judge",
+    "validity_result": "개선안 타당성",
+}
+HISTORY_SCORE_LABELS = {
+    "accuracy": "정확성",
+    "groundedness": "근거성",
+    "completeness": "충실성",
+    "specificity": "구체성",
+    "safety": "안전성",
+    "feasibility": "실행 가능성",
+    "measurability": "측정 가능성",
+    "priority": "우선순위",
+}
+
+
+def _history_duration_label(started_at: str | None, finished_at: str | None) -> str:
+    if not started_at or not finished_at:
+        return "-"
+    try:
+        seconds = (datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds()
+    except (TypeError, ValueError):
+        return "-"
+    return f"{seconds:.1f}초"
+
+
+def _history_mapping_rows(mapping: dict | None, labels: dict[str, str] | None = None) -> pd.DataFrame:
+    labels = labels or {}
+    rows = []
+    for key, value in (mapping or {}).items():
+        if isinstance(value, bool):
+            display = "설정" if value else "미설정"
+        elif isinstance(value, (dict, list)):
+            display = json.dumps(value, ensure_ascii=False)
+        else:
+            display = "-" if value in (None, "") else str(value)
+        rows.append({"항목": labels.get(key, key), "내용": display})
+    return pd.DataFrame(rows)
+
+
+def _render_history_execution_info(manifest: dict, summary: dict) -> None:
+    st.markdown("#### :material/info: Run 기본 정보")
+    basic_rows = pd.DataFrame(
+        [
+            {"항목": "Run ID", "내용": manifest.get("run_id", "-")},
+            {"항목": "실행 유형", "내용": _voc_status_label(manifest.get("run_type", "-"))},
+            {"항목": "실행 상태", "내용": _voc_status_label(manifest.get("status", "-"))},
+            {"항목": "Suite", "내용": manifest.get("suite_id", "-")},
+            {"항목": "Catalog 버전", "내용": manifest.get("catalog_version", "-")},
+            {"항목": "시작 시각", "내용": _history_table_timestamp(manifest.get("started_at"))},
+            {"항목": "종료 시각", "내용": _history_table_timestamp(manifest.get("finished_at"))},
+            {
+                "항목": "총 수행 시간",
+                "내용": _history_duration_label(manifest.get("started_at"), manifest.get("finished_at")),
+            },
+            {
+                "항목": "대상 Case",
+                "내용": ", ".join(manifest.get("selected_case_ids", [])) or "-",
+            },
+            {
+                "항목": "최종 판정",
+                "내용": _voc_status_label(summary.get("deployment_decision", "미판정")),
+            },
+        ]
+    )
+    st.dataframe(
+        basic_rows,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "항목": st.column_config.TextColumn(width="small", pinned=True),
+            "내용": st.column_config.TextColumn(width="large"),
+        },
+    )
+
+    rubric_versions = manifest.get("rubric_versions", {})
+    if rubric_versions:
+        st.markdown("#### :material/rule: 적용 Rubric")
+        rubric_rows = []
+        rubric_labels = {
+            "internal_pipeline": "내부 Pipeline 품질",
+            "independent_judge": "독립 LLM Judge",
+            "improvement_validity": "개선안 타당성",
+        }
+        for rubric_type, detail in rubric_versions.items():
+            detail = detail if isinstance(detail, dict) else {"version": detail}
+            rubric_rows.append(
+                {
+                    "평가 단계": rubric_labels.get(rubric_type, rubric_type),
+                    "버전": detail.get("version", "-"),
+                    "무결성 Hash": str(detail.get("sha256", "-"))[:16],
+                }
+            )
+        st.dataframe(pd.DataFrame(rubric_rows), hide_index=True, width="stretch")
+
+    model_snapshot = manifest.get("model_snapshot", {})
+    if model_snapshot:
+        st.markdown("#### :material/smart_toy: 실행 모델")
+        model_labels = {
+            "summary": "요약 생성",
+            "policy": "개선안 생성",
+            "judge": "독립 Judge",
+        }
+        model_rows = []
+        for role, detail in model_snapshot.items():
+            detail = detail if isinstance(detail, dict) else {}
+            model_rows.append(
+                {
+                    "역할": model_labels.get(role, role),
+                    "Provider": detail.get("provider", "-"),
+                    "모델": detail.get("model", "-"),
+                    "사용 상태": (
+                        "사용"
+                        if detail.get("enabled", detail.get("credential_configured", True))
+                        else "미사용"
+                    ),
+                }
+            )
+        st.dataframe(pd.DataFrame(model_rows), hide_index=True, width="stretch")
+
+    environment = manifest.get("environment_fingerprint", {})
+    if environment:
+        with st.expander("실행 환경 정보", icon=":material/computer:"):
+            st.dataframe(
+                _history_mapping_rows(
+                    environment,
+                    {
+                        "python_version": "Python",
+                        "operating_system": "운영체제",
+                        "platform_release": "OS 버전",
+                        "runtime_root": "Runtime 경로",
+                        "fingerprint_sha256": "환경 Hash",
+                    },
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+
+    with st.expander("원본 실행 정보 JSON", icon=":material/data_object:"):
+        st.json(manifest)
+
+
+def _render_history_pipeline_artifact(pipeline: dict) -> None:
+    execution = pipeline.get("execution", {}) if isinstance(pipeline.get("execution"), dict) else {}
+    result = execution.get("result", {}) if isinstance(execution.get("result"), dict) else {}
+    with st.container(horizontal=True):
+        st.metric("수행 상태", "성공" if execution.get("ok") and result.get("ok") else "확인 필요", border=True)
+        st.metric("실행 모드", pipeline.get("mode", "-"), border=True)
+        st.metric("기록 시각", _history_table_timestamp(pipeline.get("recorded_at")), border=True)
+        st.metric("Trace", "연결" if result.get("trace") else "없음", border=True)
+    st.markdown("#### :material/help: 고객 질문")
+    st.write(execution.get("question", "-") or "-")
+    result_columns = st.columns(2, gap="medium")
+    with result_columns[0].container(border=True, height="stretch"):
+        st.markdown("#### :material/summarize: VOC 분석 요약")
+        st.write(result.get("summary", "-") or "-")
+    with result_columns[1].container(border=True, height="stretch"):
+        st.markdown("#### :material/lightbulb: 최종 개선안")
+        _render_policy_improvement(result.get("policy", "-") or "-")
+
+    diagnostic_rows = []
+    for label, field in (
+        ("Interpreter 해석", "intent_json"),
+        ("Evaluator 점수", "eval_json"),
+        ("Critic 보완", "summary_critic_json"),
+    ):
+        parsed = _parse_json_mapping(result.get(field))
+        if parsed:
+            diagnostic_rows.append({"Agent 진단": label, "결과": json.dumps(parsed, ensure_ascii=False)})
+    if diagnostic_rows:
+        with st.expander("Agent별 핵심 진단", icon=":material/account_tree:"):
+            st.dataframe(pd.DataFrame(diagnostic_rows), hide_index=True, width="stretch")
+
+    reports = execution.get("reports", {})
+    if isinstance(reports, dict) and reports:
+        st.caption(
+            "생성 보고서 · "
+            + " · ".join(f"{name.upper()} {Path(str(report_path)).name}" for name, report_path in reports.items())
+        )
+
+
+def _render_history_rule_artifact(rule: dict) -> None:
+    with st.container(horizontal=True):
+        st.metric("내부 판정", _voc_status_label(rule.get("status", "NOT_RUN")), border=True)
+        st.metric("Rubric", rule.get("rubric_id", "-"), border=True)
+        st.metric("버전", rule.get("rubric_version", "-"), border=True)
+    message = rule.get("message")
+    if rule.get("status") == "PASS":
+        st.success(message or "내부 Pipeline 품질 기준을 통과했습니다.")
+    elif rule.get("status") in {"FAIL", "ERROR"}:
+        st.error(message or "내부 Pipeline 품질 기준을 통과하지 못했습니다.")
+    else:
+        st.warning(message or "내부 규칙 판정 결과를 확인하세요.")
+
+
+def _history_score_rows(scores: dict | None) -> pd.DataFrame:
+    rows = []
+    for dimension, detail in (scores or {}).items():
+        if isinstance(detail, dict):
+            rows.append(
+                {
+                    "평가 항목": HISTORY_SCORE_LABELS.get(dimension, dimension),
+                    "점수": detail.get("score", detail.get("points", detail.get("value", "-"))),
+                    "배점": detail.get("max_points", "-"),
+                    "판정 근거": detail.get("reason", detail.get("comment", "-")),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "평가 항목": HISTORY_SCORE_LABELS.get(dimension, dimension),
+                    "점수": detail,
+                    "배점": "-",
+                    "판정 근거": "-",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _render_history_judge_artifact(judge: dict) -> None:
+    with st.container(horizontal=True):
+        st.metric("유효 판정", _voc_status_label(judge.get("decision", "NOT_RUN")), border=True)
+        st.metric(
+            "총점",
+            f"{judge.get('total_score')}점" if judge.get("total_score") is not None else "-",
+            border=True,
+        )
+        st.metric("독립성", judge.get("independence_grade", "-"), border=True)
+        st.metric("수행 시간", f"{float(judge.get('duration_seconds') or 0):g}초", border=True)
+    st.caption(
+        f"{judge.get('provider', '-')} · {judge.get('model', '-')} · "
+        f"Rubric {judge.get('rubric_version', '-')} · "
+        f"{_history_table_timestamp(judge.get('evaluated_at'))}"
+    )
+    if judge.get("error"):
+        st.error(judge["error"])
+    elif judge.get("independence_hold"):
+        st.warning(
+            f"점수 기준 판정은 {_voc_status_label(judge.get('rubric_decision', '-'))}이지만 "
+            f"{judge.get('independence_hold_reason', '독립성 기준으로 검토가 필요합니다.')}"
+        )
+    score_rows = _history_score_rows(judge.get("dimension_scores"))
+    if not score_rows.empty:
+        st.dataframe(score_rows, hide_index=True, width="stretch")
+    detail_columns = st.columns(3, gap="small")
+    for column, title, values in (
+        (detail_columns[0], "확인 근거", judge.get("evidence", [])),
+        (detail_columns[1], "잔여 위험", judge.get("risks", [])),
+        (detail_columns[2], "보완 권고", judge.get("recommendations", [])),
+    ):
+        with column.container(border=True, height=190):
+            st.markdown(f"**{title}**")
+            if values:
+                for value in values:
+                    st.write(f"- {value}")
+            else:
+                st.caption("표시할 내용 없음")
+
+
+def _render_history_validity_artifact(validity: dict) -> None:
+    with st.container(horizontal=True):
+        st.metric("자동 판정", _voc_status_label(validity.get("decision", "NOT_RUN")), border=True)
+        st.metric(
+            "타당성 점수",
+            f"{validity.get('total_score')}점" if validity.get("total_score") is not None else "-",
+            border=True,
+        )
+        st.metric("승인 단계", _voc_status_label(validity.get("workflow_state", "DRAFT")), border=True)
+        st.metric("정식 승인", "승인" if validity.get("formal_approval") else "미승인", border=True)
+    st.caption(
+        f"{validity.get('provider', '-')} · {validity.get('model', '-')} · "
+        f"Rubric {validity.get('rubric_version', '-')} · "
+        f"{_history_table_timestamp(validity.get('evaluated_at'))}"
+    )
+    if validity.get("error"):
+        st.error(validity["error"])
+    holds = validity.get("immediate_hold_rules_triggered", [])
+    if holds:
+        st.error("즉시 승인 보류 · " + ", ".join(_validity_hold_rule_label(rule) for rule in holds))
+    score_rows = _history_score_rows(validity.get("dimension_scores"))
+    if not score_rows.empty:
+        st.dataframe(score_rows, hide_index=True, width="stretch")
+    recommendations = validity.get("recommendations", [])
+    if recommendations:
+        with st.container(border=True):
+            st.markdown("#### :material/edit_note: 보완 권고")
+            for recommendation in recommendations:
+                st.write(f"- {recommendation}")
+    reviews = validity.get("human_reviews", [])
+    if reviews:
+        review_frame = pd.DataFrame(reviews).rename(
+            columns={
+                "reviewer_role": "역할",
+                "reviewer_name_or_id": "검토자",
+                "decision": "결정",
+                "comment": "검토 의견",
+                "reviewed_at": "검토 시각",
+            }
+        )
+        visible = [
+            column for column in ("역할", "검토자", "결정", "검토 의견", "검토 시각")
+            if column in review_frame.columns
+        ]
+        st.markdown("#### :material/approval: QA·업무 승인 이력")
+        st.dataframe(review_frame[visible], hide_index=True, width="stretch")
+
+
+def _render_history_case_artifact(
+    artifact_name: str,
+    artifacts: dict,
+    *,
+    run_id: str,
+    case_id: str,
+) -> None:
+    artifact = artifacts.get(artifact_name, {})
+    if not isinstance(artifact, dict):
+        st.warning("선택한 증적의 데이터 형식을 읽을 수 없습니다.")
+        return
+    if artifact_name == "pipeline_result":
+        _render_history_pipeline_artifact(artifact)
+    elif artifact_name == "trace":
+        _render_validity_trace_evidence({"trace": artifact})
+    elif artifact_name == "rule_result":
+        _render_history_rule_artifact(artifact)
+    elif artifact_name == "judge_result":
+        _render_history_judge_artifact(artifact)
+    elif artifact_name == "validity_result":
+        _render_history_validity_artifact(artifact)
+    else:
+        st.info("이 증적은 전용 화면이 없어 원본 형식으로 표시합니다.")
+
+    with st.expander("원본 증적 JSON", icon=":material/data_object:"):
+        st.caption(f"{run_id} · {case_id} · {artifact_name}")
+        st.json(artifact)
+
+
 def _render_voc_run_detail(run_id: str):
     detail = load_voc_run_history_detail(run_id)
     manifest = detail.get("manifest", {})
@@ -4927,15 +5274,6 @@ def _render_voc_run_detail(run_id: str):
 
     _render_history_verification_scope(manifest, summary)
 
-    safe_manifest = {
-        key: manifest.get(key)
-        for key in (
-            "run_id", "run_type", "status", "started_at", "finished_at", "suite_id",
-            "catalog_version", "selected_case_ids", "rubric_versions", "judge_enabled",
-            "run_metadata",
-        )
-        if key in manifest
-    }
     view = st.segmented_control(
         "상세 구분",
         ["Case 결과", "실행 정보", "Case 증적"],
@@ -4959,7 +5297,7 @@ def _render_voc_run_detail(run_id: str):
             ]
             st.dataframe(rows[visible], hide_index=True, width="stretch")
     elif view == "실행 정보":
-        st.json(safe_manifest)
+        _render_history_execution_info(manifest, summary)
     else:
         completed_case_ids = [item.get("case_id") for item in case_results if item.get("case_id")]
         if not completed_case_ids:
@@ -4981,8 +5319,14 @@ def _render_voc_run_detail(run_id: str):
                     "증적 파일",
                     artifact_names,
                     key=f"voc_history_artifact_{run_id}",
+                    format_func=lambda value: HISTORY_ARTIFACT_LABELS.get(value, value),
                 )
-                st.json(artifacts[artifact_name])
+                _render_history_case_artifact(
+                    artifact_name,
+                    artifacts,
+                    run_id=run_id,
+                    case_id=selected_case_id,
+                )
             else:
                 st.warning("Case 증적 JSON을 읽을 수 없습니다.")
             pipeline = artifacts.get("pipeline_result", {})
@@ -5058,6 +5402,26 @@ def _render_retest_comparison(history: list[dict]):
 HISTORY_SELECTED_RUN_ID_KEY = "voc_history_selected_run_id"
 HISTORY_TABLE_KEY = "voc_history_table"
 HISTORY_TABLE_SIGNATURE_KEY = "voc_history_table_signature"
+HISTORY_DETAIL_DIALOG_RUN_ID_KEY = "voc_history_detail_dialog_run_id"
+
+
+def _open_history_detail_dialog(run_id: str) -> None:
+    if run_id:
+        st.session_state[HISTORY_DETAIL_DIALOG_RUN_ID_KEY] = run_id
+
+
+def _dismiss_history_detail_dialog() -> None:
+    st.session_state.pop(HISTORY_DETAIL_DIALOG_RUN_ID_KEY, None)
+
+
+@st.dialog(
+    "수행 이력 상세",
+    width="large",
+    icon=":material/history:",
+    on_dismiss=_dismiss_history_detail_dialog,
+)
+def _render_history_detail_dialog(run_id: str) -> None:
+    _render_voc_run_detail(run_id)
 
 
 def _history_status_total(history: list[dict], status: str) -> int:
@@ -5147,9 +5511,11 @@ def _remember_history_run_selection(table_key: str, run_ids: tuple[str, ...]) ->
     if selected_row is None:
         return
     try:
-        st.session_state[HISTORY_SELECTED_RUN_ID_KEY] = run_ids[selected_row]
+        selected_run_id = run_ids[selected_row]
     except IndexError:
         return
+    st.session_state[HISTORY_SELECTED_RUN_ID_KEY] = selected_run_id
+    _open_history_detail_dialog(selected_run_id)
 
 
 def _render_history_filter_controls(
@@ -5351,6 +5717,14 @@ def render_voc_history():
         selected_items = [item for item in filtered if item.get("run_id") == selected_run_id]
         with st.container(horizontal=True):
             if st.button(
+                "선택 Run 상세",
+                icon=":material/open_in_new:",
+                disabled=not selected_items,
+                key="voc_history_open_selected_run",
+            ):
+                _open_history_detail_dialog(selected_run_id)
+                st.rerun()
+            if st.button(
                 "선택 Run 삭제",
                 icon=":material/delete:",
                 disabled=not selected_items or selected_items[0].get("status") == "RUNNING",
@@ -5360,10 +5734,17 @@ def render_voc_history():
                 _load_voc_history_rows.clear()
                 st.rerun()
 
-    if selected_items:
-        _render_voc_run_detail(selected_run_id)
-    else:
+    if not selected_items:
         st.caption("상세 조회할 Run 행을 선택하세요.")
+    else:
+        st.caption("Run 행의 아무 곳이나 선택하면 실행 상세 팝업이 열립니다.")
+
+    dialog_run_id = st.session_state.get(HISTORY_DETAIL_DIALOG_RUN_ID_KEY)
+    if dialog_run_id:
+        if any(str(item.get("run_id")) == dialog_run_id for item in history):
+            _render_history_detail_dialog(dialog_run_id)
+        else:
+            _dismiss_history_detail_dialog()
 
     if st.toggle("재시험 전후 비교 보기", key="voc_history_show_retest"):
         _render_retest_comparison(history)
@@ -5842,9 +6223,253 @@ def _validity_ai_pass_floor(rubric: dict) -> str:
     for item in rubric.get("automatic_decisions", []):
         if item.get("decision") == "AI_PASS":
             score = item.get("min_score", "-")
-            floor = "항목별 PASS 기준 충족" if item.get("requires_all_pass_floors") else "항목별 PASS 기준 미적용"
+            floor = "항목별 통과 기준 충족" if item.get("requires_all_pass_floors") else "항목별 통과 기준 미적용"
             return f"{score}점 이상 · {floor}"
-    return "80점 이상 · 항목별 PASS 기준 충족"
+    return "80점 이상 · 항목별 통과 기준 충족"
+
+
+def _validity_ai_pass_rule(rubric: dict) -> dict:
+    return next(
+        (
+            item
+            for item in rubric.get("automatic_decisions", [])
+            if item.get("decision") == "AI_PASS"
+        ),
+        {"min_score": 80, "requires_all_pass_floors": True},
+    )
+
+
+def _validity_ai_pass_failure_model(
+    result: dict | None,
+    rubric: dict,
+    artifacts: dict | None = None,
+) -> dict:
+    result = result or {}
+    artifacts = artifacts or {}
+    ai_pass_rule = _validity_ai_pass_rule(rubric)
+    threshold = float(ai_pass_rule.get("min_score", 80) or 80)
+    total_score = _validity_score_value(result.get("total_score"))
+    score_gap = (
+        round(max(threshold - total_score, 0), 2)
+        if total_score is not None
+        else None
+    )
+
+    dimension_scores = (
+        result.get("dimension_scores", {})
+        if isinstance(result.get("dimension_scores"), dict)
+        else {}
+    )
+    floor_misses = []
+    for key, spec in rubric.get("dimensions", {}).items():
+        score_detail = (
+            dimension_scores.get(key, {})
+            if isinstance(dimension_scores.get(key), dict)
+            else {}
+        )
+        score = _validity_score_value(score_detail.get("score"))
+        floor = float(spec.get("pass_floor", 0) or 0)
+        if score is not None and score >= floor:
+            continue
+        floor_misses.append(
+            {
+                "key": key,
+                "label": spec.get("label", key),
+                "score": score,
+                "floor": floor,
+                "gap": None if score is None else round(max(floor - score, 0), 2),
+                "reason": score_detail.get("reason", "-") or "-",
+            }
+        )
+
+    holds = _validity_immediate_holds(result)
+    evidence_hold = "missing_voc_or_trace_evidence" in holds
+    other_holds = [rule for rule in holds if rule != "missing_voc_or_trace_evidence"]
+
+    trace = artifacts.get("trace", {}) if isinstance(artifacts.get("trace"), dict) else {}
+    trace_events = trace.get("events", []) if isinstance(trace.get("events"), list) else []
+    evidence_score = dimension_scores.get("evidence_traceability", {})
+    if not isinstance(evidence_score, dict):
+        evidence_score = {}
+    evidence_spec = rubric.get("dimensions", {}).get("evidence_traceability", {})
+    evidence_value = _validity_score_value(evidence_score.get("score"))
+    evidence_floor = float(evidence_spec.get("pass_floor", 0) or 0)
+    evidence_floor_miss = (
+        evidence_value is not None
+        and evidence_value < evidence_floor
+    )
+    trace_loaded = "trace" in artifacts and isinstance(artifacts.get("trace"), dict)
+    evidence_details = []
+    if evidence_hold:
+        evidence_details.append("서버 검증에서 VOC 또는 Trace 근거 누락이 감지되었습니다.")
+    if trace_loaded and not trace.get("trace_id"):
+        evidence_details.append("Trace ID가 없습니다.")
+    if trace_loaded and not trace_events:
+        evidence_details.append("Trace 이벤트가 없습니다.")
+    if evidence_floor_miss:
+        evidence_details.append(
+            f"VOC·Trace 근거 추적성 {evidence_value:g}점 / 하한 {evidence_floor:g}점"
+        )
+
+    evaluated = bool(result)
+    score_failed = evaluated and (total_score is None or total_score < threshold)
+    floors_failed = evaluated and bool(floor_misses)
+    holds_failed = evaluated and bool(other_holds)
+    evidence_failed = evaluated and bool(evidence_details)
+    categories = [
+        {
+            "key": "score",
+            "label": "점수 부족",
+            "icon": ":material/score:",
+            "failed": score_failed,
+            "value": (
+                "평가 전"
+                if total_score is None
+                else f"{total_score:g} / {threshold:g}점"
+            ),
+            "summary": (
+                "자동 평가 점수가 없습니다."
+                if total_score is None
+                else f"통과까지 {score_gap:g}점 부족합니다."
+                if score_failed
+                else "총점 기준을 충족했습니다."
+            ),
+            "details": (
+                []
+                if not score_failed
+                else [f"현재 {total_score:g}점 · AI 평가 통과 기준 {threshold:g}점"]
+                if total_score is not None
+                else ["평가 점수가 산출되지 않았습니다."]
+            ),
+            "action": "낮은 평가 항목의 개선안과 실행 근거를 보완하세요.",
+        },
+        {
+            "key": "floors",
+            "label": "항목별 하한 미달",
+            "icon": ":material/low_priority:",
+            "failed": floors_failed,
+            "value": "평가 전" if not evaluated else f"{len(floor_misses)}개",
+            "summary": (
+                "항목별 점수가 없습니다."
+                if not evaluated
+                else f"{len(floor_misses)}개 항목이 통과 하한에 미달했습니다."
+                if floors_failed
+                else "모든 항목별 하한을 충족했습니다."
+            ),
+            "details": [
+                (
+                    f"{item['label']}: 미평가 / 하한 {item['floor']:g}점"
+                    if item["score"] is None
+                    else f"{item['label']}: {item['score']:g}점 / 하한 {item['floor']:g}점"
+                )
+                for item in floor_misses
+            ],
+            "action": "미달 항목별 판정 근거와 보완 지시를 확인하세요.",
+        },
+        {
+            "key": "holds",
+            "label": "즉시 보류 규칙",
+            "icon": ":material/block:",
+            "failed": holds_failed,
+            "value": "평가 전" if not evaluated else f"{len(other_holds)}건",
+            "summary": (
+                "보류 규칙을 아직 확인하지 않았습니다."
+                if not evaluated
+                else f"{len(other_holds)}건의 즉시 보류 규칙이 적용됐습니다."
+                if holds_failed
+                else "근거 부족 외 즉시 보류 규칙은 없습니다."
+            ),
+            "details": [_validity_hold_rule_label(rule) for rule in other_holds],
+            "action": "보류 사유를 해소한 증적을 확보한 뒤 다시 평가하세요.",
+        },
+        {
+            "key": "evidence",
+            "label": "VOC·Trace 근거 부족",
+            "icon": ":material/account_tree:",
+            "failed": evidence_failed,
+            "value": "평가 전" if not evaluated else f"{len(evidence_details)}건",
+            "summary": (
+                "근거 상태를 아직 평가하지 않았습니다."
+                if not evaluated
+                else "VOC·Trace 근거를 보완해야 합니다."
+                if evidence_failed
+                else "VOC·Trace 근거 부족이 감지되지 않았습니다."
+            ),
+            "details": evidence_details,
+            "action": "VOC ID, Trace ID, Agent별 전달 근거와 판단 근거를 연결하세요.",
+        },
+    ]
+    failed_categories = [item for item in categories if item["failed"]]
+    return {
+        "evaluated": evaluated,
+        "passed": result.get("decision") == "AI_PASS" and not failed_categories,
+        "threshold": threshold,
+        "failed_count": len(failed_categories),
+        "categories": categories,
+    }
+
+
+def _render_validity_ai_pass_failures(
+    result: dict | None,
+    rubric: dict,
+    artifacts: dict | None = None,
+):
+    model = _validity_ai_pass_failure_model(result, rubric, artifacts)
+    if not model["evaluated"]:
+        return
+
+    with st.container(border=True):
+        heading, state = st.columns([2.5, 1], vertical_alignment="center")
+        with heading:
+            st.markdown("#### AI 평가 통과 진단")
+            st.caption("통과 실패 원인을 총점·항목 하한·즉시 보류·VOC/Trace 근거로 나누어 확인합니다.")
+        with state:
+            if model["passed"]:
+                st.markdown(":green-badge[AI 평가 통과 조건 충족]", text_alignment="right")
+            else:
+                st.markdown(
+                    f":red-badge[실패 원인 {model['failed_count']}개 유형]",
+                    text_alignment="right",
+                )
+
+        columns = st.columns(4, gap="small")
+        for column, category in zip(columns, model["categories"], strict=False):
+            with column.container(border=True, height="stretch"):
+                st.markdown(f"{category['icon']} **{category['label']}**")
+                st.markdown(f"##### {category['value']}")
+                if category["failed"]:
+                    st.markdown(":red-badge[확인 필요]")
+                else:
+                    st.markdown(":green-badge[충족]")
+                st.caption(category["summary"])
+
+        failure_rows = []
+        for category in model["categories"]:
+            if not category["failed"]:
+                continue
+            details = category["details"] or [category["summary"]]
+            for detail in details:
+                failure_rows.append(
+                    {
+                        "실패 유형": category["label"],
+                        "확인된 원인": detail,
+                        "필요 조치": category["action"],
+                    }
+                )
+        if failure_rows:
+            st.dataframe(
+                pd.DataFrame(failure_rows),
+                hide_index=True,
+                width="stretch",
+                height=min(270, 76 + len(failure_rows) * 42),
+                column_config={
+                    "실패 유형": st.column_config.TextColumn(width="medium", pinned=True),
+                    "확인된 원인": st.column_config.TextColumn(width="large"),
+                    "필요 조치": st.column_config.TextColumn(width="large"),
+                },
+            )
+        else:
+            st.success("총점, 항목별 하한, 즉시 보류, VOC·Trace 근거 조건을 모두 충족했습니다.")
 
 
 def _validity_dimension_rows(rubric: dict, result: dict | None = None) -> pd.DataFrame:
@@ -5875,7 +6500,7 @@ def _validity_dimension_rows(rubric: dict, result: dict | None = None) -> pd.Dat
             {
                 "평가 항목": spec.get("label", key),
                 "배점": max_points,
-                "PASS 기준": pass_floor,
+                "통과 기준": pass_floor,
                 "결과 점수": score_value,
                 "달성률": ratio,
                 "판정": status,
@@ -5893,7 +6518,7 @@ def _render_validity_dimension_scorecard(rubric: dict, result: dict | None = Non
         heading, summary = st.columns([2.4, 1.15], vertical_alignment="center")
         with heading:
             st.markdown("#### 평가 항목과 점수 지표")
-            st.caption("자동 타당성 평가는 아래 항목별 배점과 PASS 기준을 적용해 최종 개선안을 평가합니다.")
+            st.caption("자동 타당성 평가는 아래 항목별 배점과 통과 기준을 적용해 최종 개선안을 평가합니다.")
         with summary:
             total_score = result.get("total_score")
             value = "-" if total_score is None else f"{total_score:g} / 100점"
@@ -5903,7 +6528,7 @@ def _render_validity_dimension_scorecard(rubric: dict, result: dict | None = Non
             st.metric("Rubric 버전", rubric.get("version", "-"), border=True)
             st.metric("평가 항목", f"{len(rows)}개", border=True)
             st.metric("총 배점", f"{int(rows['배점'].sum()) if not rows.empty else 0}점", border=True)
-            st.metric("AI_PASS 기준", _validity_ai_pass_floor(rubric), border=True)
+            st.metric("AI 평가 통과 기준", _validity_ai_pass_floor(rubric), border=True)
         st.dataframe(
             rows,
             hide_index=True,
@@ -5912,7 +6537,7 @@ def _render_validity_dimension_scorecard(rubric: dict, result: dict | None = Non
             column_config={
                 "평가 항목": st.column_config.TextColumn(width="medium", pinned=True),
                 "배점": st.column_config.NumberColumn(format="%g점", width="small"),
-                "PASS 기준": st.column_config.NumberColumn(format="%g점", width="small"),
+                "통과 기준": st.column_config.NumberColumn(format="%g점", width="small"),
                 "결과 점수": st.column_config.NumberColumn(format="%g점", width="small"),
                 "달성률": st.column_config.ProgressColumn(
                     min_value=0,
@@ -5973,7 +6598,7 @@ def _validity_execution_step_rows(
             },
             {
                 "순서": 3,
-                "수행 절차": "평가 계약 구성",
+                "수행 절차": "평가 기준 구성",
                 "상태": "완료" if dimensions else "확인 필요",
                 "절차별 결과": f"{len(dimensions)}개 항목 · 총 {sum(float(item.get('max_points', 0) or 0) for item in dimensions.values()):g}점",
                 "확인 내용": f"Rubric {rubric.get('version', '-')} · AI 통과 기준 {_validity_ai_pass_floor(rubric)}",
@@ -6004,9 +6629,9 @@ def _validity_execution_step_rows(
                     else "실행 전"
                 ),
                 "확인 내용": (
-                    "항목별 PASS 기준 충족"
+                    "항목별 통과 기준 충족"
                     if result.get("all_pass_floors_met")
-                    else "항목별 PASS 기준 미충족 또는 평가 전"
+                    else "항목별 통과 기준 미충족 또는 평가 전"
                 ),
             },
             {
@@ -6102,14 +6727,14 @@ def _validity_rework_items(rubric: dict, result: dict | None) -> pd.DataFrame:
         if score is None:
             status = "미평가"
         elif is_floor_miss:
-            status = "PASS 기준 미달"
+            status = "통과 기준 미달"
         else:
             status = "보완 권장"
         rows.append(
             {
                 "평가 항목": spec.get("label", key),
                 "현재 점수": score,
-                "PASS 기준": pass_floor,
+                "통과 기준": pass_floor,
                 "최고점": max_points,
                 "부족 점수": gap,
                 "상태": status,
@@ -6149,13 +6774,13 @@ def _validity_rework_instruction(candidate: dict, artifacts: dict, result: dict,
 
     lines.extend(["", "보완 우선순위"])
     if rows.empty:
-        lines.append("- PASS 기준 미달 항목은 없지만, QA 검토자가 바로 확인할 수 있도록 근거·담당·일정·KPI를 더 명확히 정리하세요.")
+        lines.append("- 통과 기준 미달 항목은 없지만, QA 검토자가 바로 확인할 수 있도록 근거·담당·일정·KPI를 더 명확히 정리하세요.")
     else:
         for index, item in enumerate(rows.to_dict("records"), start=1):
             score = "-" if item["현재 점수"] is None else f"{item['현재 점수']:g}"
             lines.append(
                 f"{index}. {item['평가 항목']}: 현재 {score}/{item['최고점']:g}점, "
-                f"PASS 기준 {item['PASS 기준']:g}점, 부족 {item['부족 점수']:g}점"
+                f"통과 기준 {item['통과 기준']:g}점, 부족 {item['부족 점수']:g}점"
             )
             lines.append(f"   - 보완 지시: {item['보완 지시']}")
             if item["현재 미흡 근거"] != "-":
@@ -6227,7 +6852,7 @@ def _render_validity_rework_guide(
                 st.markdown(f"##### {value}")
 
         if rows.empty:
-            st.success("PASS 기준 미달 항목은 없습니다. QA 검토 전 근거·담당·일정·KPI만 한 번 더 확인하세요.")
+            st.success("통과 기준 미달 항목은 없습니다. QA 검토 전 근거·담당·일정·KPI만 한 번 더 확인하세요.")
         else:
             st.dataframe(
                 rows,
@@ -6237,7 +6862,7 @@ def _render_validity_rework_guide(
                 column_config={
                     "평가 항목": st.column_config.TextColumn(width="medium", pinned=True),
                     "현재 점수": st.column_config.NumberColumn(format="%g점", width="small"),
-                    "PASS 기준": st.column_config.NumberColumn(format="%g점", width="small"),
+                    "통과 기준": st.column_config.NumberColumn(format="%g점", width="small"),
                     "최고점": st.column_config.NumberColumn(format="%g점", width="small"),
                     "부족 점수": st.column_config.NumberColumn(format="%g점", width="small"),
                     "상태": st.column_config.TextColumn(width="small"),
@@ -6259,7 +6884,7 @@ def _render_validity_rework_guide(
         judge_config = {
             "enabled": True,
             "provider": judge.get("provider", "anthropic"),
-            "model": judge.get("model", "claude-opus-4-6"),
+            "model": judge.get("model", "claude-haiku-4-5"),
         }
         left, right = st.columns([2, 1], vertical_alignment="bottom")
         with left:
@@ -6332,7 +6957,7 @@ def _render_validity_auto_evaluation_controls(
                     )
                 )
                 st.write(
-                    f"3. 평가 계약 구성: Rubric {validity_rubric.get('version', '-')} · "
+                    f"3. 평가 기준 구성: Rubric {validity_rubric.get('version', '-')} · "
                     f"{len(validity_rubric.get('dimensions', {}))}개 항목 · 100점 기준을 적용합니다."
                 )
                 st.write(f"4. 독립 LLM 평가 요청: {config['provider']} / {config['model']}")
@@ -6532,7 +7157,7 @@ def _render_validity_candidate_dialog(candidate: dict):
             validity_rubric,
             key_scope="dialog",
         )
-        _render_validity_result(validity, validity_rubric)
+        _render_validity_result(validity, validity_rubric, artifacts)
         _render_validity_execution_steps(candidate, artifacts, validity, validity_rubric)
         _render_validity_rework_guide(
             candidate,
@@ -6556,7 +7181,11 @@ def _render_validity_candidate_dialog(candidate: dict):
             st.info("자동 타당성 평가 결과가 있어야 QA 검토와 업무 승인을 진행할 수 있습니다.")
 
 
-def _render_validity_result(result: dict, rubric: dict | None = None):
+def _render_validity_result(
+    result: dict,
+    rubric: dict | None = None,
+    artifacts: dict | None = None,
+):
     if not result:
         st.info("아직 자동 타당성 평가가 없습니다.")
         return
@@ -6577,6 +7206,8 @@ def _render_validity_result(result: dict, rubric: dict | None = None):
     holds = result.get("immediate_hold_rules_triggered", [])
     if holds:
         st.error("즉시 승인 보류: " + ", ".join(_validity_hold_rule_label(rule) for rule in holds))
+    if rubric:
+        _render_validity_ai_pass_failures(result, rubric, artifacts)
     if rubric and result.get("dimension_scores"):
         _render_validity_dimension_scorecard(rubric, result)
     if result.get("recommendations"):
@@ -6632,7 +7263,7 @@ def _validity_approval_workflow_model(result: dict | None) -> dict:
             "label": "QA 검토",
             "status": "현재 단계" if readiness["can_qa_review"] else ("완료" if qa_done else "대기"),
             "tone": "blue" if readiness["can_qa_review"] else ("green" if qa_done else ("red" if needs_rework else "gray")),
-            "detail": "AI_PASS와 보류 규칙 0건을 확인합니다." if readiness["can_qa_review"] else readiness["action_label"],
+            "detail": "AI 평가 통과와 보류 규칙 0건을 확인합니다." if readiness["can_qa_review"] else readiness["action_label"],
         },
         {
             "label": "업무 승인",
@@ -6701,7 +7332,7 @@ def _render_human_validity_review(
     _render_validity_approval_workflow(result)
     state = result.get("workflow_state", "DRAFT")
     if result.get("decision") != "AI_PASS" or result.get("immediate_hold_rules_triggered"):
-        st.warning("AI_PASS이고 즉시 보류 규칙이 없어야 QA 검토를 시작할 수 있습니다.")
+        st.warning("AI 평가 통과 상태이고 즉시 보류 규칙이 없어야 QA 검토를 시작할 수 있습니다.")
         return
     if state == "AI_REVIEWED":
         role, heading = "QA", "QA 검토"
@@ -6777,7 +7408,7 @@ def _render_improvement_ab(candidates: list[dict], baseline: dict, artifacts: di
     judge_config = {
         "enabled": True,
         "provider": judge.get("provider", "anthropic"),
-        "model": judge.get("model", "claude-opus-4-6"),
+        "model": judge.get("model", "claude-haiku-4-5"),
     }
     with st.container(horizontal=True):
         if st.button(
@@ -7009,7 +7640,7 @@ def render_improvement_validity():
     )
 
     st.markdown("## 타당성 평가 및 승인")
-    _render_validity_result(validity, validity_rubric)
+    _render_validity_result(validity, validity_rubric, artifacts)
     _render_validity_execution_steps(selected, artifacts, validity, validity_rubric)
     _render_validity_qa_gate_cards(selected, validity)
     _render_validity_rework_guide(selected, artifacts, validity, validity_rubric)
@@ -9220,90 +9851,20 @@ def _load_voc_quality_report_model(run_id: str, baseline_run_id: str):
 
 
 def _render_quality_report_preview(model: dict):
-    run = model["run"]
-    counts = run["counts"]
     if model["release_decision"] == "FORMAL_APPROVED":
         st.success("모든 정식 품질 승인 조건을 충족했습니다.", icon=":material/verified:")
     else:
         st.warning(
-            "현재 보고서는 증적 초안입니다. 미검증 수치와 미충족 승인 조건을 성공으로 표시하지 않습니다.",
+            "현재 보고서는 증적 초안입니다. 검증되지 않은 수치와 충족하지 못한 승인 조건을 성공으로 표시하지 않습니다.",
             icon=":material/release_alert:",
         )
-
-    with st.container(horizontal=True):
-        st.metric("보고서 상태", model["report_state"], border=True)
-        st.metric("최종 판정", model["release_decision"], border=True)
-        st.metric("선택 Case", run["selected_count"], border=True)
-        st.metric("증적 무결성", "PASS" if model["integrity"]["ok"] else "FAIL", border=True)
-
-    st.markdown("### 3단계 품질평가 요약")
-    stage_columns = st.columns(3)
-    with stage_columns[0].container(border=True, height="stretch"):
-        st.markdown("**1단계 · VOC 분석 및 개선안**")
-        st.metric("대표 산출물 확인", len(model["evaluation"]["voc_examples"]))
-        st.caption("VOC 요약과 정책 개선안의 생성 여부를 Case 증적에서 확인합니다.")
-    with stage_columns[1].container(border=True, height="stretch"):
-        st.markdown("**2단계 · 내부 Agent 품질**")
-        st.metric("Trace Case", model["evaluation"]["trace_cases"])
-        st.caption(f"저장된 Agent Trace 이벤트 {model['evaluation']['trace_events']}건")
-    with stage_columns[2].container(border=True, height="stretch"):
-        st.markdown("**3단계 · 독립 LLM Judge**")
-        st.metric("Judge 평가 Case", model["evaluation"]["judge_evaluated"])
-        st.caption(str(model["evaluation"]["judge_counts"]) or "평가 결과 없음")
-
-    st.markdown("### 전체 테스트 정량 분석")
-    status_rows = pd.DataFrame([
-        {"상태": status, "건수": counts[status]}
-        for status in ("PASS", "FAIL", "ERROR", "REVIEW_REQUIRED", "NOT_RUN")
-    ])
-    chart_column, table_column = st.columns([1, 1.4])
-    with chart_column.container(border=True, height="stretch"):
-        st.bar_chart(status_rows, x="상태", y="건수")
-    with table_column.container(border=True, height="stretch"):
-        coverage = pd.DataFrame(model["coverage"]).rename(columns={
-            "group": "점검 범위", "expected": "기대", "selected": "선택",
-            "PASS": "통과", "FAIL": "실패", "ERROR": "오류",
-            "REVIEW_REQUIRED": "검토 필요", "NOT_RUN": "미실행",
-        })
-        visible = ["점검 범위", "선택", "기대", "통과", "실패", "오류", "검토 필요", "미실행"]
-        st.dataframe(coverage[visible], hide_index=True, width="stretch")
-
-    st.markdown("### 테스트 추이와 수치 대조")
-    claim = model["claims"]
-    if claim["improvement_verified"]:
-        st.success(f"{claim['claim_text']} 수치가 동일 조건 Run 증적으로 확인됐습니다.")
-    else:
-        st.error(f"{claim['claim_text']} 수치는 아직 증명되지 않았습니다.")
-        st.write("기준선: " + (" / ".join(claim["baseline"]["errors"]) or "검증 완료"))
-        st.write("최종: " + (" / ".join(claim["final"]["errors"]) or "검증 완료"))
-
-    defect_column, risk_column = st.columns(2)
-    with defect_column.container(border=True, height="stretch"):
-        st.markdown("**결함 상태**")
-        defect_rows = pd.DataFrame(model["defects"])
-        if defect_rows.empty:
-            st.info("등록된 결함이 없습니다.")
-        else:
-            st.dataframe(
-                defect_rows[["defect_id", "title", "severity", "status", "evidence_status"]],
-                hide_index=True, width="stretch",
-            )
-    with risk_column.container(border=True, height="stretch"):
-        st.markdown("**잔여 위험과 운영 권고**")
-        risk_rows = pd.DataFrame(model["risks"])
-        if risk_rows.empty:
-            st.success("현재 산식에서 식별된 잔여 위험이 없습니다.")
-        else:
-            st.dataframe(risk_rows, hide_index=True, width="stretch")
-
-    with st.expander("Evaluator·Critic·독립 Judge 역할과 산식", icon=":material/calculate:"):
-        st.dataframe(pd.DataFrame(model["roles"]), hide_index=True, width="stretch")
-        st.json(model["formula"])
+    st.markdown(build_voc_quality_report_html(model), unsafe_allow_html=True)
+    with st.expander("판정 산식 원문", icon=":material/calculate:"):
+        st.json(model["formula"], expanded=False)
 
 
 def _render_voc_quality_report():
-    st.markdown("### 수행 이력 기반 품질 보고서")
-    st.caption("선택 Run의 저장 증적과 중앙 이력을 자동 대조해 TXT·JUnit XML·HTML을 동일 데이터로 생성합니다.")
+    st.caption("선택한 실행의 저장 증적과 중앙 이력을 자동 대조해 텍스트·JUnit XML·HTML을 동일 데이터로 생성합니다.")
     history = [row for row in _load_voc_history_rows() if row.get("status") != "RUNNING"]
     if not history:
         st.info("보고서를 생성할 완료 Run이 없습니다.")
@@ -9312,19 +9873,19 @@ def _render_voc_quality_report():
     full_suite = [row["run_id"] for row in history if row.get("selected_count") == 35]
     default_id = full_suite[0] if full_suite else run_ids[0]
     selected_run_id = st.selectbox(
-        "보고 대상 Run", run_ids, index=run_ids.index(default_id),
+        "보고 대상 실행", run_ids, index=run_ids.index(default_id),
         format_func=lambda value: f"{value} · {next(row['selected_count'] for row in history if row['run_id'] == value)}건",
         key="voc_report_run_id",
     )
     baseline_options = [""] + [value for value in full_suite if value != selected_run_id]
     baseline_run_id = st.selectbox(
-        "33 통과 / 2 실패 기준선 Run (선택)", baseline_options,
+        "33 통과 / 2 실패 기준선 실행 (선택)", baseline_options,
         format_func=lambda value: value or "연결하지 않음 · 현재 기준선 증적 없음",
         key="voc_report_baseline_run_id",
-        help="동일 35개 Case·Catalog·TC hash·Rubric과 결함 링크가 확인되는 Run만 유효합니다.",
+        help="동일한 35개 케이스·목록·테스트케이스 해시·평가 기준과 결함 연결이 확인되는 실행만 유효합니다.",
     )
     st.info(
-        "사용자 제공 최종 보고서 양식은 아직 전달되지 않아 기본 증적 템플릿을 사용합니다. 양식을 받으면 같은 report model에 적용할 수 있습니다.",
+        "사용자 제공 최종 보고서 양식은 아직 전달되지 않아 기본 증적 템플릿을 사용합니다. 양식을 받으면 같은 보고서 데이터 모델에 적용할 수 있습니다.",
         icon=":material/article:",
     )
     model = _load_voc_quality_report_model(selected_run_id, baseline_run_id)
@@ -9338,7 +9899,7 @@ def _render_voc_quality_report():
             st.session_state.voc_generated_quality_report = generate_voc_quality_report(
                 selected_run_id, baseline_run_id
             )
-        st.success("세 형식의 증적을 같은 report model에서 생성했습니다.")
+        st.success("세 형식의 증적을 같은 보고서 데이터 모델에서 생성했습니다.")
 
     generated = st.session_state.get("voc_generated_quality_report")
     if (

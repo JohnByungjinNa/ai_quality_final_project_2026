@@ -34,7 +34,7 @@ class AnthropicChat:
         # 사용자가 지정한 모델명이 있으면 사용하고,
         # 없으면 환경변수 A2A_MODEL_POLICY을 확인하고,
         # 그것도 없으면 현재 계정에서 사용 가능한 안정 모델을 사용합니다.
-        self.model = model or os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6")
+        self.model = model or os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5")
         
         # ============ Anthropic 클라이언트 생성 ============
         # 환경변수 ANTHROPIC_API_KEY에서 API 키를 읽어와 클라이언트를 생성합니다

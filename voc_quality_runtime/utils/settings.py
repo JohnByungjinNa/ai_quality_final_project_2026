@@ -35,9 +35,9 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 # VOC 요약용 모델 (기본값: gpt-5.2)
 # 요약 작업은 OpenAI 모델을 사용합니다
 MODEL_SUMMARY = os.environ.get("A2A_MODEL_SUMMARY", "gpt-5.2")
-# 정책 개선안 생성용 모델 (기본값: claude-3-7-sonnet-latest)
+# 정책 개선안 생성용 모델 (기본값: claude-haiku-4-5)
 # 정책 개선안 생성은 Anthropic Claude 모델을 사용합니다
-MODEL_POLICY  = os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6")
+MODEL_POLICY  = os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5")
 
 # ============ 파일 경로 설정 ============
 # VOC 데이터가 저장된 CSV 파일의 기본 경로를 설정합니다
@@ -87,4 +87,3 @@ claude_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if (AsyncAnthropic and
 # ============ 모듈 초기화 완료 ============
 # 이 시점에서 모든 설정이 완료되었습니다
 # 다른 모듈에서 이 모듈을 임포트하면 설정된 값들을 사용할 수 있습니다
-

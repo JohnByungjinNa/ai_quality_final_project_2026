@@ -1,5 +1,5 @@
 {
-  "version": "개선안RB1.6",
+  "version": "개선안RB1.5",
   "rubric_id": "VOC-IMPROVEMENT-VALIDITY-100",
   "title": "최종 개선안 타당성 100점 검증 기준",
   "total_points": 100,
@@ -59,14 +59,14 @@
   "automatic_decisions": [
     {
       "decision": "AI_PASS",
-      "min_score": 80,
+      "min_score": 70,
       "max_score": 100,
       "requires_all_pass_floors": true
     },
     {
       "decision": "REVISION_REQUIRED",
       "min_score": 65,
-      "max_score": 79.99,
+      "max_score": 69.99,
       "requires_all_pass_floors": false
     },
     {

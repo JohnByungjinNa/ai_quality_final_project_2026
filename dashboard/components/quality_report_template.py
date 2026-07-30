@@ -13,6 +13,91 @@ METRICS = (
     ("safety", "안전성", "위험하거나 부적절한 내용 없이 안전하게 응답"),
 )
 
+VOC_DISPLAY_LABELS = {
+    "PASS": "통과",
+    "FAIL": "실패",
+    "ERROR": "오류",
+    "REVIEW": "검토 필요",
+    "REVIEW_REQUIRED": "검토 필요",
+    "NOT_RUN": "미실행",
+    "AI_PASS": "AI 평가 통과",
+    "AI_REVIEWED": "AI 평가 완료",
+    "QA_REVIEWED": "QA 검토 완료",
+    "BUSINESS_APPROVED": "업무 승인 완료",
+    "BUSINESS_REVIEW_REQUIRED": "업무 검토 필요",
+    "HUMAN_REVIEW_REQUIRED": "사람 검토 필요",
+    "REMAINING_CASE_REVIEW_REQUIRED": "잔여 케이스 검토 필요",
+    "FORMAL_QUALITY_APPROVED": "정식 품질 승인",
+    "PARTIALLY_APPROVED": "부분 승인",
+    "DRAFT": "작성 중",
+    "REJECTED": "반려",
+    "REVISION_REQUIRED": "수정 필요",
+    "HOLD": "보류",
+    "NEEDS_IMPROVEMENT": "보완 필요",
+    "NOT_APPROVED": "승인되지 않음",
+    "FORMAL_APPROVED": "정식 승인",
+    "EVIDENCE_DRAFT": "증적 초안",
+    "FINAL": "최종 보고서",
+    "BATCH": "일괄 수행",
+    "MANUAL": "수동 수행",
+    "RETEST": "재시험",
+    "BASELINE": "기준선",
+    "COMPLETED": "완료",
+    "RUNNING": "실행 중",
+    "STOPPED": "중지",
+    "INTERRUPTED": "중단",
+    "PENDING": "대기",
+    "OPEN": "미해결",
+    "CLOSED": "종료",
+    "RESOLVED": "해결",
+    "ANALYZED": "분석 완료",
+    "CONFIRMED": "확정",
+    "FIXED": "수정 완료",
+    "RETESTED": "재시험 완료",
+    "SUCCESS": "성공",
+    "CONFIGURED": "설정 완료",
+    "NOT_CONFIGURED": "미설정",
+    "CRITICAL": "치명",
+    "HIGH": "높음",
+    "MEDIUM": "보통",
+    "LOW": "낮음",
+    "UNKNOWN": "확인 필요",
+    "Evaluator": "내부 평가자",
+    "Critic": "위험 검토자",
+    "독립 LLM Judge": "독립 AI 평가자",
+    "LLM Judge": "독립 AI 평가자",
+    "Agent": "에이전트",
+    "Pipeline": "파이프라인",
+    "Rubric": "평가 기준",
+    "Catalog": "테스트 목록",
+    "Artifact": "증적 파일",
+    "Trace": "추적",
+    "Case": "케이스",
+    "Run": "실행",
+}
+
+
+def _voc_display_label(value):
+    text = str(value if value not in (None, "") else "-")
+    return VOC_DISPLAY_LABELS.get(text, text)
+
+
+def _voc_display_text(value):
+    text = str(value if value not in (None, "") else "-")
+    for code in sorted(VOC_DISPLAY_LABELS, key=len, reverse=True):
+        text = text.replace(code, VOC_DISPLAY_LABELS[code])
+    return text
+
+
+def _voc_count_summary(counts):
+    if not counts:
+        return "평가 결과 없음"
+    return " · ".join(
+        f"{_voc_display_label(key)} {int(value or 0)}건"
+        for key, value in counts.items()
+    )
+
+
 def _score(value):
     if isinstance(value, dict):
         value = value.get("score", 0)
@@ -359,6 +444,238 @@ def build_agent_report_html(model):
       <section class="qrt-section"><div class="qrt-section-title">3. 테스트 케이스 결과 목록</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>TC ID</th><th>유형</th><th>카테고리</th><th>질문</th><th>실제 답변</th><th>결과</th><th>평가 사유</th></tr></thead><tbody>{case_table_rows}</tbody></table></div></section>
       <section class="qrt-section"><div class="qrt-section-title">4. 주요 결함 요약</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>BUG ID</th><th>발생 TC</th><th>결함 제목</th><th>심각도</th><th>발생 유형</th><th>상태</th><th>요약</th></tr></thead><tbody>{defect_rows}</tbody></table></div></section>
       <div class="qrt-bottom"><section class="qrt-opinion"><h3 class="qrt-subtitle">5. 종합 평가 및 의견</h3><p>✓ 전체 성공률은 <b>{model['pass_rate']:.1f}%</b>, 적용 합격 기준은 <b>{model['pass_threshold']:g}%</b>입니다.</p><p>✓ 평가 지표 평균은 <b>{model['average_score']:.1f}점</b>입니다.</p><p class="qrt-conclusion">→ 결론: {escape(model['final_label'])} — {escape(model['final_reason'])}</p></section><section class="qrt-recommend"><h3 class="qrt-subtitle">6. 개선 권고 사항</h3><ul>{recommendations}</ul></section></div>
+    </div>
+    """
+
+
+def build_voc_quality_report_html(model):
+    """Render VOC evidence with the same report layout used by the chatbot report."""
+    run = model.get("run", {})
+    counts = run.get("counts", {})
+    evaluation = model.get("evaluation", {})
+    integrity = model.get("integrity", {})
+    claims = model.get("claims", {})
+    coverage = model.get("coverage", [])
+    defects = model.get("defects", [])
+    risks = model.get("risks", [])
+    roles = model.get("roles", [])
+
+    status_keys = ("PASS", "FAIL", "ERROR", "REVIEW_REQUIRED", "NOT_RUN")
+    total = int(run.get("selected_count") or sum(int(counts.get(key, 0) or 0) for key in status_keys))
+    passed = int(counts.get("PASS", 0) or 0)
+    failed = int(counts.get("FAIL", 0) or 0)
+    errors = int(counts.get("ERROR", 0) or 0)
+    review = int(counts.get("REVIEW_REQUIRED", 0) or 0)
+    not_run = int(counts.get("NOT_RUN", 0) or 0)
+    pass_rate = round(passed / total * 100, 1) if total else 0.0
+    final_approved = model.get("release_decision") == "FORMAL_APPROVED"
+    final_class = "good" if final_approved else "bad"
+
+    metadata = {
+        "보고서 ID": model.get("report_id", "-"),
+        "생성 일시": model.get("generated_at", "-"),
+        "실행 ID": run.get("run_id", "-"),
+        "테스트 묶음 / 목록": f"{run.get('suite_id') or '-'} / {run.get('catalog_version') or '-'}",
+        "실행 유형": _voc_display_label(run.get("run_type")),
+    }
+    metadata_rows = "".join(
+        f"<div><b>{escape(str(key))}</b><span>{escape(str(value))}</span></div>"
+        for key, value in metadata.items()
+    )
+    cards = (
+        ("clipboard", "전체 테스트 케이스", f"{total}<small>건</small>", ""),
+        ("check", "통과", f"{passed}<small>건</small>", f"{pass_rate:.1f}%"),
+        (
+            "fail",
+            "미완료·미통과",
+            f"{failed + errors + review + not_run}<small>건</small>",
+            f"실패 {failed} · 오류 {errors} · 검토 {review} · 미실행 {not_run}",
+        ),
+        (
+            "database",
+            "증적 무결성",
+            "정상" if integrity.get("ok") else "확인 필요",
+            "실행·케이스·증적 파일 대조 결과",
+        ),
+        (
+            "shield",
+            "최종 판정",
+            _voc_display_label(model.get("release_decision", "NOT_APPROVED")),
+            "정식 승인" if final_approved else "승인 조건 보완 필요",
+        ),
+    )
+    card_html = "".join(
+        f"<div class='qrt-kpi {final_class if index == 4 else ''}'><div class='qrt-icon'>{_icon(icon)}</div>"
+        f"<div><span>{escape(label)}</span><strong>{value}</strong><small>{escape(note)}</small></div></div>"
+        for index, (icon, label, value, note) in enumerate(cards)
+    )
+
+    status_values = (
+        ("통과", passed, "#155A96"),
+        ("실패", failed, "#3578B3"),
+        ("오류", errors, "#5599D2"),
+        ("검토 필요", review, "#7EAFD8"),
+        ("미실행", not_run, "#A9CAE7"),
+    )
+    cursor = 0.0
+    gradient_parts = []
+    legend_rows = []
+    denominator = max(total, 1)
+    for label, value, color in status_values:
+        start = cursor
+        cursor += value / denominator * 360
+        gradient_parts.append(f"{color} {start:.2f}deg {cursor:.2f}deg")
+        legend_rows.append(f"<div><i style='background:{color}'></i>{escape(label)} {value}건</div>")
+    donut_style = "background:conic-gradient(" + ",".join(gradient_parts) + ")"
+
+    stage_rows = (
+        (
+            "1단계 · VOC 분석 및 개선안",
+            len(evaluation.get("voc_examples", [])),
+            total,
+            "대표 산출물·개선안 연결",
+        ),
+        (
+            "2단계 · 6개 에이전트 내부 진단",
+            int(evaluation.get("trace_cases", 0) or 0),
+            total,
+            f"추적 이벤트 {int(evaluation.get('trace_events', 0) or 0)}건",
+        ),
+        (
+            "3단계 · 독립 AI 평가",
+            int(evaluation.get("judge_evaluated", 0) or 0),
+            total,
+            _voc_count_summary(evaluation.get("judge_counts", {})),
+        ),
+        (
+            "4단계 · 개선안 타당성",
+            int(evaluation.get("validity_evaluated", 0) or 0),
+            total,
+            _voc_count_summary(evaluation.get("validity_counts", {})),
+        ),
+    )
+    stage_bars = "".join(
+        f"<div class='qrt-rate-row qrt-stage-row'><span>{escape(label)}</span>"
+        f"<div><i style='width:{(value / max(expected, 1) * 100):.1f}%'></i></div>"
+        f"<b>{value}/{expected}</b><small>{escape(note)}</small></div>"
+        for label, value, expected, note in stage_rows
+    )
+    coverage_bars = "".join(
+        f"<div class='qrt-rate-row'><span>{escape(str(row.get('group', '-')))}</span>"
+        f"<div><i style='width:{(int(row.get('selected', 0) or 0) / max(int(row.get('expected', 0) or 0), 1) * 100):.1f}%'></i></div>"
+        f"<b>{int(row.get('selected', 0) or 0)}/{int(row.get('expected', 0) or 0)}</b></div>"
+        for row in coverage
+    ) or "<p class='qrt-empty'>표시할 점검 범위가 없습니다.</p>"
+    coverage_rows = "".join(
+        "<tr>"
+        f"<td><b>{escape(str(row.get('group', '-')))}</b></td>"
+        f"<td>{int(row.get('selected', 0) or 0)}/{int(row.get('expected', 0) or 0)}</td>"
+        f"<td>{int(row.get('PASS', 0) or 0)}</td><td>{int(row.get('FAIL', 0) or 0)}</td>"
+        f"<td>{int(row.get('ERROR', 0) or 0)}</td><td>{int(row.get('REVIEW_REQUIRED', 0) or 0)}</td>"
+        f"<td>{int(row.get('NOT_RUN', 0) or 0)}</td></tr>"
+        for row in coverage
+    ) or "<tr><td colspan='7'>점검 범위 데이터가 없습니다.</td></tr>"
+
+    claim_verified = bool(claims.get("improvement_verified"))
+    baseline = claims.get("baseline", {})
+    final = claims.get("final", {})
+    claim_rows = (
+        (
+            "기준선 실행",
+            "검증 완료" if baseline.get("verified") else "미검증",
+            _voc_display_text("; ".join(baseline.get("errors", [])) or "33건 통과 / 2건 실패 조건 확인"),
+        ),
+        (
+            "최종 실행",
+            "검증 완료" if final.get("verified") else "미검증",
+            _voc_display_text("; ".join(final.get("errors", [])) or "35건 통과 조건 확인"),
+        ),
+        (
+            "개선 추이",
+            "검증 완료" if claim_verified else "미검증",
+            _voc_display_text(claims.get("claim_text", "초기 33건 통과 / 2건 실패 → 최종 35건 통과")),
+        ),
+    )
+    claim_table_rows = "".join(
+        f"<tr><td><b>{escape(label)}</b></td><td class='{'qrt-green' if state == '검증 완료' else 'qrt-red'}'>"
+        f"{escape(state)}</td><td>{escape(str(reason))}</td></tr>"
+        for label, state, reason in claim_rows
+    )
+    defect_rows = "".join(
+        "<tr>"
+        f"<td><b>{escape(str(row.get('defect_id') or row.get('candidate_key') or '-'))}</b></td>"
+        f"<td>{escape(_voc_display_text(row.get('title')))}</td>"
+        f"<td><span class='qrt-severity'>{escape(_voc_display_label(row.get('severity')))}</span></td>"
+        f"<td><span class='qrt-open'>{escape(_voc_display_label(row.get('status')))}</span></td>"
+        f"<td>{escape(_voc_display_label(row.get('evidence_status')))}</td>"
+        f"<td>{escape(str(row.get('owner') or '-'))}</td></tr>"
+        for row in defects
+    ) or "<tr><td colspan='6' class='qrt-green'>등록된 결함이 없습니다.</td></tr>"
+    role_rows = "".join(
+        f"<tr><td><b>{escape(_voc_display_label(row.get('role')))}</b></td>"
+        f"<td>{escape(_voc_display_text(row.get('scope')))}</td>"
+        f"<td>{escape(_voc_display_text(row.get('independence')))}</td></tr>"
+        for row in roles
+    )
+    risk_rows = "".join(
+        f"<tr><td><span class='qrt-severity'>{escape(_voc_display_label(row.get('level')))}</span></td>"
+        f"<td>{escape(_voc_display_text(row.get('risk')))}</td><td>{escape(_voc_display_text(row.get('action')))}</td></tr>"
+        for row in risks
+    ) or "<tr><td colspan='3' class='qrt-green'>현재 집계된 잔여 위험이 없습니다.</td></tr>"
+
+    recommendations = [_voc_display_text(row.get("action")) for row in risks if row.get("action")]
+    if not integrity.get("ok"):
+        recommendations.insert(0, "실행·케이스·증적 파일 무결성 오류를 먼저 복구하세요.")
+    if not claim_verified:
+        recommendations.append("동일 조건의 기준선 실행과 최종 실행을 연결해 개선 추이를 검증하세요.")
+    if not recommendations:
+        recommendations.append("현재 승인 기준을 유지하고 신규·경계 사례를 회귀 테스트에 추가하세요.")
+    recommendation_html = "".join(
+        f"<li>{_icon('target' if index == 0 else 'shield' if index == 1 else 'database')}"
+        f"<span>{escape(text)}</span></li>"
+        for index, text in enumerate(dict.fromkeys(recommendations))
+    )
+
+    style = """
+    <style>
+    .qrt-report{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;color:#15243b;background:#fff;border:1px solid #c8d9ee;padding:22px;line-height:1.45}.qrt-report *{box-sizing:border-box}.qrt-head{display:grid;grid-template-columns:1fr 360px;gap:28px;align-items:start;margin-bottom:18px}.qrt-head h1{margin:4px 0 9px;color:#0c3768;font-size:29px;letter-spacing:-1.2px}.qrt-head p{margin:0;color:#40536d;font-size:13px}.qrt-meta{border:1px solid #c8d8eb;font-size:12px}.qrt-meta div{display:grid;grid-template-columns:115px 1fr;border-bottom:1px solid #d9e5f2}.qrt-meta div:last-child{border:0}.qrt-meta b{background:#edf3fa;padding:7px 9px}.qrt-meta span{padding:7px 10px;overflow-wrap:anywhere}.qrt-section{margin:15px 0;border:1px solid #9ebde0;border-radius:5px;padding:20px 16px 14px;position:relative}.qrt-section-title{display:inline-block;margin:-21px 0 16px -17px;padding:7px 16px;background:linear-gradient(90deg,#0b4f91,#176aab);color:#fff;font-weight:800;border-radius:5px 5px 0 0;font-size:15px}.qrt-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:11px}.qrt-kpi{min-height:105px;border:1px solid #d6e2f0;border-radius:6px;display:flex;align-items:center;gap:12px;padding:14px;background:linear-gradient(145deg,#fff,#f9fbfe)}.qrt-kpi .qrt-icon{width:40px;color:#0e4a80;flex:0 0 40px}.qrt-icon svg,.qrt-recommend svg{width:100%;height:auto}.qrt-kpi span{display:block;font-size:12px;font-weight:700}.qrt-kpi strong{display:block;color:#073b72;font-size:22px;margin:5px 0 1px;overflow-wrap:anywhere}.qrt-kpi strong small{font-size:14px;font-weight:500}.qrt-kpi small{font-size:11px;color:#627087}.qrt-kpi.bad strong{color:#e13f3b}.qrt-kpi.good strong{color:#299049}.qrt-charts{display:grid;grid-template-columns:.8fr 1.45fr 1.05fr;border:1px solid #d4e1ef;border-radius:5px;margin-top:12px}.qrt-chart{padding:12px 18px;min-height:220px;border-right:1px solid #dce6f1}.qrt-chart:last-child{border:0}.qrt-chart h3{text-align:center;margin:0 0 13px;font-size:13px}.qrt-donut-wrap{display:flex;align-items:center;justify-content:center;gap:20px}.qrt-donut{width:120px;height:120px;border-radius:50%;display:grid;place-items:center;position:relative}.qrt-donut:after{content:'';width:64px;height:64px;background:#fff;border-radius:50%;position:absolute}.qrt-donut b{z-index:1;text-align:center;font-size:12px}.qrt-legend div{font-size:11px;margin:7px 0}.qrt-legend i{display:inline-block;width:10px;height:10px;margin-right:7px}.qrt-rate-row{display:grid;grid-template-columns:100px 1fr 48px;gap:7px;align-items:center;margin:12px 0;font-size:11px}.qrt-stage-row{grid-template-columns:150px 1fr 48px 145px}.qrt-stage-row small{color:#627087}.qrt-rate-row>div{height:18px;background:#e8f0f8;border:1px solid #d7e4f1}.qrt-rate-row i{display:block;height:100%;background:linear-gradient(90deg,#0F4C81,#2E78B7 58%,#5EA1D7)}.qrt-rate-row b{text-align:right;color:#123F6D}.qrt-table-wrap{overflow:auto}.qrt-table{width:100%;border-collapse:collapse;font-size:11px}.qrt-table th{background:linear-gradient(#edf4fb,#dfeaf6);color:#173e69;font-weight:800}.qrt-table th,.qrt-table td{border:1px solid #cbd9e8;padding:7px 8px;vertical-align:top}.qrt-table tr:nth-child(even) td{background:#fbfdff}.qrt-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.qrt-subtitle{color:#0a4b88;font-size:13px;margin:0 0 8px}.qrt-green{color:#279445!important;font-weight:700}.qrt-red{color:#e03f36!important;font-weight:700}.qrt-severity,.qrt-open{display:inline-block;border-radius:999px;padding:2px 8px;font-weight:700;white-space:nowrap}.qrt-severity{color:#d83f36;background:#fde8e6}.qrt-open{color:#bf7000;background:#fff1d3}.qrt-bottom{display:grid;grid-template-columns:1.05fr .95fr;gap:16px}.qrt-opinion,.qrt-recommend{border:1px solid #a8c2df;padding:15px;min-height:135px}.qrt-opinion p{margin:7px 0;font-size:12px}.qrt-conclusion{font-size:15px!important;color:#084f92;font-weight:800}.qrt-recommend ul{list-style:none;padding:0;margin:0}.qrt-recommend li{display:grid;grid-template-columns:32px 1fr;gap:10px;align-items:center;margin:8px 0;font-size:11px}.qrt-recommend svg{color:#0b568f}.qrt-empty{color:#77869a;text-align:center}@media(max-width:900px){.qrt-head{grid-template-columns:1fr}.qrt-kpis{grid-template-columns:repeat(2,1fr)}.qrt-charts,.qrt-two,.qrt-bottom{grid-template-columns:1fr}.qrt-chart{border-right:0;border-bottom:1px solid #dce6f1}.qrt-stage-row{grid-template-columns:110px 1fr 42px}.qrt-stage-row small{grid-column:1/-1}.qrt-report{padding:14px}.qrt-head h1{font-size:23px}}
+    </style>
+    """
+    stage_table_rows = "".join(
+        f"<tr><td><b>{escape(label)}</b></td><td>{value}</td><td>{expected}</td><td>{escape(note)}</td></tr>"
+        for label, value, expected, note in stage_rows
+    )
+    conclusion = (
+        "정식 품질 승인 조건을 충족했습니다."
+        if final_approved
+        else "미충족 게이트를 보완한 뒤 재판정해야 합니다."
+    )
+
+    return style + f"""
+    <div class="qrt-report">
+      <header class="qrt-head"><div><h1>VOC 품질진단 결과 보고서</h1><p>VOC 개선안 생성부터 에이전트 내부 진단, 독립 평가, 업무 승인까지 연결된 품질 증적입니다.</p></div><div class="qrt-meta">{metadata_rows}</div></header>
+      <section class="qrt-section"><div class="qrt-section-title">1. 테스트 요약</div><div class="qrt-kpis">{card_html}</div>
+        <div class="qrt-charts">
+          <div class="qrt-chart"><h3>판정 결과</h3><div class="qrt-donut-wrap"><div class="qrt-donut" style="{donut_style}"><b>합계<br>{total}건</b></div><div class="qrt-legend">{''.join(legend_rows)}</div></div></div>
+          <div class="qrt-chart"><h3>품질 평가 단계별 증적</h3>{stage_bars}</div>
+          <div class="qrt-chart"><h3>점검 범위별 실행률</h3>{coverage_bars}</div>
+        </div>
+      </section>
+      <section class="qrt-section"><div class="qrt-section-title">2. 품질 평가 단계 상세</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>평가 단계</th><th>증적 건수</th><th>대상 건수</th><th>근거</th></tr></thead><tbody>{stage_table_rows}</tbody></table></div></section>
+      <section class="qrt-section"><div class="qrt-section-title">3. 테스트 결과 상세</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>검증 영역</th><th>선택/기대</th><th>통과</th><th>실패</th><th>오류</th><th>검토 필요</th><th>미실행</th></tr></thead><tbody>{coverage_rows}</tbody></table></div></section>
+      <section class="qrt-section"><div class="qrt-section-title">4. 개선 추이 및 결함 관리</div><div class="qrt-two">
+        <div><h3 class="qrt-subtitle">33건 통과 / 2건 실패 → 35건 통과 검증</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>구분</th><th>상태</th><th>판정 근거</th></tr></thead><tbody>{claim_table_rows}</tbody></table></div></div>
+        <div><h3 class="qrt-subtitle">주요 결함 요약</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>결함 ID</th><th>제목</th><th>심각도</th><th>상태</th><th>증적</th><th>담당자</th></tr></thead><tbody>{defect_rows}</tbody></table></div></div>
+      </div></section>
+      <section class="qrt-section"><div class="qrt-section-title">5. 독립성 및 잔여 위험</div><div class="qrt-two">
+        <div><h3 class="qrt-subtitle">내부 평가자·위험 검토자·독립 AI 평가자 역할</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>역할</th><th>평가 범위</th><th>독립성</th></tr></thead><tbody>{role_rows}</tbody></table></div></div>
+        <div><h3 class="qrt-subtitle">잔여 위험과 운영 조치</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>등급</th><th>위험</th><th>권고 조치</th></tr></thead><tbody>{risk_rows}</tbody></table></div></div>
+      </div></section>
+      <div class="qrt-bottom"><section class="qrt-opinion"><h3 class="qrt-subtitle">6. 종합 평가 및 의견</h3>
+        <p>✓ 전체 통과율은 <b>{pass_rate:.1f}%</b>, 증적 상태는 <b>{escape(_voc_display_label(model.get('report_state')))}</b>입니다.</p>
+        <p>✓ 개선 추이 검증은 <b>{'완료' if claim_verified else '미완료'}</b>, 증적 무결성은 <b>{'정상' if integrity.get('ok') else '확인 필요'}</b>입니다.</p>
+        <p class="qrt-conclusion">→ 결론: {escape(_voc_display_label(model.get('release_decision', 'NOT_APPROVED')))} — {conclusion}</p>
+        </section><section class="qrt-recommend"><h3 class="qrt-subtitle">7. 개선 권고 사항</h3><ul>{recommendation_html}</ul></section></div>
     </div>
     """
 

@@ -4,8 +4,31 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from dashboard.services import voc_judge_service, voc_quality_service
+from dashboard.services import voc_judge_service, voc_quality_service, voc_validity_service
 from dashboard.services.voc_quality_service import load_independent_judge_rubric
+
+
+def test_low_cost_provider_model_defaults(monkeypatch):
+    for env_name in (
+        "A2A_MODEL_JUDGE_ANTHROPIC",
+        "A2A_MODEL_VALIDITY_ANTHROPIC",
+        "A2A_MODEL_JUDGE_GEMINI",
+        "A2A_MODEL_VALIDITY_GEMINI",
+        "A2A_MODEL_GEMINI",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    judge_options = {
+        option["provider"]: option for option in voc_judge_service.judge_provider_options()
+    }
+    validity_options = {
+        option["provider"]: option for option in voc_validity_service.validity_provider_options()
+    }
+
+    assert judge_options["anthropic"]["default_model"] == "claude-haiku-4-5"
+    assert validity_options["anthropic"]["default_model"] == "claude-haiku-4-5"
+    assert judge_options["gemini"]["default_model"] == "gemini-3.5-flash-lite"
+    assert validity_options["gemini"]["default_model"] == "gemini-3.5-flash-lite"
 
 
 def test_judge_controls_render_provider_and_model_selection():

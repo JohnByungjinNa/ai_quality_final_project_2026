@@ -259,7 +259,7 @@ def check_anthropic_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
     """Agent와 같은 .env의 Anthropic 키를 노출하지 않고 실제 호출 가능 여부만 확인합니다."""
     checked_at = datetime.now().astimezone().isoformat()
     api_key, source = _agent_env_value("ANTHROPIC_API_KEY")
-    model = os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6")
+    model = os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5")
     if not api_key or api_key.startswith("YOUR_"):
         return {
             "ok": False,
@@ -381,7 +381,7 @@ def check_gemini_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
     model = (
         os.environ.get("A2A_MODEL_JUDGE_GEMINI")
         or os.environ.get("A2A_MODEL_GEMINI")
-        or "gemini-2.5-pro"
+        or "gemini-3.5-flash-lite"
     )
     if not api_key or api_key.startswith("YOUR_"):
         return {
@@ -397,7 +397,18 @@ def check_gemini_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
         from google import genai
         from google.genai import types
         from google.genai.errors import ClientError, ServerError
+    except ImportError:
+        return {
+            "ok": False,
+            "status": "SDK_MISSING",
+            "message": "Gemini SDK가 설치되어 있지 않습니다. `pip install google-genai` 후 다시 점검하세요.",
+            "source": source,
+            "env_name": env_name,
+            "model": model,
+            "checked_at": checked_at,
+        }
 
+    try:
         client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
@@ -410,16 +421,6 @@ def check_gemini_agent_credential(*, timeout_seconds: float = 15.0) -> dict:
                 temperature=0,
             ),
         )
-    except ModuleNotFoundError:
-        return {
-            "ok": False,
-            "status": "SDK_MISSING",
-            "message": "Gemini SDK가 설치되어 있지 않습니다. `pip install google-genai` 후 다시 점검하세요.",
-            "source": source,
-            "env_name": env_name,
-            "model": model,
-            "checked_at": checked_at,
-        }
     except ClientError as exc:
         status_code = int(getattr(exc, "code", 0) or 0)
         message = _safe_text(str(exc))
@@ -1058,7 +1059,7 @@ def judge_independence_preview(provider: str, model: str) -> dict:
     generator_snapshot = {
         "policy": {
             "provider": "anthropic",
-            "model": os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6"),
+            "model": os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5"),
         }
     }
     return voc_judge_service.independence_grade(provider, model, generator_snapshot)
@@ -2249,7 +2250,7 @@ def _start_voc_run(
         },
         "policy": {
             "provider": "anthropic",
-            "model": os.environ.get("A2A_MODEL_POLICY", "claude-sonnet-4-6"),
+            "model": os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5"),
             "credential_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         },
         "judge": {
@@ -2708,6 +2709,7 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
 
     decisions = payload.get(spec["decisions_key"])
     valid_ranges = []
+    decision_names = []
     if not isinstance(decisions, list) or not decisions:
         errors.append(f"{spec['decisions_key']}는 한 건 이상 필요합니다.")
     else:
@@ -2724,6 +2726,10 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
                 errors.append(f"판정 기준 {index}: 점수 범위는 0~100 안이어야 합니다.")
                 continue
             valid_ranges.append((float(min_score), float(max_score)))
+            decision_names.append(str(decision["decision"]))
+            requires_floors = decision.get("requires_all_pass_floors")
+            if "requires_all_pass_floors" in decision and not isinstance(requires_floors, bool):
+                errors.append(f"판정 기준 {index}: 항목별 하한 적용 여부는 true 또는 false여야 합니다.")
 
     if valid_ranges:
         ordered = sorted(valid_ranges)
@@ -2733,6 +2739,8 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
             if round(current[0] - previous[1], 2) != 0.01:
                 errors.append("판정 구간 사이에 중복 또는 누락이 없어야 합니다.")
                 break
+    if len(decision_names) != len(set(decision_names)):
+        errors.append("자동 판정 이름은 중복될 수 없습니다.")
 
     hold_rules = payload.get(spec["hold_rules_key"])
     if not isinstance(hold_rules, list) or not hold_rules or any(
@@ -2749,9 +2757,39 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
         if set(payload.get("non_quality_statuses", {})) != required_statuses:
             errors.append("독립 LLM Judge 실행 상태에는 ERROR와 NOT_RUN이 필요합니다.")
     if rubric_type == "improvement_validity":
+        decision_rows = decisions if isinstance(decisions, list) else []
         states = set(payload.get("workflow_states", []))
-        if not {"QA_REVIEWED", "BUSINESS_APPROVED"}.issubset(states):
-            errors.append("개선안 타당성 승인 흐름에는 QA_REVIEWED와 BUSINESS_APPROVED가 필요합니다.")
+        required_states = {"DRAFT", "AI_REVIEWED", "QA_REVIEWED", "BUSINESS_APPROVED"}
+        if not required_states.issubset(states):
+            errors.append("개선안 타당성 승인 흐름에는 작성·AI 평가·QA 검토·업무 승인 단계가 필요합니다.")
+        required_decisions = {"AI_PASS", "REVISION_REQUIRED", "REJECTED"}
+        if not required_decisions.issubset(decision_names):
+            errors.append("개선안 타당성 자동 판정에는 AI 통과·보완 필요·반려가 모두 필요합니다.")
+        if any(
+            not isinstance(decision, dict)
+            or not isinstance(decision.get("requires_all_pass_floors"), bool)
+            for decision in decision_rows
+        ):
+            errors.append("개선안 타당성 판정별 항목 하한 적용 여부는 true 또는 false로 설정해야 합니다.")
+        ai_pass_rule = next(
+            (
+                decision
+                for decision in decision_rows
+                if isinstance(decision, dict) and decision.get("decision") == "AI_PASS"
+            ),
+            None,
+        )
+        if ai_pass_rule and ai_pass_rule.get("requires_all_pass_floors") is not True:
+            errors.append("AI 통과 판정은 모든 평가 항목의 하한 충족을 필수로 적용해야 합니다.")
+        required_holds = {
+            "missing_voc_or_trace_evidence",
+            "unsafe_or_noncompliant_action",
+            "unresolved_high_or_critical_defect",
+            "judge_error_or_not_run",
+            "safety_regression_against_baseline",
+        }
+        if isinstance(hold_rules, list) and not required_holds.issubset(set(hold_rules)):
+            errors.append("개선안 타당성 평가에 필요한 즉시 보류 규칙이 누락됐습니다.")
 
     return errors
 

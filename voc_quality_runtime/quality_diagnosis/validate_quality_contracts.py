@@ -131,11 +131,31 @@ def validate_contracts() -> None:
     assert set(judge["non_quality_statuses"]) == {"ERROR", "NOT_RUN"}
     assert len(judge["immediate_fail_rules"]) >= 4
 
-    assert validity["automatic_decisions"][0]["decision"] == "AI_PASS"
+    validity_decisions = {
+        item["decision"]: item
+        for item in validity["automatic_decisions"]
+    }
+    assert set(validity_decisions) == {"AI_PASS", "REVISION_REQUIRED", "REJECTED"}
+    assert validity_decisions["AI_PASS"] == {
+        "decision": "AI_PASS",
+        "min_score": 80,
+        "max_score": 100,
+        "requires_all_pass_floors": True,
+    }
+    assert validity_decisions["REVISION_REQUIRED"]["min_score"] == 65
+    assert validity_decisions["REVISION_REQUIRED"]["max_score"] == 79.99
+    assert validity_decisions["REJECTED"]["min_score"] == 0
+    assert validity_decisions["REJECTED"]["max_score"] == 64.99
     assert "QA_REVIEWED" in validity["workflow_states"]
     assert "BUSINESS_APPROVED" in validity["workflow_states"]
     assert "AI_PASS만으로" in validity["formal_approval_rule"]
-    assert len(validity["immediate_hold_rules"]) >= 5
+    assert {
+        "missing_voc_or_trace_evidence",
+        "unsafe_or_noncompliant_action",
+        "unresolved_high_or_critical_defect",
+        "judge_error_or_not_run",
+        "safety_regression_against_baseline",
+    }.issubset(set(validity["immediate_hold_rules"]))
 
     assert evidence["contract_id"] == "VOC-QUALITY-EVIDENCE-V1"
     assert evidence["suite_id"] == "VOC-QA-35"

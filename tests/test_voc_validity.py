@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -12,6 +13,40 @@ def _validity_payload(rubric, *, holds=None):
         "dimension_scores": {
             key: {"score": spec["max_points"], "reason": f"{key} 근거 확인"}
             for key, spec in rubric["dimensions"].items()
+        },
+        "immediate_hold_rules_triggered": holds or [],
+        "evidence": ["VOC와 Trace 확인"],
+        "risks": [],
+        "recommendations": ["QA 검토"],
+    }
+
+
+def _validity_payload_at_total(rubric, total, *, floor_miss_key=None, holds=None):
+    scores = {
+        key: float(spec["pass_floor"])
+        for key, spec in rubric["dimensions"].items()
+    }
+    if floor_miss_key:
+        scores[floor_miss_key] -= 1
+    difference = round(float(total) - sum(scores.values()), 2)
+    if difference >= 0:
+        for key, spec in rubric["dimensions"].items():
+            if key == floor_miss_key:
+                continue
+            available = float(spec["max_points"]) - scores[key]
+            addition = min(available, difference)
+            scores[key] += addition
+            difference = round(difference - addition, 2)
+    else:
+        for key in scores:
+            reduction = min(scores[key], -difference)
+            scores[key] -= reduction
+            difference = round(difference + reduction, 2)
+    assert abs(difference) < 0.001
+    return {
+        "dimension_scores": {
+            key: {"score": score, "reason": f"{key} 경계값 근거"}
+            for key, score in scores.items()
         },
         "immediate_hold_rules_triggered": holds or [],
         "evidence": ["VOC와 Trace 확인"],
@@ -85,6 +120,61 @@ def test_validity_server_recalculates_score_and_ai_pass(monkeypatch):
     assert result["decision"] == "AI_PASS"
     assert result["workflow_state"] == "AI_REVIEWED"
     assert result["formal_approval"] is False
+
+
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [
+        (64.99, "REJECTED"),
+        (65, "REVISION_REQUIRED"),
+        (79.99, "REVISION_REQUIRED"),
+        (80, "AI_PASS"),
+    ],
+)
+def test_validity_decision_uses_rubric_score_boundaries(total, expected):
+    rubric = voc_quality_service.load_improvement_validity_rubric()
+
+    result = voc_validity_service._validate_and_score(
+        _validity_payload_at_total(rubric, total),
+        rubric,
+        [],
+    )
+
+    assert result["total_score"] == total
+    assert result["decision"] == expected
+
+
+def test_validity_ai_pass_requires_floors_and_no_holds():
+    rubric = voc_quality_service.load_improvement_validity_rubric()
+
+    floor_miss = voc_validity_service._validate_and_score(
+        _validity_payload_at_total(rubric, 80, floor_miss_key="cause_linkage"),
+        rubric,
+        [],
+    )
+    held = voc_validity_service._validate_and_score(
+        _validity_payload_at_total(rubric, 100),
+        rubric,
+        ["missing_voc_or_trace_evidence"],
+    )
+
+    assert floor_miss["all_pass_floors_met"] is False
+    assert floor_miss["decision"] == "REVISION_REQUIRED"
+    assert held["decision"] == "REVISION_REQUIRED"
+
+
+def test_validity_decision_threshold_is_read_from_rubric():
+    rubric = deepcopy(voc_quality_service.load_improvement_validity_rubric())
+    rubric["automatic_decisions"][0]["min_score"] = 90
+    rubric["automatic_decisions"][1]["max_score"] = 89.99
+
+    result = voc_validity_service._validate_and_score(
+        _validity_payload_at_total(rubric, 80),
+        rubric,
+        [],
+    )
+
+    assert result["decision"] == "REVISION_REQUIRED"
 
 
 def test_validity_evidence_holds_force_revision(monkeypatch):
@@ -481,6 +571,95 @@ def test_validity_dimension_rows_show_scores_and_korean_criteria():
     assert "불만↔근본 원인 8점" in rows.loc[0, "세부 지표"]
 
 
+def test_ai_pass_failure_model_separates_four_failure_types():
+    rubric = voc_quality_service.load_improvement_validity_rubric()
+    result = {
+        "decision": "REVISION_REQUIRED",
+        "total_score": 77,
+        "dimension_scores": {
+            key: {
+                "score": (
+                    10
+                    if key == "evidence_traceability"
+                    else float(spec["pass_floor"])
+                ),
+                "reason": "평가 근거",
+            }
+            for key, spec in rubric["dimensions"].items()
+        },
+        "immediate_hold_rules_triggered": [
+            "missing_voc_or_trace_evidence",
+            "judge_error_or_not_run",
+        ],
+    }
+    artifacts = {"trace": {"trace_id": "", "events": []}}
+
+    model = voc_quality_view._validity_ai_pass_failure_model(
+        result,
+        rubric,
+        artifacts,
+    )
+    categories = {item["key"]: item for item in model["categories"]}
+
+    assert model["failed_count"] == 4
+    assert categories["score"]["failed"] is True
+    assert categories["score"]["value"] == "77 / 80점"
+    assert categories["floors"]["failed"] is True
+    assert "VOC·Trace 근거 추적성" in categories["floors"]["details"][0]
+    assert categories["holds"]["details"] == ["Judge 미수행·오류"]
+    assert categories["evidence"]["failed"] is True
+    assert any("Trace ID" in detail for detail in categories["evidence"]["details"])
+
+
+def test_ai_pass_failure_model_reports_all_conditions_met():
+    rubric = voc_quality_service.load_improvement_validity_rubric()
+    result = {
+        "decision": "AI_PASS",
+        "total_score": 100,
+        "dimension_scores": {
+            key: {"score": float(spec["max_points"]), "reason": "충족"}
+            for key, spec in rubric["dimensions"].items()
+        },
+        "immediate_hold_rules_triggered": [],
+    }
+    artifacts = {
+        "trace": {
+            "trace_id": "trace-pass",
+            "events": [{"source": "Interpreter", "target": "Retriever"}],
+        }
+    }
+
+    model = voc_quality_view._validity_ai_pass_failure_model(
+        result,
+        rubric,
+        artifacts,
+    )
+
+    assert model["passed"] is True
+    assert model["failed_count"] == 0
+    assert all(item["failed"] is False for item in model["categories"])
+
+
+def test_ai_pass_failure_visualization_renders_four_categories():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_validity_failure_visualization_app.py",
+        default_timeout=15,
+    )
+    app.run()
+
+    assert not app.exception
+    rendered = "\n".join(
+        [item.value for item in app.markdown]
+        + [item.value for item in app.caption]
+    )
+    assert "AI 평가 통과 진단" in rendered
+    assert "점수 부족" in rendered
+    assert "항목별 하한 미달" in rendered
+    assert "즉시 보류 규칙" in rendered
+    assert "VOC·Trace 근거 부족" in rendered
+    assert "실패 원인 4개 유형" in rendered
+
+
 def test_validity_execution_steps_summarize_per_step_results():
     candidate = {
         "run_id": "RUN-01",
@@ -521,7 +700,7 @@ def test_validity_execution_steps_summarize_per_step_results():
     assert rows["수행 절차"].tolist() == [
         "대상 증적 수집",
         "보완 입력 반영",
-        "평가 계약 구성",
+        "평가 기준 구성",
         "독립 LLM 평가",
         "점수·판정 산출",
         "즉시 보류 규칙 확인",

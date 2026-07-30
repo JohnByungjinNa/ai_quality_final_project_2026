@@ -113,6 +113,55 @@ def test_voc_history_page_renders_without_exceptions():
     assert {"Run ID", "실행 시각", "유형", "상태"}.issubset(history_columns)
     assert "T" not in str(app.dataframe[0].value["실행 시각"].iloc[0])
     assert json.loads(app.dataframe[0].proto.selection_default)["selection"]["rows"] == [0]
+    assert any(button.label == "선택 Run 상세" for button in app.button)
+    assert any(
+        item.value == "Run 행의 아무 곳이나 선택하면 실행 상세 팝업이 열립니다."
+        for item in app.caption
+    )
+
+
+def test_voc_history_selected_run_detail_opens_in_dialog():
+    app = AppTest.from_file("tests/fixtures/voc_history_app.py", default_timeout=15)
+    app.run()
+
+    detail_button = next(button for button in app.button if button.label == "선택 Run 상세")
+    detail_button.click().run()
+
+    assert not app.exception
+    rendered_markdown = "\n".join(item.value for item in app.markdown)
+    assert "실행 상세 · RUN-" in rendered_markdown
+    assert {"유형", "상태", "대상", "Judge", "타당성"}.issubset(
+        {metric.label for metric in app.metric}
+    )
+
+
+def test_voc_history_execution_and_case_evidence_are_human_readable():
+    app = AppTest.from_file(
+        "tests/fixtures/voc_history_readable_detail_app.py",
+        default_timeout=15,
+    )
+    app.run()
+
+    assert not app.exception
+    rendered_markdown = "\n".join(item.value for item in app.markdown)
+    rendered_caption = "\n".join(item.value for item in app.caption)
+    assert "Run 기본 정보" in rendered_markdown
+    assert "적용 Rubric" in rendered_markdown
+    assert "실행 모델" in rendered_markdown
+    assert "VOC 분석 요약" in rendered_markdown
+    assert "최종 개선안" in rendered_markdown
+    assert "확인 근거" in rendered_markdown
+    assert "잔여 위험" in rendered_markdown
+    assert "보완 권고" in rendered_markdown
+    assert "QA·업무 승인 이력" in rendered_markdown
+    assert "Trace ID: trace-demo" in rendered_caption
+    metric_labels = {metric.label for metric in app.metric}
+    assert {"수행 상태", "내부 판정", "유효 판정", "자동 판정", "승인 단계"}.issubset(
+        metric_labels
+    )
+    dataframe_columns = [set(frame.value.columns) for frame in app.dataframe]
+    assert {"평가 단계", "버전", "무결성 Hash"} in dataframe_columns
+    assert {"평가 항목", "점수", "배점", "판정 근거"} in dataframe_columns
 
 
 def test_voc_dashboard_renders_operational_quality_summary():
@@ -201,6 +250,30 @@ def test_agent_management_reuses_dashboard_agent_icon():
 def test_agent_control_uses_agent_specific_progress_message(action, agent_name, expected):
     assert voc_quality_view._agent_control_progress_message(action, agent_name) == expected
     assert "VOC 품질진단 작업을 수행" not in expected
+
+
+def test_gemini_credential_check_reports_missing_sdk_without_scope_error(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def import_without_google_genai(name, *args, **kwargs):
+        if name == "google" or name.startswith("google.genai"):
+            raise ImportError("cannot import name 'genai' from 'google'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        voc_quality_service,
+        "_agent_env_first",
+        lambda _names: ("configured-test-key", ".env", "GEMINI_API_KEY"),
+    )
+    monkeypatch.setattr(builtins, "__import__", import_without_google_genai)
+
+    result = voc_quality_service.check_gemini_agent_credential()
+
+    assert result["ok"] is False
+    assert result["status"] == "SDK_MISSING"
+    assert "google-genai" in result["message"]
 
 
 def test_agent_control_refreshes_after_command_completion(monkeypatch):
@@ -397,6 +470,55 @@ def test_agent_management_hides_stale_start_error_when_all_agents_are_running(mo
     voc_quality_view._render_agent_management_messages(snapshot)
 
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "result_key",
+    [
+        "agent_openai_credential_result",
+        "agent_anthropic_credential_result",
+        "agent_gemini_credential_result",
+    ],
+)
+def test_agent_management_renders_each_provider_credential_result_independently(
+    monkeypatch,
+    result_key,
+):
+    state = {result_key: {"ok": True, "status": "PASS"}}
+    snapshot = {
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"status": "RUNNING", "healthy": True}
+            for _ in range(6)
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "markdown",
+        lambda *args, **kwargs: calls.append("heading"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_control_feedback",
+        lambda: calls.append("feedback"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_control_log",
+        lambda: calls.append("log"),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_credential_feedback",
+        lambda: calls.append("credential"),
+    )
+
+    voc_quality_view._render_agent_management_messages(snapshot)
+
+    assert calls == ["heading", "credential"]
 
 
 def test_agent_management_shows_recent_success_log_without_redundant_success_card(monkeypatch):
@@ -770,7 +892,7 @@ def test_manual_judge_provider_cards_default_to_anthropic_and_switch_on_click():
     assert "카드를 클릭하여 선택" in app.button[0].label
     assert "✓ 현재 선택" in app.button[1].label
     assert "gpt-5.2" in app.button[0].label
-    assert "claude-opus-4-6" in app.button[1].label
+    assert "claude-haiku-4-5" in app.button[1].label
     assert app.session_state["goal_TC-01_judge_provider"] == "anthropic"
 
     app.button[0].click().run()
@@ -1274,7 +1396,7 @@ def test_manual_pipeline_preflight_runs_inside_background_task(monkeypatch):
         "judge_config": {
             "enabled": False,
             "provider": "anthropic",
-            "model": "claude-opus-4-6",
+            "model": "claude-haiku-4-5",
         },
     }
 
@@ -1751,7 +1873,7 @@ def test_validity_candidate_rows_remove_empty_select_column_and_localize_statuse
     row = rows.iloc[0]
     assert row["수행 유형"] == "일괄 수행"
     assert row["독립 평가"] == "미실행"
-    assert row["타당성"] == "AI 통과"
+    assert row["타당성"] == "AI 평가 통과"
     assert row["승인 단계"] == "QA 검토 완료"
     assert row["다음 조치"] == "업무 승인 가능"
 
@@ -2832,6 +2954,23 @@ def test_quality_rubric_validation_rejects_invalid_scores_and_ranges():
 
     assert any("세부 기준 합계" in error for error in errors)
     assert any("중복 또는 누락" in error for error in errors)
+
+
+def test_improvement_validity_rubric_requires_complete_decision_and_hold_rules():
+    rubric = deepcopy(load_improvement_validity_rubric())
+    assert rubric["version"] == "개선안RB1.6"
+    assert validate_quality_rubric("improvement_validity", rubric) == []
+
+    invalid = deepcopy(rubric)
+    invalid["automatic_decisions"][0]["requires_all_pass_floors"] = False
+    invalid["automatic_decisions"][1]["decision"] = "AI_PASS"
+    invalid["immediate_hold_rules"].remove("judge_error_or_not_run")
+
+    errors = validate_quality_rubric("improvement_validity", invalid)
+
+    assert any("중복" in error for error in errors)
+    assert any("AI 통과 판정" in error for error in errors)
+    assert any("즉시 보류 규칙" in error for error in errors)
 
 
 def test_quality_rubric_save_creates_backup_and_audit_log(tmp_path, monkeypatch):

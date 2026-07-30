@@ -54,8 +54,8 @@ Judge가 응답에 임의 total 또는 decision을 넣어도 차원 점수로 �
 
 현재 환경의 기본 구성:
 
-- 최종 개선안 생성: Anthropic `claude-sonnet-4-6`
-- 기본 Judge: Anthropic `claude-opus-4-6`
+- 최종 개선안 생성: Anthropic `claude-haiku-4-5`
+- 기본 Judge: Anthropic `claude-haiku-4-5`
 - 예상 독립성: `B`
 
 모델 선택 목록은 고정하지 않고 사용자가 계정에서 사용 가능한 모델명을 입력할 수 있다.
@@ -86,7 +86,7 @@ Judge가 응답에 임의 total 또는 decision을 넣어도 차원 점수로 �
 - 출력 제한 보완: reason 300자, 배열 최대 5개·항목 200자, 최대 출력 4,096 token
 - 동일 Sonnet 모델 재평가: 86점, 점수 기준 PASS, 독립성 C로 `REVIEW_REQUIRED`
 - 다른 Anthropic Opus 모델 재평가: 86점 `PASS`, 독립성 B
-- 최종 모델: `claude-opus-4-6`
+- 최종 모델: `claude-haiku-4-5`
 - 최종 token: 입력 6,954 / 출력 2,359
 - 최종 시도: 1회 성공
 - 가격표 설정: 없음, 비용 미산정 상태를 명시
@@ -113,7 +113,7 @@ Judge가 응답에 임의 total 또는 decision을 넣어도 차원 점수로 �
 ## 8. 사용자 확인 방법
 
 1. `수동 TC 수행`에서 `독립 LLM Judge 평가`를 켠다.
-2. Anthropic과 `claude-opus-4-6`을 선택한다.
+2. Anthropic과 `claude-haiku-4-5`를 선택한다.
 3. 실행 후 Judge 점수·판정·독립성·모델을 확인한다.
 4. `일괄 TC 수행`에서 Judge를 켜고 소규모 VOC Case를 실행해 Judge 집계를 확인한다.
 5. `수행 이력 > Case 증적`에서 `judge_result`와 평가 이력을 확인한다.

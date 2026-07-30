@@ -12,7 +12,7 @@ view.judge_provider_options = lambda: [
     {
         "provider": "anthropic",
         "label": "Anthropic",
-        "default_model": "claude-opus-4-6",
+        "default_model": "claude-haiku-4-5",
         "credential_configured": True,
     },
     {

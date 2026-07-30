@@ -24,7 +24,7 @@ def validity_provider_options() -> list[dict]:
             "label": "Anthropic",
             "default_model": os.environ.get("A2A_MODEL_VALIDITY_ANTHROPIC")
             or os.environ.get("A2A_MODEL_JUDGE_ANTHROPIC")
-            or "claude-opus-4-6",
+            or "claude-haiku-4-5",
             "credential_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         },
         {
@@ -41,7 +41,7 @@ def validity_provider_options() -> list[dict]:
             "default_model": os.environ.get("A2A_MODEL_VALIDITY_GEMINI")
             or os.environ.get("A2A_MODEL_JUDGE_GEMINI")
             or os.environ.get("A2A_MODEL_GEMINI")
-            or "gemini-2.5-pro",
+            or "gemini-3.5-flash-lite",
             "credential_configured": bool(voc_judge_service.gemini_api_key()),
         },
     ]
@@ -229,10 +229,30 @@ def _build_prompt(
         "즉시 보류 규칙은 model_assessable_hold_rules 안에서만 선택하세요. Trace·Judge·결함 보류는 서버가 판정합니다.\n"
         "각 reason은 300자 이내, 배열은 최대 5개와 항목당 200자 이내로 작성하세요.\n"
         "응답은 Markdown 없이 JSON 객체 하나만 반환하세요.\n\n"
-        f"[평가 계약]\n{json.dumps(contract, ensure_ascii=False)}\n\n"
+        f"[평가 기준 및 판정 규칙]\n{json.dumps(contract, ensure_ascii=False)}\n\n"
         f"[실행 증적]\n{json.dumps(evidence, ensure_ascii=False, default=str)}\n\n"
         f"[출력 JSON 구조]\n{json.dumps(schema, ensure_ascii=False)}"
     )
+
+
+def _configured_decision(total: float, rubric: dict) -> dict:
+    matches = [
+        rule
+        for rule in rubric.get("automatic_decisions", [])
+        if float(rule["min_score"]) <= total <= float(rule["max_score"])
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"{total:g}점에 해당하는 자동 판정 기준은 정확히 한 건이어야 합니다.")
+    return matches[0]
+
+
+def _revision_decision(rubric: dict) -> str:
+    if any(
+        rule.get("decision") == "REVISION_REQUIRED"
+        for rule in rubric.get("automatic_decisions", [])
+    ):
+        return "REVISION_REQUIRED"
+    raise ValueError("항목별 하한 미달이나 즉시 보류에 사용할 보완 필요 판정이 없습니다.")
 
 
 def _validate_and_score(payload: dict, rubric: dict, pre_holds: list[str]) -> dict:
@@ -263,13 +283,18 @@ def _validate_and_score(payload: dict, rubric: dict, pre_holds: list[str]) -> di
         if not isinstance(values, list):
             raise ValueError(f"타당성 응답의 {field}는 배열이어야 합니다.")
     holds = list(dict.fromkeys([*pre_holds, *model_holds]))
+    configured_holds = set(rubric.get("immediate_hold_rules", []))
+    unknown_holds = [rule for rule in holds if rule not in configured_holds]
+    if unknown_holds:
+        raise ValueError("평가 기준에 등록되지 않은 즉시 보류 규칙이 적용됐습니다: " + ", ".join(unknown_holds))
+
     total = round(sum(item["score"] for item in normalized.values()), 2)
-    if total < 65:
-        decision = "REJECTED"
-    elif total >= 80 and all_floors and not holds:
-        decision = "AI_PASS"
-    else:
-        decision = "REVISION_REQUIRED"
+    decision_rule = _configured_decision(total, rubric)
+    decision = str(decision_rule["decision"])
+    if decision_rule.get("requires_all_pass_floors") and not all_floors:
+        decision = _revision_decision(rubric)
+    if decision == "AI_PASS" and holds:
+        decision = _revision_decision(rubric)
     return {
         "dimension_scores": normalized,
         "total_score": total,

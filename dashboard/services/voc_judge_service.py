@@ -57,7 +57,7 @@ def judge_provider_options() -> list[dict]:
             "provider": "anthropic",
             "label": "Anthropic",
             "default_model": os.environ.get("A2A_MODEL_JUDGE_ANTHROPIC")
-            or "claude-opus-4-6",
+            or "claude-haiku-4-5",
             "credential_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         },
         {
@@ -72,7 +72,7 @@ def judge_provider_options() -> list[dict]:
             "label": "Gemini",
             "default_model": os.environ.get("A2A_MODEL_JUDGE_GEMINI")
             or os.environ.get("A2A_MODEL_GEMINI")
-            or "gemini-2.5-pro",
+            or "gemini-3.5-flash-lite",
             "credential_configured": bool(gemini_api_key()),
         },
     ]
