@@ -467,7 +467,56 @@ def load_voc_run(run_id: str) -> dict:
             result[name] = _read_json(path)
         except Exception as exc:
             result.setdefault("errors", []).append(f"{name}: {type(exc).__name__}")
+    plan_path = run_dir / "rubric_reevaluation_plan.json"
+    if plan_path.exists():
+        try:
+            result["rubric_reevaluation_plan"] = _read_json(plan_path)
+        except Exception as exc:
+            result.setdefault("errors", []).append(f"rubric_reevaluation_plan: {type(exc).__name__}")
     return result
+
+
+def load_rubric_reevaluation_plan(run_id: str) -> dict:
+    run_dir = _run_dir(run_id)
+    path = run_dir / "rubric_reevaluation_plan.json"
+    if not path.exists():
+        return {}
+    return _read_json(path)
+
+
+def save_rubric_reevaluation_plan(run_id: str, plan: dict) -> dict:
+    """Store a run-level Rubric reevaluation plan without mutating case results."""
+    with _STORE_LOCK:
+        run_dir = _run_dir(run_id)
+        manifest = _read_json(run_dir / "manifest.json")
+        summary = _read_json(run_dir / "summary.json")
+        if manifest.get("status") == "RUNNING":
+            raise ValueError("실행 중인 Run에는 Rubric 재평가 계획을 저장할 수 없습니다.")
+
+        path = run_dir / "rubric_reevaluation_plan.json"
+        history = []
+        if path.exists():
+            previous = _read_json(path)
+            history.extend(previous.pop("plan_history", []))
+            history.append(previous)
+
+        saved = dict(plan or {})
+        saved["run_id"] = run_id
+        saved["saved_at"] = _now_iso()
+        saved["plan_history"] = history
+        _atomic_write_json(path, saved)
+
+        metadata = manifest.setdefault("run_metadata", {})
+        metadata["rubric_reevaluation"] = {
+            "status": saved.get("status", ""),
+            "recommendation": saved.get("recommendation", ""),
+            "changed_scopes": saved.get("changed_scopes", []),
+            "saved_at": saved["saved_at"],
+            "plan_file": path.name,
+        }
+        _atomic_write_json(run_dir / "manifest.json", manifest)
+        rebuild_run_index()
+        return {"manifest": manifest, "summary": summary, "plan": saved}
 
 
 def load_case_artifacts(run_id: str, case_id: str) -> dict:

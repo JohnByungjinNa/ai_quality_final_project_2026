@@ -80,6 +80,7 @@ from services.voc_quality_service import (
     runtime_health,
     save_quality_rubric,
     save_quality_test_catalog,
+    save_voc_rubric_reevaluation_plan,
     save_voc_validity_supplement,
     test_case_summary,
     test_agent_rpc,
@@ -5591,6 +5592,101 @@ def _history_rubric_badge(drift: dict) -> str:
     return f":{color}-badge[{drift.get('status', '기준 확인')}]"
 
 
+def _history_rubric_plan_label(status: str) -> str:
+    labels = {
+        "NOT_REQUIRED": "재평가 불필요",
+        "RETEST_RECOMMENDED": "RETEST 권장",
+        "REEVALUATION_READY": "재평가 가능",
+    }
+    return labels.get(str(status or ""), "계획 없음")
+
+
+def _render_history_rubric_reevaluation_plan(
+    run_id: str,
+    detail: dict,
+    rubric_drift: dict,
+) -> None:
+    plan = detail.get("rubric_reevaluation_plan", {}) if isinstance(detail, dict) else {}
+    plan_required = bool(rubric_drift.get("requires_reevaluation"))
+    if not plan_required and not plan:
+        return
+
+    with st.container(border=True):
+        heading, state_col, action_col = st.columns(
+            [2.2, 1.1, 0.95],
+            gap="small",
+            vertical_alignment="center",
+        )
+        with heading:
+            st.markdown("#### Rubric 재평가 계획")
+            st.caption("원본 A2A 결과는 보존하고, 현재 Rubric 기준으로 어떤 평가만 다시 확인할지 정리합니다.")
+        with state_col:
+            if plan:
+                saved_at = _history_table_timestamp(plan.get("saved_at"))
+                st.markdown(f":green-badge[계획 저장됨]", text_alignment="right")
+                st.caption(saved_at or "-")
+            else:
+                st.markdown(":orange-badge[계획 미작성]", text_alignment="right")
+                st.caption("기준 변경 영향 확인 필요")
+        with action_col:
+            if st.button(
+                "계획 갱신" if plan else "계획 저장",
+                icon=":material/assignment:",
+                type="primary" if plan_required and not plan else "secondary",
+                disabled=not plan_required,
+                width="stretch",
+                key=f"voc_history_save_rubric_plan_{run_id}",
+            ):
+                with st.spinner("Rubric 재평가 계획을 저장하고 있습니다..."):
+                    saved = save_voc_rubric_reevaluation_plan(run_id)
+                st.session_state.voc_rubric_reevaluation_plan_result = saved.get("plan", {})
+                _load_voc_history_rows.clear()
+                st.rerun()
+
+        if plan:
+            status_label = _history_rubric_plan_label(plan.get("status"))
+            st.caption(f"{status_label} · {plan.get('recommendation', '-')}")
+            actions = plan.get("actions") or []
+            if actions:
+                table = pd.DataFrame(
+                    [
+                        {
+                            "기준": item.get("label", "-"),
+                            "처리 방식": item.get("method_label", "-"),
+                            "대상": f"{item.get('target_count', 0)}건",
+                            "연결 화면": item.get("menu", "-"),
+                            "설명": item.get("description", "-"),
+                        }
+                        for item in actions
+                    ]
+                )
+                st.dataframe(
+                    table,
+                    hide_index=True,
+                    width="stretch",
+                    height=min(176, 46 + len(table) * 42),
+                    column_config={
+                        "기준": st.column_config.TextColumn(width=112, pinned=True),
+                        "처리 방식": st.column_config.TextColumn(width=112),
+                        "대상": st.column_config.TextColumn(width=72),
+                        "연결 화면": st.column_config.TextColumn(width=148),
+                        "설명": st.column_config.TextColumn(width="large"),
+                    },
+                )
+            skipped = plan.get("skipped_cases") or []
+            if skipped:
+                with st.expander(f"재평가 제외 Case {len(skipped)}건", expanded=False):
+                    st.dataframe(
+                        pd.DataFrame(skipped),
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "case_id": st.column_config.TextColumn("Case ID", width=90),
+                            "reason": st.column_config.TextColumn("제외 사유", width="large"),
+                        },
+                    )
+
+
 def _history_case_action_groups(case_results: list[dict]) -> dict[str, dict]:
     groups: dict[str, dict] = {}
     for case in case_results:
@@ -5851,6 +5947,8 @@ def _render_history_next_action_cards(run_item: dict) -> None:
                     st.markdown(f"##### {value}")
                 st.caption(detail_text)
 
+        _render_history_rubric_reevaluation_plan(run_id, detail, rubric_drift)
+
         target = _history_next_action_target(run_item, case_results, run_action, case_action)
         action_col, guide_col = st.columns([0.9, 2.8], gap="medium", vertical_alignment="center")
         with action_col:
@@ -5943,6 +6041,12 @@ def render_voc_history():
             f"{reevaluation_result['case_id']} Judge 재평가 완료 · "
             f"{_voc_status_label(judge.get('decision', 'ERROR'))} · {judge.get('total_score', '-')}점"
         )
+    rubric_plan_result = st.session_state.pop("voc_rubric_reevaluation_plan_result", None)
+    if rubric_plan_result:
+        changed = ", ".join(rubric_plan_result.get("changed_labels", [])) or "-"
+        st.success(
+            f"Rubric 재평가 계획 저장 완료 · {_history_rubric_plan_label(rubric_plan_result.get('status'))} · 변경 범위 {changed}"
+        )
     if not history:
         st.info("저장된 VOC 실행 이력이 없습니다.")
         return
@@ -6000,6 +6104,12 @@ def render_voc_history():
         table_payloads = []
         for item in filtered:
             next_action = item.get("next_action") or voc_run_next_action(item)
+            rubric_plan_status = item.get("rubric_reevaluation_plan_status")
+            rubric_plan_label = (
+                _history_rubric_plan_label(rubric_plan_status)
+                if item.get("reevaluation_required") or rubric_plan_status
+                else "-"
+            )
             table_payloads.append(
                 {
                     "Run ID": item.get("run_id"),
@@ -6013,6 +6123,7 @@ def render_voc_history():
                     "계보 기준": item.get("lineage_label") or _voc_status_label(item.get("run_type")),
                     "Rubric 기준": item.get("rubric_status") or "기준 확인",
                     "변경 범위": item.get("rubric_changed_labels") or "-",
+                    "재평가 계획": rubric_plan_label,
                     "완료": item.get("completed_count", 0),
                     "진행률": item.get("completion_rate", 0.0),
                     "통과": item.get("counts", {}).get("PASS", 0),
@@ -6049,6 +6160,7 @@ def render_voc_history():
                 "계보 기준",
                 "Rubric 기준",
                 "변경 범위",
+                "재평가 계획",
                 "완료",
                 "진행률",
                 "통과",
@@ -6074,6 +6186,7 @@ def render_voc_history():
                 "계보 기준": st.column_config.TextColumn("계보 기준", width=108),
                 "Rubric 기준": st.column_config.TextColumn("Rubric 기준", width=104),
                 "변경 범위": st.column_config.TextColumn("변경 범위", width=132),
+                "재평가 계획": st.column_config.TextColumn("재평가 계획", width=104),
                 "완료": st.column_config.NumberColumn("완료", width=58),
                 "진행률": st.column_config.ProgressColumn("진행률", min_value=0, max_value=100, format="%.0f%%", width=92),
                 "통과": st.column_config.NumberColumn("통과", width=58),

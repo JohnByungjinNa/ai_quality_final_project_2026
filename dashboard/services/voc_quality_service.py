@@ -1877,6 +1877,134 @@ def _current_voc_rubric_versions() -> dict:
     return versions
 
 
+def _successful_voc_case_ids(run_id: str, case_results: list[dict]) -> tuple[list[str], list[dict]]:
+    eligible = []
+    skipped = []
+    for item in case_results:
+        case_id = str(item.get("case_id") or "")
+        if not case_id:
+            continue
+        try:
+            artifacts = voc_run_store.load_case_artifacts(run_id, case_id)
+        except Exception as exc:
+            skipped.append(
+                {
+                    "case_id": case_id,
+                    "reason": f"증적 확인 실패: {type(exc).__name__}",
+                }
+            )
+            continue
+        pipeline = artifacts.get("pipeline_result", {})
+        execution = pipeline.get("execution", {}) if isinstance(pipeline, dict) else {}
+        result = execution.get("result", {}) if isinstance(execution, dict) else {}
+        if pipeline.get("mode") == "voc" and execution.get("ok") and result.get("ok"):
+            eligible.append(case_id)
+        else:
+            skipped.append(
+                {
+                    "case_id": case_id,
+                    "reason": "성공한 VOC Pipeline 결과가 없어 평가 재사용 대상이 아닙니다.",
+                }
+            )
+    return eligible, skipped
+
+
+def build_voc_rubric_reevaluation_plan(run_id: str) -> dict:
+    stored = voc_run_store.load_voc_run(run_id)
+    manifest = stored.get("manifest", {})
+    summary = stored.get("summary", {})
+    if manifest.get("status") == "RUNNING":
+        raise ValueError("실행 중인 Run은 Rubric 재평가 계획을 만들 수 없습니다.")
+
+    current_versions = _current_voc_rubric_versions()
+    drift = rubric_version_drift(manifest.get("rubric_versions", {}), current_versions)
+    case_results = summary.get("case_results", [])
+    selected_case_ids = [str(case_id) for case_id in manifest.get("selected_case_ids", [])]
+    eligible_case_ids, skipped_cases = _successful_voc_case_ids(run_id, case_results)
+    changed_scopes = set(drift.get("changed_scopes", []))
+    actions = []
+    if "internal_pipeline" in changed_scopes:
+        actions.append(
+            {
+                "scope": "internal_pipeline",
+                "label": "내부 Pipeline",
+                "method": "RETEST_REQUIRED",
+                "method_label": "RETEST 권장",
+                "target_count": len(selected_case_ids),
+                "target_case_ids": selected_case_ids,
+                "menu": "일괄 TC 수행 또는 수동 TC 수행",
+                "description": "Agent Pipeline 기준이 바뀐 경우 기존 답변을 재점수화하기보다 부모 Run을 둔 RETEST로 다시 실행하는 것이 안전합니다.",
+            }
+        )
+    if "independent_judge" in changed_scopes:
+        actions.append(
+            {
+                "scope": "independent_judge",
+                "label": "독립 Judge",
+                "method": "JUDGE_REEVALUATION",
+                "method_label": "Judge 재평가",
+                "target_count": len(eligible_case_ids),
+                "target_case_ids": eligible_case_ids,
+                "menu": "수행 이력 상세",
+                "description": "저장된 A2A Pipeline 결과는 유지하고 현재 독립 Judge Rubric으로 다시 평가합니다.",
+            }
+        )
+    if "improvement_validity" in changed_scopes:
+        actions.append(
+            {
+                "scope": "improvement_validity",
+                "label": "개선안 타당성",
+                "method": "VALIDITY_REEVALUATION",
+                "method_label": "타당성 재평가",
+                "target_count": len(eligible_case_ids),
+                "target_case_ids": eligible_case_ids,
+                "menu": "개선안 타당성 검증",
+                "description": "저장된 A2A 개선안과 Judge 증적을 유지하고 현재 타당성 Rubric으로 다시 평가합니다.",
+            }
+        )
+
+    if not drift.get("requires_reevaluation"):
+        status = "NOT_REQUIRED"
+        recommendation = "현재 Rubric 기준과 Run 저장 당시 기준이 같아 재평가가 필요하지 않습니다."
+    elif "internal_pipeline" in changed_scopes:
+        status = "RETEST_RECOMMENDED"
+        recommendation = "내부 Pipeline 기준 변경이 포함되어 RETEST를 우선 권장합니다. Judge/타당성 기준 변경은 RETEST 결과 기준으로 다시 평가하는 편이 가장 안전합니다."
+    elif {"independent_judge", "improvement_validity"}.issubset(changed_scopes):
+        status = "REEVALUATION_READY"
+        recommendation = "Judge 재평가 후 타당성 재평가 순서로 진행하세요. 타당성 평가는 Judge 증적을 함께 참고합니다."
+    elif "independent_judge" in changed_scopes:
+        status = "REEVALUATION_READY"
+        recommendation = "저장된 A2A 결과를 기준으로 독립 Judge 재평가를 진행하세요."
+    else:
+        status = "REEVALUATION_READY"
+        recommendation = "저장된 A2A 개선안과 현재 Judge 증적을 기준으로 타당성 재평가를 진행하세요."
+
+    return {
+        "run_id": run_id,
+        "created_at": datetime.now().astimezone().isoformat(),
+        "status": status,
+        "recommendation": recommendation,
+        "result_policy": "원본 A2A Pipeline 결과는 덮어쓰지 않고, 재평가 결과는 기존 평가 이력에 누적합니다.",
+        "run_type": manifest.get("run_type", ""),
+        "parent_run_id": manifest.get("run_metadata", {}).get("parent_run_id", ""),
+        "selected_count": len(selected_case_ids),
+        "eligible_reuse_count": len(eligible_case_ids),
+        "eligible_case_ids": eligible_case_ids,
+        "skipped_cases": skipped_cases,
+        "changed_scopes": drift.get("changed_scopes", []),
+        "changed_labels": drift.get("changed_labels", []),
+        "rubric_drift": drift,
+        "actions": actions,
+        "stored_rubric_versions": manifest.get("rubric_versions", {}),
+        "current_rubric_versions": current_versions,
+    }
+
+
+def save_voc_rubric_reevaluation_plan(run_id: str) -> dict:
+    plan = build_voc_rubric_reevaluation_plan(run_id)
+    return voc_run_store.save_rubric_reevaluation_plan(run_id, plan)
+
+
 def list_voc_run_history() -> list[dict]:
     """실행 중 Run을 변경하지 않고 이력 화면용 요약을 반환합니다."""
     rows = []
@@ -1912,6 +2040,13 @@ def list_voc_run_history() -> list[dict]:
         row["rubric_changed_count"] = row["rubric_drift"]["changed_count"]
         row["rubric_changed_labels"] = ", ".join(row["rubric_drift"]["changed_labels"]) or "-"
         row["reevaluation_required"] = bool(row["rubric_drift"]["requires_reevaluation"])
+        plan = {}
+        try:
+            plan = voc_run_store.load_rubric_reevaluation_plan(item.get("run_id", ""))
+        except Exception:
+            plan = {}
+        row["rubric_reevaluation_plan_status"] = plan.get("status", "")
+        row["rubric_reevaluation_plan_saved_at"] = plan.get("saved_at", "")
         row["next_action"] = voc_run_next_action(row)
         rows.append(row)
     return rows

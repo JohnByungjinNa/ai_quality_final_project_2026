@@ -3530,6 +3530,70 @@ def test_history_rows_surface_scope_counts_and_retest_parent(monkeypatch, tmp_pa
     assert row["pending_count"] == 0
 
 
+def test_rubric_reevaluation_plan_is_saved_without_mutating_run_results(monkeypatch, tmp_path):
+    store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
+    old_versions = {
+        "internal_pipeline": {"version": "A2A1.5", "sha256": "same-internal"},
+        "independent_judge": {"version": "J1.0", "sha256": "same-judge"},
+        "improvement_validity": {"version": "V1.0", "sha256": "old-validity"},
+    }
+    current_versions = {
+        "internal_pipeline": {"version": "A2A1.5", "sha256": "same-internal"},
+        "independent_judge": {"version": "J1.0", "sha256": "same-judge"},
+        "improvement_validity": {"version": "V1.0", "sha256": "new-validity"},
+    }
+    monkeypatch.setattr(
+        voc_quality_service,
+        "_current_voc_rubric_versions",
+        lambda: deepcopy(current_versions),
+    )
+    run = store.start_voc_run(
+        run_type="MANUAL",
+        selected_case_ids=["TC-01"],
+        suite_id="VOC-QA-35",
+        catalog_version="2.0",
+        test_case_hash="abc123",
+        rubric_versions=deepcopy(old_versions),
+        model_snapshot={"summary": {"provider": "openai", "model": "test"}},
+        judge_enabled=True,
+        environment_fingerprint={"fingerprint_sha256": "env"},
+        snapshots={"selected_test_cases.json": {"cases": [{"case_id": "TC-01"}]}},
+    )
+    store.save_case_artifacts(
+        run["run_id"],
+        "TC-01",
+        pipeline_result={
+            "mode": "voc",
+            "execution": {
+                "ok": True,
+                "question": "VOC 질문",
+                "result": {"ok": True, "summary": "요약", "policy": "개선안"},
+            },
+        },
+        trace={"trace_id": "trace-1", "events": []},
+        rule_result={"status": "PASS"},
+        judge_result={"decision": "PASS", "total_score": 88},
+    )
+    store.complete_voc_run(
+        run["run_id"],
+        [{"case_id": "TC-01", "status": "PASS", "judge_status": "PASS", "attempt_count": 1}],
+        lifecycle_status="COMPLETED",
+    )
+
+    saved = voc_quality_service.save_voc_rubric_reevaluation_plan(run["run_id"])
+    plan = saved["plan"]
+    loaded = store.load_voc_run(run["run_id"])
+    row = voc_quality_service.list_voc_run_history()[0]
+
+    assert plan["status"] == "REEVALUATION_READY"
+    assert plan["changed_scopes"] == ["improvement_validity"]
+    assert plan["eligible_case_ids"] == ["TC-01"]
+    assert plan["actions"][0]["method"] == "VALIDITY_REEVALUATION"
+    assert loaded["rubric_reevaluation_plan"]["status"] == "REEVALUATION_READY"
+    assert loaded["summary"]["case_results"][0]["status"] == "PASS"
+    assert row["rubric_reevaluation_plan_status"] == "REEVALUATION_READY"
+
+
 def test_history_listing_does_not_interrupt_run_owned_by_another_process(monkeypatch, tmp_path):
     store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
     run = _start_minimal_voc_run(store)
