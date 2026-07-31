@@ -1767,8 +1767,14 @@ def _live_testcase_pipeline():
             "mode": "voc",
             "execution": {"result": {"ok": False, "error": "백그라운드 작업 상태를 찾을 수 없습니다."}},
         }
-        st.rerun()
-    preparation = job.get("progress", {}).get("preparation")
+        st.rerun(scope="app")
+        return
+    preparation = (
+        job.get("progress", {}).get("preparation")
+        or st.session_state.get("goal_testcase_preparation")
+        or _new_manual_preparation_progress()
+    )
+    st.session_state.goal_testcase_preparation = preparation
     if job.get("done"):
         if job.get("status") == "COMPLETED":
             completed = job.get("result") or {}
@@ -1786,7 +1792,8 @@ def _live_testcase_pipeline():
         st.session_state.pop("goal_testcase_job_id", None)
         discard_background_job(job_id)
         _load_goal_monitor_snapshot.clear()
-        st.rerun()
+        st.rerun(scope="app")
+        return
     trace_id = st.session_state.get("goal_testcase_trace_id", "")
     trace = pipeline_trace_events(started_at, trace_id)
     if trace.get("trace_id") and not trace_id:
@@ -3946,7 +3953,7 @@ def _start_goal_testcase_pipeline(selected_case_id: str):
 
 def _start_goal_testcase_pipeline_and_rerun(selected_case_id: str):
     _start_goal_testcase_pipeline(selected_case_id)
-    st.rerun()
+    st.rerun(scope="app")
 
 
 def _start_goal_testcase_pipeline_from_callback(selected_case_id: str):

@@ -925,6 +925,27 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
     ]
 
 
+def test_goal_monitor_always_mounts_live_pipeline_fragment(monkeypatch):
+    render_order = []
+    state = {}
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(voc_quality_view, "_ensure_goal_testcase_selection", lambda: None)
+    monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
+    monkeypatch.setattr(voc_quality_view, "_selected_goal_testcase", lambda: None)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_live_testcase_pipeline",
+        lambda: render_order.append("pipeline"),
+    )
+
+    voc_quality_view.render_goal_monitor()
+
+    assert render_order == ["selector", "pipeline"]
+
+
 def test_goal_testcase_selector_uses_user_facing_title():
     import inspect
 
@@ -1828,6 +1849,102 @@ def test_live_testcase_pipeline_renders_recent_snapshot_without_active_job(monke
         ("sync", "TC-01"),
         ("render", "trace-recent", False, {"status": "COMPLETED"}),
     ]
+
+
+def test_live_testcase_pipeline_renders_running_preparation_immediately(monkeypatch):
+    class State(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    preparation = voc_quality_view._new_manual_preparation_progress()
+    state = State(
+        goal_testcase_job_id="manual-job-1",
+        goal_testcase_started_at="2026-07-31T13:00:00+09:00",
+        goal_testcase_running_case_id="TC-01",
+        goal_testcase_preparation=preparation,
+    )
+    calls = []
+    running_job = {
+        "job_id": "manual-job-1",
+        "target_id": "TC-01",
+        "status": "RUNNING",
+        "done": False,
+        "progress": {"preparation": preparation},
+    }
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view, "background_job_snapshot", lambda job_id: running_job)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "pipeline_trace_events",
+        lambda started_at, trace_id: {
+            "trace_id": "",
+            "events": [],
+            "started_at": started_at,
+        },
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_pipeline_comparison",
+        lambda snapshot, running, preparation=None: calls.append(
+            (snapshot["started_at"], running, preparation)
+        ),
+    )
+
+    getattr(voc_quality_view._live_testcase_pipeline, "__wrapped__", voc_quality_view._live_testcase_pipeline)()
+
+    assert calls == [("2026-07-31T13:00:00+09:00", True, preparation)]
+    assert state["goal_testcase_preparation"] == preparation
+
+
+def test_live_testcase_pipeline_completion_focuses_result_with_app_rerun(monkeypatch):
+    class State(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    preparation = voc_quality_view._new_manual_preparation_progress()
+    completed_result = {
+        "case": {"case_id": "TC-01"},
+        "mode": "voc",
+        "execution": {"ok": True, "result": {"ok": True}},
+    }
+    agent_snapshot = {"agents": []}
+    state = State(
+        goal_testcase_job_id="manual-job-1",
+        goal_testcase_started_at="2026-07-31T13:00:00+09:00",
+        goal_testcase_running_case_id="TC-01",
+    )
+    completed_job = {
+        "job_id": "manual-job-1",
+        "target_id": "TC-01",
+        "status": "COMPLETED",
+        "done": True,
+        "progress": {"preparation": preparation},
+        "result": {
+            "testcase_result": completed_result,
+            "agent_snapshot": agent_snapshot,
+        },
+    }
+    discarded = []
+    clear_calls = []
+    reruns = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view, "background_job_snapshot", lambda job_id: completed_job)
+    monkeypatch.setattr(voc_quality_view, "discard_background_job", lambda job_id: discarded.append(job_id))
+    monkeypatch.setattr(voc_quality_view._load_goal_monitor_snapshot, "clear", lambda: clear_calls.append(True))
+    monkeypatch.setattr(voc_quality_view.st, "rerun", lambda **kwargs: reruns.append(kwargs))
+
+    getattr(voc_quality_view._live_testcase_pipeline, "__wrapped__", voc_quality_view._live_testcase_pipeline)()
+
+    assert state["goal_testcase_result"] == completed_result
+    assert state["goal_testcase_agent_snapshot"] == agent_snapshot
+    assert state["goal_testcase_preparation"] == preparation
+    assert state["goal_testcase_focus_result"] is True
+    assert "goal_testcase_job_id" not in state
+    assert discarded == ["manual-job-1"]
+    assert clear_calls == [True]
+    assert reruns == [{"scope": "app"}]
 
 
 def test_embedded_voc_runtime_is_complete():
