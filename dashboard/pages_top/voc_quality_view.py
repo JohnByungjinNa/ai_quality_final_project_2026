@@ -5601,6 +5601,13 @@ def _history_rubric_plan_label(status: str) -> str:
     return labels.get(str(status or ""), "계획 없음")
 
 
+def _save_history_rubric_reevaluation_plan(run_id: str) -> None:
+    with st.spinner("Rubric 재평가 계획을 저장하고 있습니다..."):
+        saved = save_voc_rubric_reevaluation_plan(run_id)
+    st.session_state.voc_rubric_reevaluation_plan_result = saved.get("plan", {})
+    _load_voc_history_rows.clear()
+
+
 def _render_history_rubric_reevaluation_plan(
     run_id: str,
     detail: dict,
@@ -5637,10 +5644,7 @@ def _render_history_rubric_reevaluation_plan(
                 width="stretch",
                 key=f"voc_history_save_rubric_plan_{run_id}",
             ):
-                with st.spinner("Rubric 재평가 계획을 저장하고 있습니다..."):
-                    saved = save_voc_rubric_reevaluation_plan(run_id)
-                st.session_state.voc_rubric_reevaluation_plan_result = saved.get("plan", {})
-                _load_voc_history_rows.clear()
+                _save_history_rubric_reevaluation_plan(run_id)
                 st.rerun()
 
         if plan:
@@ -5789,14 +5793,15 @@ def _history_next_action_target(
             "detail": "승인 완료 Run을 품질 보고서 생성 대상으로 선택합니다.",
         }
     if str(run_action.get("code")) == "RUBRIC_REEVALUATE" or action_code == "RUBRIC_REEVALUATE":
+        plan_status = str(run_item.get("rubric_reevaluation_plan_status") or "")
         return {
             "enabled": True,
-            "page": "history_detail",
+            "page": "rubric_reevaluation_plan",
             "run_id": run_id,
             "case_id": "",
             "action_code": "RUBRIC_REEVALUATE",
-            "button_label": "Rubric 기준 확인",
-            "detail": "수행 이력 상세에서 저장 당시 Rubric과 현재 Rubric의 차이를 확인합니다.",
+            "button_label": "재평가 계획 갱신" if plan_status else "재평가 계획 저장",
+            "detail": "일반 수행 이력 상세가 아니라 선택 Run 카드의 Rubric 재평가 계획을 저장·갱신합니다.",
         }
     if action_code in {"CHECK_PIPELINE_ERROR", "REVIEW_PIPELINE_RESULT", "RUN_JUDGE"}:
         return {
@@ -5819,6 +5824,9 @@ def _apply_history_next_action_target(target: dict) -> None:
     page = target.get("page")
     run_id = str(target.get("run_id") or "")
     case_id = str(target.get("case_id") or "")
+    if page == "rubric_reevaluation_plan":
+        _save_history_rubric_reevaluation_plan(run_id)
+        return
     if page == "history_detail":
         _open_history_detail_dialog(run_id)
         return
