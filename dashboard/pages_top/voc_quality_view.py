@@ -165,6 +165,7 @@ AGENT_PIPELINE = (
     ("Critic", "요약·정책 검토", "6105"),
     ("Improver", "개선안 생성", "6106"),
 )
+AGENT_DISPLAY_NAMES_BY_KEY = {name.lower(): name for name, _role, _port in AGENT_PIPELINE}
 
 VOC_RUN_STATUS_COLORS = {
     "PASS": "#155A96",
@@ -1942,6 +1943,12 @@ def _agent_control_target_label(agent_name: str | None, display_name: str | None
     return "전체 Agent"
 
 
+def _agent_control_display_name(agent_key: str | None) -> str | None:
+    if not agent_key:
+        return None
+    return AGENT_DISPLAY_NAMES_BY_KEY.get(str(agent_key).lower())
+
+
 def _agent_management_all_running(snapshot: dict) -> bool:
     agents = snapshot.get("agents", [])
     total = int(snapshot.get("total") or len(agents) or 0)
@@ -2023,6 +2030,90 @@ def _agent_control_reached_desired_state(
     if action == "stop":
         return total > 0 and running == 0
     return total > 0 and running == total
+
+
+def _parse_agent_control_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _agent_control_job_context(job: dict) -> tuple[str, str | None, str | None]:
+    progress = job.get("progress") or {}
+    target_id = str(job.get("target_id") or "")
+    action = str(progress.get("action") or "").strip()
+    agent_key: str | None = None
+    if ":" in target_id:
+        target_action, target_agent = target_id.split(":", 1)
+        action = action or target_action
+        if target_agent and target_agent != "all":
+            agent_key = target_agent
+    action = action or "start"
+    return action, agent_key, _agent_control_display_name(agent_key)
+
+
+def _agent_control_restart_started_after_job(
+    snapshot: dict,
+    job_started_at: object,
+    agent_key: str | None = None,
+) -> bool:
+    job_started = _parse_agent_control_datetime(job_started_at)
+    if not job_started:
+        return False
+    job_started = job_started.astimezone()
+    agents = snapshot.get("agents", [])
+    if agent_key:
+        agents = [agent for agent in agents if agent.get("key") == agent_key]
+    if not agents:
+        return False
+    for agent in agents:
+        started_at = _parse_agent_control_datetime(agent.get("started_at"))
+        if not started_at or started_at.astimezone() < job_started:
+            return False
+    return True
+
+
+def _agent_control_running_job_reached_desired_state(job: dict, snapshot: dict) -> bool:
+    action, agent_key, _display_name = _agent_control_job_context(job)
+    if not _agent_control_reached_desired_state(action, snapshot, agent_key):
+        return False
+    if action == "restart":
+        return _agent_control_restart_started_after_job(snapshot, job.get("started_at"), agent_key)
+    return True
+
+
+def _agent_control_elapsed_seconds(job: dict) -> float | str:
+    started = _parse_agent_control_datetime(job.get("started_at"))
+    if not started:
+        return "-"
+    return round((datetime.now().astimezone() - started.astimezone()).total_seconds(), 2)
+
+
+def _complete_agent_control_running_job_from_snapshot(job_id: str, job: dict, snapshot: dict) -> None:
+    action, agent_name, display_name = _agent_control_job_context(job)
+    result = {
+        "ok": True,
+        "return_code": 0,
+        "output": "Agent 상태가 목표 상태에 도달했습니다. 화면 상태를 자동으로 갱신합니다.",
+        "duration_seconds": _agent_control_elapsed_seconds(job),
+    }
+    st.session_state["voc_command_result"] = result
+    _load_agent_management_snapshot.clear()
+    _load_goal_monitor_snapshot.clear()
+    _store_agent_control_feedback(
+        action=action,
+        agent_name=agent_name,
+        display_name=display_name,
+        result=result,
+        snapshot=snapshot,
+    )
+    st.session_state.pop(AGENT_CONTROL_JOB_KEY, None)
+    discard_background_job(job_id)
+    st.rerun(scope="app")
 
 
 def _run_agent_control_command(action: str, agent_name: str | None = None) -> dict:
@@ -2376,6 +2467,10 @@ def _render_agent_control_job_monitor() -> None:
         st.session_state.pop(AGENT_CONTROL_JOB_KEY, None)
         return
     if job.get("status") == "RUNNING":
+        snapshot = agent_status_snapshot()
+        if _agent_control_running_job_reached_desired_state(job, snapshot):
+            _complete_agent_control_running_job_from_snapshot(job_id, job, snapshot)
+            return
         _render_agent_control_running_panel(job)
         return
 

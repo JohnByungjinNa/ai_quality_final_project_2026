@@ -612,6 +612,109 @@ def test_start_agent_control_background_creates_job_and_resets_transient_state(m
     assert "요청 접수" in calls[0]["progress"]["lines"][0]
 
 
+def test_agent_control_monitor_completes_running_start_when_target_state_is_reached(monkeypatch):
+    class Clearable:
+        def __init__(self):
+            self.clear_count = 0
+
+        def clear(self):
+            self.clear_count += 1
+
+    state = {voc_quality_view.AGENT_CONTROL_JOB_KEY: "agent-job-1"}
+    running_snapshot = {
+        "checked_at": "2026-07-31T09:10:05+09:00",
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {"key": key, "status": "RUNNING", "healthy": True}
+            for key in ("interpreter", "retriever", "summarizer", "evaluator", "critic", "improver")
+        ],
+    }
+    running_job = {
+        "job_id": "agent-job-1",
+        "target_id": "start:all",
+        "status": "RUNNING",
+        "started_at": "2026-07-31T09:10:00+09:00",
+        "progress": {"action": "start", "target": "전체 Agent"},
+    }
+    reruns = []
+    discarded = []
+    management_snapshot = Clearable()
+    monitor_snapshot = Clearable()
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view, "background_job_snapshot", lambda job_id: running_job)
+    monkeypatch.setattr(voc_quality_view, "agent_status_snapshot", lambda: running_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_load_agent_management_snapshot", management_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_load_goal_monitor_snapshot", monitor_snapshot)
+    monkeypatch.setattr(voc_quality_view, "discard_background_job", lambda job_id: discarded.append(job_id))
+    monkeypatch.setattr(voc_quality_view.st, "rerun", lambda **kwargs: reruns.append(kwargs))
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_control_running_panel",
+        lambda _job: pytest.fail("목표 상태에 도달한 작업은 진행 중 패널을 계속 표시하지 않아야 합니다."),
+    )
+
+    getattr(
+        voc_quality_view._render_agent_control_job_monitor,
+        "__wrapped__",
+        voc_quality_view._render_agent_control_job_monitor,
+    )()
+
+    assert voc_quality_view.AGENT_CONTROL_JOB_KEY not in state
+    assert state["agent_control_feedback"]["title"] == "전체 Agent 시작 완료"
+    assert state["agent_control_latest_snapshot"] == running_snapshot
+    assert state["voc_command_result"]["ok"] is True
+    assert management_snapshot.clear_count == 1
+    assert monitor_snapshot.clear_count == 1
+    assert discarded == ["agent-job-1"]
+    assert reruns == [{"scope": "app"}]
+
+
+def test_agent_control_monitor_does_not_complete_restart_from_old_running_state(monkeypatch):
+    state = {voc_quality_view.AGENT_CONTROL_JOB_KEY: "agent-job-1"}
+    old_running_snapshot = {
+        "checked_at": "2026-07-31T09:10:05+09:00",
+        "total": 6,
+        "running": 6,
+        "agents": [
+            {
+                "key": key,
+                "status": "RUNNING",
+                "healthy": True,
+                "started_at": "2026-07-31T09:00:00+09:00",
+            }
+            for key in ("interpreter", "retriever", "summarizer", "evaluator", "critic", "improver")
+        ],
+    }
+    running_job = {
+        "job_id": "agent-job-1",
+        "target_id": "restart:all",
+        "status": "RUNNING",
+        "started_at": "2026-07-31T09:10:00+09:00",
+        "progress": {"action": "restart", "target": "전체 Agent"},
+    }
+    rendered = []
+    reruns = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(voc_quality_view, "background_job_snapshot", lambda job_id: running_job)
+    monkeypatch.setattr(voc_quality_view, "agent_status_snapshot", lambda: old_running_snapshot)
+    monkeypatch.setattr(voc_quality_view, "_render_agent_control_running_panel", lambda job: rendered.append(job))
+    monkeypatch.setattr(voc_quality_view.st, "rerun", lambda **kwargs: reruns.append(kwargs))
+
+    getattr(
+        voc_quality_view._render_agent_control_job_monitor,
+        "__wrapped__",
+        voc_quality_view._render_agent_control_job_monitor,
+    )()
+
+    assert rendered == [running_job]
+    assert state[voc_quality_view.AGENT_CONTROL_JOB_KEY] == "agent-job-1"
+    assert "agent_control_feedback" not in state
+    assert reruns == []
+
+
 def test_agent_quick_test_uses_fragment_to_avoid_full_card_rerender():
     fragment_source = inspect.getsource(voc_quality_view._render_agent_quick_test_fragment)
     render_source = inspect.getsource(voc_quality_view.render_agents)
