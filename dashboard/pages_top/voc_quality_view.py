@@ -6400,6 +6400,204 @@ def _validity_supplement_fields(supplement: dict | None) -> list[dict]:
     return rows
 
 
+def _validity_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _validity_supplement_applied_to_result(artifacts: dict, result: dict | None) -> bool:
+    result = result or {}
+    supplement = artifacts.get("validity_supplement", {})
+    if not isinstance(supplement, dict) or supplement.get("is_empty", True):
+        return True
+    if not result or not result.get("supplemental_evidence_applied"):
+        return False
+    applied = result.get("supplemental_evidence", {})
+    if not isinstance(applied, dict):
+        return False
+    for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS:
+        if str(supplement.get(field) or "").strip() != str(applied.get(field) or "").strip():
+            return False
+    supplement_time = _validity_iso_datetime(supplement.get("updated_at"))
+    evaluated_time = _validity_iso_datetime(result.get("evaluated_at"))
+    if supplement_time and evaluated_time and supplement_time > evaluated_time:
+        return False
+    return True
+
+
+def _validity_score_gap_text(result: dict | None, rubric: dict) -> str:
+    result = result or {}
+    rule = _validity_ai_pass_rule(rubric)
+    threshold = float(rule.get("min_score", 80) or 80)
+    score = _validity_score_value(result.get("total_score"))
+    if score is None:
+        return f"AI_PASS 기준 {threshold:g}점"
+    gap = round(max(threshold - score, 0), 2)
+    if gap <= 0:
+        return "점수 기준 충족"
+    return f"AI_PASS까지 {gap:g}점 부족"
+
+
+def _validity_workflow_status_model(
+    candidate: dict,
+    artifacts: dict,
+    result: dict | None,
+    rubric: dict,
+) -> dict:
+    result = result or {}
+    supplement_rows = _validity_supplement_fields(artifacts.get("validity_supplement", {}))
+    supplement_applied = _validity_supplement_applied_to_result(artifacts, result)
+    reeval_needed = bool(supplement_rows) and bool(result) and not supplement_applied
+    gate = _validity_qa_gate_model(candidate, result)
+    readiness = validity_human_review_readiness(
+        validity_status=result.get("decision", candidate.get("validity_status", "NOT_RUN")),
+        workflow_state=result.get("workflow_state", candidate.get("workflow_state", "DRAFT")),
+        immediate_hold_count=len(_validity_immediate_holds(result)),
+        formal_approval=bool(result.get("formal_approval") or candidate.get("formal_approval")),
+    )
+    action = readiness["action"]
+    if not result:
+        current = "타당성 평가 전"
+        tone = "gray"
+        next_title = "자동 타당성 평가 실행"
+        next_detail = "아래 자동 평가 설정에서 Provider를 확인한 뒤 `선택 대상 자동 타당성 평가 실행`을 누르세요."
+        active_step = "evaluate"
+    elif reeval_needed:
+        current = "재평가 필요"
+        tone = "orange"
+        next_title = "보완 반영 재평가"
+        next_detail = "보완 입력이 저장됐지만 현재 평가 결과에는 아직 반영되지 않았습니다. 아래 자동 평가 버튼으로 재평가하세요."
+        active_step = "evaluate"
+    elif action == "REWORK_REQUIRED":
+        current = "보완 필요"
+        tone = "red"
+        next_title = "보완 입력 후 재평가"
+        next_detail = "부족 항목을 보완 입력에 작성하고 저장한 다음 자동 타당성 평가를 다시 실행하세요."
+        active_step = "supplement"
+    elif action == "QA_REVIEW":
+        current = "QA 검토 가능"
+        tone = "green"
+        next_title = "QA 검토 저장"
+        next_detail = "아래 QA 검토 영역에서 승인, 보완 요청, 반려 중 하나를 선택해 검토 결과를 저장하세요."
+        active_step = "qa"
+    elif action == "BUSINESS_APPROVAL":
+        current = "업무 승인 가능"
+        tone = "green"
+        next_title = "업무 승인 저장"
+        next_detail = "QA 검토가 완료된 건입니다. 아래 업무 승인 영역에서 최종 승인 여부를 저장하세요."
+        active_step = "business"
+    elif action == "FORMAL_APPROVED":
+        current = "정식 승인 완료"
+        tone = "green"
+        next_title = "보고서/최종 시연 연결"
+        next_detail = "품질 보고서와 최종 인수·시연 화면에서 승인 증적을 확인할 수 있습니다."
+        active_step = "approved"
+    else:
+        current = readiness["action_label"]
+        tone = "gray"
+        next_title = readiness["action_label"]
+        next_detail = "현재 선택 대상의 평가 결과와 승인 상태를 확인하세요."
+        active_step = "evaluate"
+
+    stage_specs = [
+        ("supplement", "1. 보완 입력", "부족 근거·담당·일정·KPI를 입력"),
+        ("evaluate", "2. 재평가", "보완 내용을 반영해 타당성 자동 평가"),
+        ("qa", "3. QA 검토", "AI_PASS 및 보류 0건이면 QA 검토"),
+        ("business", "4. 업무 승인", "QA 승인 후 최종 업무 승인"),
+    ]
+    completed = {
+        "supplement": bool(supplement_rows),
+        "evaluate": bool(result) and not reeval_needed,
+        "qa": readiness["workflow_state"] in {"QA_REVIEWED", "BUSINESS_APPROVED"} or readiness["formal_approval"],
+        "business": readiness["workflow_state"] == "BUSINESS_APPROVED" or readiness["formal_approval"],
+    }
+    stages = []
+    for key, label, detail in stage_specs:
+        if completed[key]:
+            status = "완료"
+            stage_tone = "green"
+            icon = "check_circle"
+        elif key == active_step:
+            status = "현재 단계"
+            stage_tone = "blue" if tone == "green" else tone
+            icon = "play_circle"
+        else:
+            status = "대기"
+            stage_tone = "gray"
+            icon = "pending"
+        stages.append(
+            {
+                "key": key,
+                "label": label,
+                "detail": detail,
+                "status": status,
+                "tone": stage_tone,
+                "icon": icon,
+            }
+        )
+    return {
+        "current": current,
+        "tone": tone,
+        "next_title": next_title,
+        "next_detail": next_detail,
+        "stages": stages,
+        "score_text": _validity_score_gap_text(result, rubric),
+        "gate_summary": gate["summary"],
+        "supplement_count": len(supplement_rows),
+        "reeval_needed": reeval_needed,
+    }
+
+
+def _render_validity_workflow_status(
+    candidate: dict,
+    artifacts: dict,
+    result: dict | None,
+    rubric: dict,
+) -> None:
+    model = _validity_workflow_status_model(candidate, artifacts, result, rubric)
+    badge_color = {
+        "green": "green",
+        "blue": "blue",
+        "orange": "orange",
+        "red": "red",
+        "gray": "gray",
+    }.get(model["tone"], "gray")
+    with st.container(border=True):
+        heading, state = st.columns([2.6, 1], vertical_alignment="center")
+        with heading:
+            st.markdown("#### 보완 → 재평가 → QA 검토 흐름")
+            st.caption("선택한 Run·Case가 지금 어느 단계인지와 다음에 눌러야 할 버튼을 고정해서 보여줍니다.")
+        with state:
+            st.markdown(f":{badge_color}-badge[{model['current']}]", text_alignment="right")
+
+        columns = st.columns(4, gap="small")
+        for column, stage in zip(columns, model["stages"], strict=False):
+            stage_color = {
+                "green": "green",
+                "blue": "blue",
+                "orange": "orange",
+                "red": "red",
+                "gray": "gray",
+            }.get(stage["tone"], "gray")
+            with column.container(border=True, height="stretch"):
+                st.markdown(f":material/{stage['icon']}: **{stage['label']}**")
+                st.markdown(f":{stage_color}-badge[{stage['status']}]")
+                st.caption(stage["detail"])
+
+        next_col, score_col, gate_col = st.columns([2.5, 0.9, 0.9], gap="small", vertical_alignment="center")
+        with next_col:
+            st.markdown(f"**다음 액션 · {model['next_title']}**")
+            st.caption(model["next_detail"])
+        with score_col:
+            st.metric("점수 기준", model["score_text"], border=True)
+        with gate_col:
+            st.metric("QA Gate", model["gate_summary"], border=True)
+
+
 def _render_validity_supplement_editor(
     candidate: dict,
     artifacts: dict,
@@ -6470,6 +6668,9 @@ def _render_validity_supplement_editor(
                     saved = save_voc_validity_supplement(run_id, case_id, payload)
                     artifacts["validity_supplement"] = saved.get("validity_supplement", {})
                     _load_validity_candidates.clear()
+                    st.session_state.voc_validity_focus_notice = (
+                        "보완 입력을 저장했습니다. 아래 자동 평가 설정에서 재평가를 실행하면 QA 검토 가능 여부가 다시 계산됩니다."
+                    )
                     st.session_state.voc_validity_notice = "타당성 평가 보완 입력을 저장했습니다. 다음 자동 평가에 반영됩니다."
                     st.rerun()
                 except Exception as exc:
@@ -7305,9 +7506,15 @@ def _render_validity_auto_evaluation_controls(
             _load_validity_candidates.clear()
             _load_voc_history_rows.clear()
             if validity.get("decision") == "ERROR":
-                st.error(validity.get("error", "자동 타당성 평가 중 오류가 발생했습니다."))
+                st.session_state.voc_validity_error_notice = (
+                    validity.get("error") or "자동 타당성 평가 중 오류가 발생했습니다."
+                )
             else:
-                st.toast("자동 타당성 평가를 저장했습니다.", icon=":material/check_circle:")
+                gate = _validity_qa_gate_model(candidate, validity)
+                st.session_state.voc_validity_notice = (
+                    f"자동 타당성 평가를 저장했습니다. 현재 상태: {gate['summary']}"
+                )
+            st.rerun()
     return validity
 
 
@@ -7460,6 +7667,7 @@ def _render_validity_candidate_dialog(candidate: dict):
 
     with tab_validity:
         st.markdown("### 타당성 평가 및 보완")
+        _render_validity_workflow_status(candidate, artifacts, validity, validity_rubric)
         artifacts = _render_validity_supplement_editor(candidate, artifacts, key_scope="dialog")
         validity = _render_validity_auto_evaluation_controls(
             candidate,
@@ -7791,6 +7999,9 @@ def render_improvement_validity():
     notice = st.session_state.pop("voc_validity_notice", None)
     if notice:
         st.success(notice)
+    error_notice = st.session_state.pop("voc_validity_error_notice", None)
+    if error_notice:
+        st.error(error_notice)
     focus_notice = st.session_state.pop("voc_validity_focus_notice", None)
     if focus_notice:
         st.info(focus_notice, icon=":material/conversion_path:")
@@ -7942,6 +8153,7 @@ def render_improvement_validity():
     validity = artifacts.get("validity_result", {})
     validity_rubric = load_improvement_validity_rubric()
     _render_validity_selection_basis(selected, artifacts)
+    _render_validity_workflow_status(selected, artifacts, validity, validity_rubric)
     artifacts = _render_validity_supplement_editor(selected, artifacts)
     if not validity:
         _render_validity_dimension_scorecard(validity_rubric, validity)
