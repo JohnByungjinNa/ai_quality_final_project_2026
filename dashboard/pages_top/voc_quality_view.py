@@ -8430,6 +8430,9 @@ def render_improvement_validity():
                 border=True,
             )
 
+    st.session_state.setdefault("voc_validity_run_type", "전체")
+    st.session_state.setdefault("voc_validity_candidate_status", "전체")
+
     with st.container(border=True):
         filter_columns = st.columns([0.75, 1.15, 1.75], gap="small", vertical_alignment="bottom")
         with filter_columns[0]:
@@ -8443,7 +8446,6 @@ def render_improvement_validity():
             run_type_filter = st.segmented_control(
                 "회차 유형",
                 VALIDITY_RUN_TYPE_FILTERS,
-                default="전체",
                 required=True,
                 key="voc_validity_run_type",
                 width="stretch",
@@ -8453,7 +8455,6 @@ def render_improvement_validity():
             status_filter = st.segmented_control(
                 "평가 상태",
                 ("전체", "평가 전", "평가 완료", "QA 검토 가능", "업무 승인 가능", "정식 승인"),
-                default="전체",
                 required=True,
                 key="voc_validity_candidate_status",
                 width="stretch",
