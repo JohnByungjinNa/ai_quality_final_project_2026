@@ -4,10 +4,52 @@ from collections import Counter
 from copy import deepcopy
 
 
-STATE_MODEL_VERSION = "2026-07-26.step3"
+STATE_MODEL_VERSION = "2026-07-31.step3"
 SUITE_ID = "VOC-QA-35"
 
 RUN_TYPES = ("MANUAL", "BATCH", "RETEST", "BASELINE")
+RUN_OPERATION_POLICIES = {
+    "MANUAL": {
+        "label": "수동 단건 수행",
+        "basis": "Case 1건을 즉시 실행해 Agent Pipeline·Judge·타당성 흐름을 확인합니다.",
+        "recommended_when": "개별 Case 디버깅, 시연 전 단건 확인, 개선안 보완 후 빠른 확인",
+        "lineage_rule": "동일 Case를 다시 실행해도 과거 Run은 유지되며 새 Run으로 기록합니다.",
+        "next_review": "결과가 안정적이면 독립 Judge와 타당성 평가로 넘깁니다.",
+    },
+    "BATCH": {
+        "label": "검증 회차",
+        "basis": "선택한 Case 묶음을 하나의 회차로 실행해 배포 후보 품질을 봅니다.",
+        "recommended_when": "35건 전체 회차, 실행 가능 Case 묶음, 릴리즈 전 회귀 검증",
+        "lineage_rule": "새 회차이므로 부모 Run 없이 독립 Run으로 기록합니다.",
+        "next_review": "회차 기준 통과율, 미실행/후속 구현, 결함, 타당성 상태를 확인합니다.",
+    },
+    "RETEST": {
+        "label": "보완 후 RETEST",
+        "basis": "기존 Run에서 발견된 실패·검토 필요 Case를 보완한 뒤 부모 Run과 비교합니다.",
+        "recommended_when": "VOC 근거 보강, 개선안 재작성, Agent/프롬프트 수정 후 확인",
+        "lineage_rule": "parent_run_id로 원본 Run과 연결되어 전후 비교 대상이 됩니다.",
+        "next_review": "부모 Run 대비 개선 여부와 잔여 보완 대상을 확인합니다.",
+    },
+    "BASELINE": {
+        "label": "기준선",
+        "basis": "향후 개선 비교를 위해 저장하는 기준 Run입니다.",
+        "recommended_when": "초기 기준 수립, Rubric/모델 변경 전 비교점 고정",
+        "lineage_rule": "비교 기준으로 사용하며 배포 승인을 직접 의미하지 않습니다.",
+        "next_review": "후속 BATCH 또는 RETEST Run과 비교합니다.",
+    },
+    "RUBRIC_REEVALUATION": {
+        "label": "Rubric 변경 재평가",
+        "basis": "Run 저장 당시 Rubric과 현재 Rubric의 버전 또는 해시가 달라졌는지 확인합니다.",
+        "recommended_when": "Rubric 기준 변경 후 과거 Run을 현재 기준으로 다시 판단해야 할 때",
+        "lineage_rule": "A2A 실행 결과는 유지하고 평가 기준만 새로 적용하는 재평가 흐름입니다.",
+        "next_review": "기준 변경 항목을 확인한 뒤 Judge/타당성 재평가 여부를 결정합니다.",
+    },
+}
+RUBRIC_VERSION_SCOPES = {
+    "internal_pipeline": "내부 Pipeline",
+    "independent_judge": "독립 Judge",
+    "improvement_validity": "개선안 타당성",
+}
 RUN_LIFECYCLE_STATUSES = ("RUNNING", "COMPLETED", "ERROR", "INTERRUPTED")
 CASE_EXECUTION_STATUSES = ("PASS", "FAIL", "ERROR", "NOT_RUN", "REVIEW_REQUIRED")
 JUDGE_STATUSES = ("PASS", "FAIL", "REVIEW_REQUIRED", "ERROR", "NOT_RUN")
@@ -180,6 +222,13 @@ VOC_NEXT_ACTIONS = {
         "detail": "일부 승인된 회차의 미승인 Case를 이어서 평가·승인합니다.",
         "tone": "orange",
         "icon": "pending_actions",
+    },
+    "RUBRIC_REEVALUATE": {
+        "label": "Rubric 재평가",
+        "menu": "수행 이력",
+        "detail": "Run 저장 당시 평가 기준과 현재 Rubric이 달라졌습니다. 기존 A2A 결과를 보존한 상태에서 평가 기준 변경 영향을 확인합니다.",
+        "tone": "orange",
+        "icon": "rule_settings",
     },
     "REPORT_READY": {
         "label": "보고서·최종 시연",
@@ -376,6 +425,12 @@ def voc_run_next_action(run: dict) -> dict:
             "CHECK_PIPELINE_ERROR",
             detail=f"Run 상태가 {voc_status_label(status)}입니다. 실패 Case와 Run 증적 ZIP을 먼저 확인합니다.",
         )
+    if bool(run.get("reevaluation_required")):
+        rubric_labels = str(run.get("rubric_changed_labels") or "").strip()
+        detail = "현재 Rubric 기준이 Run 저장 당시와 달라 재평가 영향 확인이 필요합니다."
+        if rubric_labels and rubric_labels != "-":
+            detail = f"{rubric_labels} 기준이 변경되어 현재 기준 재평가 여부를 확인합니다."
+        return _action_payload("RUBRIC_REEVALUATE", detail=detail)
 
     error_count = _as_int(counts.get("ERROR"))
     fail_count = _as_int(counts.get("FAIL"))
@@ -483,11 +538,129 @@ def build_verification_scope(cases: list[dict], selected_case_ids: list[str]) ->
     }
 
 
+def _rubric_version_value(version: dict | None, field: str) -> str:
+    if not isinstance(version, dict):
+        return ""
+    return str(version.get(field) or "")
+
+
+def rubric_version_drift(
+    stored_versions: dict | None,
+    current_versions: dict | None,
+) -> dict:
+    """Compare Run-snapshot Rubric versions with current Rubric versions."""
+    stored = stored_versions if isinstance(stored_versions, dict) else {}
+    current = current_versions if isinstance(current_versions, dict) else {}
+    items = []
+    for scope, label in RUBRIC_VERSION_SCOPES.items():
+        stored_payload = stored.get(scope) if isinstance(stored.get(scope), dict) else {}
+        current_payload = current.get(scope) if isinstance(current.get(scope), dict) else {}
+        stored_version = _rubric_version_value(stored_payload, "version")
+        current_version = _rubric_version_value(current_payload, "version")
+        stored_sha256 = _rubric_version_value(stored_payload, "sha256")
+        current_sha256 = _rubric_version_value(current_payload, "sha256")
+        stored_missing = not bool(stored_payload)
+        current_missing = not bool(current_payload)
+        changed = (
+            not stored_missing
+            and not current_missing
+            and (
+                stored_version != current_version
+                or (
+                    bool(stored_sha256)
+                    and bool(current_sha256)
+                    and stored_sha256 != current_sha256
+                )
+            )
+        )
+        requires_reevaluation = changed or (stored_missing and not current_missing)
+        needs_attention = requires_reevaluation or current_missing
+        if changed:
+            status = "변경됨"
+            reason = "저장 당시 Rubric과 현재 Rubric의 버전 또는 해시가 다릅니다."
+        elif stored_missing and not current_missing:
+            status = "Run 기준 없음"
+            reason = "이전 Run에 Rubric 스냅샷 정보가 없어 현재 기준과 동일성을 보장할 수 없습니다."
+        elif current_missing:
+            status = "현재 기준 확인 불가"
+            reason = "현재 Rubric 정보를 읽지 못해 기준 변경 여부를 확인할 수 없습니다."
+        else:
+            status = "동일"
+            reason = "저장 당시 Rubric과 현재 Rubric이 동일합니다."
+        items.append(
+            {
+                "scope": scope,
+                "label": label,
+                "stored_version": stored_version or "-",
+                "current_version": current_version or "-",
+                "stored_sha256": stored_sha256,
+                "current_sha256": current_sha256,
+                "status": status,
+                "reason": reason,
+                "changed": changed,
+                "requires_reevaluation": requires_reevaluation,
+                "needs_attention": needs_attention,
+            }
+        )
+
+    reevaluation_items = [item for item in items if item["requires_reevaluation"]]
+    attention_items = [item for item in items if item["needs_attention"]]
+    if reevaluation_items:
+        status = "재평가 필요"
+        tone = "red"
+        detail = "기준이 바뀐 평가 항목은 현재 Rubric으로 다시 판단해야 합니다."
+    elif attention_items:
+        status = "확인 필요"
+        tone = "orange"
+        detail = "현재 Rubric 정보를 확인한 뒤 재평가 여부를 결정해야 합니다."
+    else:
+        status = "기준 동일"
+        tone = "green"
+        detail = "Run 저장 당시 기준과 현재 기준이 동일합니다."
+    return {
+        "status": status,
+        "tone": tone,
+        "detail": detail,
+        "requires_reevaluation": bool(reevaluation_items),
+        "needs_attention": bool(attention_items),
+        "changed_count": len(reevaluation_items),
+        "attention_count": len(attention_items),
+        "changed_scopes": [item["scope"] for item in reevaluation_items],
+        "changed_labels": [item["label"] for item in reevaluation_items],
+        "items": items,
+        "policy": deepcopy(RUN_OPERATION_POLICIES["RUBRIC_REEVALUATION"]),
+    }
+
+
+def run_lineage_policy(run: dict | None) -> dict:
+    """Return the business policy for a Run's execution lineage."""
+    payload = run if isinstance(run, dict) else {}
+    run_type = str(payload.get("run_type") or "MANUAL")
+    if run_type not in RUN_OPERATION_POLICIES:
+        run_type = "MANUAL"
+    policy = deepcopy(RUN_OPERATION_POLICIES[run_type])
+    parent_run_id = str(payload.get("parent_run_id") or "")
+    selected_count = _as_int(payload.get("selected_count"), len(payload.get("selected_case_ids") or []))
+    policy.update(
+        {
+            "run_type": run_type,
+            "parent_run_id": parent_run_id,
+            "selected_count": selected_count,
+            "has_parent": bool(parent_run_id),
+        }
+    )
+    if run_type == "RETEST" and not parent_run_id:
+        policy["lineage_rule"] = "RETEST로 표시되었지만 parent_run_id가 없어 원본 Run 연결 확인이 필요합니다."
+    return policy
+
+
 def build_state_model_snapshot(cases: list[dict], selected_case_ids: list[str]) -> dict:
     return {
         "model_version": STATE_MODEL_VERSION,
         "suite_id": SUITE_ID,
         "run_types": list(RUN_TYPES),
+        "run_operation_policies": deepcopy(RUN_OPERATION_POLICIES),
+        "rubric_version_scopes": deepcopy(RUBRIC_VERSION_SCOPES),
         "run_lifecycle_statuses": list(RUN_LIFECYCLE_STATUSES),
         "case_execution_statuses": list(CASE_EXECUTION_STATUSES),
         "judge_statuses": list(JUDGE_STATUSES),

@@ -1,4 +1,5 @@
 from dashboard.services.voc_quality_state_model import (
+    rubric_version_drift,
     voc_case_next_action,
     voc_run_next_action,
     voc_status_label,
@@ -59,6 +60,44 @@ def test_run_next_action_moves_from_ai_reviewed_to_qa_review():
 
     assert action["code"] == "QA_REVIEW"
     assert action["label"] == "QA 검토 저장"
+
+
+def test_rubric_drift_marks_changed_hash_for_reevaluation():
+    drift = rubric_version_drift(
+        {
+            "internal_pipeline": {"version": "A2A1.5", "sha256": "old"},
+            "independent_judge": {"version": "J1.0", "sha256": "same"},
+            "improvement_validity": {"version": "V1.0", "sha256": "same"},
+        },
+        {
+            "internal_pipeline": {"version": "A2A1.5", "sha256": "new"},
+            "independent_judge": {"version": "J1.0", "sha256": "same"},
+            "improvement_validity": {"version": "V1.0", "sha256": "same"},
+        },
+    )
+
+    assert drift["requires_reevaluation"] is True
+    assert drift["status"] == "재평가 필요"
+    assert drift["changed_labels"] == ["내부 Pipeline"]
+
+
+def test_run_next_action_prioritizes_rubric_reevaluation():
+    action = voc_run_next_action(
+        {
+            "status": "COMPLETED",
+            "selected_count": 1,
+            "completed_count": 1,
+            "counts": {"PASS": 1, "FAIL": 0, "ERROR": 0, "REVIEW_REQUIRED": 0},
+            "judge_counts": {"PASS": 1, "NOT_RUN": 0, "ERROR": 0},
+            "validity_state": "BUSINESS_APPROVED",
+            "deployment_decision": "FORMAL_QUALITY_APPROVED",
+            "reevaluation_required": True,
+            "rubric_changed_labels": "개선안 타당성",
+        }
+    )
+
+    assert action["code"] == "RUBRIC_REEVALUATE"
+    assert "개선안 타당성" in action["detail"]
 
 
 def test_case_next_action_covers_approval_flow():

@@ -27,9 +27,12 @@ from services import (
     voc_validity_service,
 )
 from services.voc_quality_state_model import (
+    RUBRIC_VERSION_SCOPES,
     STATE_MODEL_VERSION,
     build_state_model_snapshot,
     build_verification_scope,
+    rubric_version_drift,
+    run_lineage_policy,
     validity_human_review_readiness,
     voc_run_next_action,
 )
@@ -1850,9 +1853,34 @@ def _is_transient_execution_error(execution: dict) -> bool:
     return any(marker in text for marker in TRANSIENT_ERROR_MARKERS)
 
 
+def _current_voc_rubric_versions() -> dict:
+    loaders = {
+        "internal_pipeline": load_system_rubric,
+        "independent_judge": load_independent_judge_rubric,
+        "improvement_validity": load_improvement_validity_rubric,
+    }
+    versions = {}
+    for scope in RUBRIC_VERSION_SCOPES:
+        loader = loaders.get(scope)
+        if not loader:
+            versions[scope] = {}
+            continue
+        try:
+            payload = loader()
+        except Exception:
+            versions[scope] = {}
+            continue
+        versions[scope] = {
+            "version": payload.get("version"),
+            "sha256": voc_run_store.canonical_sha256(payload),
+        }
+    return versions
+
+
 def list_voc_run_history() -> list[dict]:
     """실행 중 Run을 변경하지 않고 이력 화면용 요약을 반환합니다."""
     rows = []
+    current_rubric_versions = _current_voc_rubric_versions()
     for item in voc_run_store.list_voc_runs(recover=False):
         counts = item.get("counts", {})
         verification_scope = item.get("verification_scope", {})
@@ -1874,6 +1902,16 @@ def list_voc_run_history() -> list[dict]:
             "judge_status": "사용" if item.get("judge_enabled") else "미사용",
             "deployment_decision": item.get("deployment_decision") or "미판정",
         }
+        row["lineage_policy"] = run_lineage_policy(row)
+        row["lineage_label"] = row["lineage_policy"]["label"]
+        row["rubric_drift"] = rubric_version_drift(
+            item.get("rubric_versions", {}),
+            current_rubric_versions,
+        )
+        row["rubric_status"] = row["rubric_drift"]["status"]
+        row["rubric_changed_count"] = row["rubric_drift"]["changed_count"]
+        row["rubric_changed_labels"] = ", ".join(row["rubric_drift"]["changed_labels"]) or "-"
+        row["reevaluation_required"] = bool(row["rubric_drift"]["requires_reevaluation"])
         row["next_action"] = voc_run_next_action(row)
         rows.append(row)
     return rows

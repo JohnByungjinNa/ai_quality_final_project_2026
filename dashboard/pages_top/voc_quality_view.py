@@ -5519,6 +5519,7 @@ def _history_summary_cards(history: list[dict]) -> list[dict]:
     judge_error = _history_judge_total(history, "ERROR")
     followup_runs = sum(1 for item in history if _history_run_needs_followup(item))
     retest_runs = sum(1 for item in history if item.get("parent_run_id"))
+    rubric_drift_runs = sum(1 for item in history if item.get("reevaluation_required"))
     undecided_runs = sum(
         1 for item in history
         if str(item.get("deployment_decision") or "미판정") == "미판정"
@@ -5552,7 +5553,7 @@ def _history_summary_cards(history: list[dict]) -> list[dict]:
             "icon": "conversion_path",
             "label": "후속 조치 Run",
             "value": f"{followup_runs}건",
-            "detail": f"배포 미판정 {undecided_runs} · RETEST {retest_runs}",
+            "detail": f"배포 미판정 {undecided_runs} · RETEST {retest_runs} · 재평가 {rubric_drift_runs}",
         },
     ]
 
@@ -5577,6 +5578,17 @@ def _history_action_badge(action: dict) -> str:
         "gray": "gray",
     }.get(tone, "gray")
     return f":{color}-badge[{action.get('label', '다음 액션 확인')}]"
+
+
+def _history_rubric_badge(drift: dict) -> str:
+    tone = str(drift.get("tone") or "gray")
+    color = {
+        "green": "green",
+        "red": "red",
+        "orange": "orange",
+        "gray": "gray",
+    }.get(tone, "gray")
+    return f":{color}-badge[{drift.get('status', '기준 확인')}]"
 
 
 def _history_case_action_groups(case_results: list[dict]) -> dict[str, dict]:
@@ -5680,6 +5692,16 @@ def _history_next_action_target(
             "button_label": "품질 보고서로 이동",
             "detail": "승인 완료 Run을 품질 보고서 생성 대상으로 선택합니다.",
         }
+    if str(run_action.get("code")) == "RUBRIC_REEVALUATE" or action_code == "RUBRIC_REEVALUATE":
+        return {
+            "enabled": True,
+            "page": "history_detail",
+            "run_id": run_id,
+            "case_id": "",
+            "action_code": "RUBRIC_REEVALUATE",
+            "button_label": "Rubric 기준 확인",
+            "detail": "수행 이력 상세에서 저장 당시 Rubric과 현재 Rubric의 차이를 확인합니다.",
+        }
     if action_code in {"CHECK_PIPELINE_ERROR", "REVIEW_PIPELINE_RESULT", "RUN_JUDGE"}:
         return {
             "enabled": True,
@@ -5781,6 +5803,52 @@ def _render_history_next_action_cards(run_item: dict) -> None:
             with column.container(border=True, height=128):
                 st.caption(f":material/{icon}: {label}")
                 st.markdown(f"##### {value}")
+                st.caption(detail_text)
+
+        lineage = run_item.get("lineage_policy") or {}
+        rubric_drift = run_item.get("rubric_drift") or {}
+        changed_labels = run_item.get("rubric_changed_labels") or "-"
+        parent_run_id = lineage.get("parent_run_id") or run_item.get("parent_run_id") or "-"
+        lineage_detail = lineage.get("lineage_rule") or "Run 계보 정보를 확인합니다."
+        if lineage.get("has_parent"):
+            lineage_detail = f"원본 Run {parent_run_id} 기준으로 전후 비교합니다."
+        rubric_detail = rubric_drift.get("detail") or "Rubric 기준 상태를 확인합니다."
+        if changed_labels and changed_labels != "-":
+            rubric_detail = f"변경 범위: {changed_labels}"
+        reevaluation_value = "평가만 재확인" if rubric_drift.get("requires_reevaluation") else "추가 재평가 없음"
+        reevaluation_detail = (
+            "A2A Agent 실행 결과는 보존하고 Rubric 기준 변경 영향만 확인합니다."
+            if rubric_drift.get("requires_reevaluation")
+            else "현재 기준으로 유지해도 되는 Run입니다."
+        )
+        basis_columns = st.columns(3, gap="small")
+        basis_payloads = [
+            (
+                "account_tree",
+                "Run/Case 계보",
+                lineage.get("label") or _voc_status_label(run_item.get("run_type")),
+                lineage_detail,
+            ),
+            (
+                "rule_settings",
+                "Rubric 기준",
+                rubric_drift.get("status") or "기준 확인",
+                rubric_detail,
+            ),
+            (
+                "published_with_changes",
+                "재수행·재평가 판단",
+                reevaluation_value,
+                reevaluation_detail,
+            ),
+        ]
+        for column, (icon, label, value, detail_text) in zip(basis_columns, basis_payloads, strict=False):
+            with column.container(border=True, height=124):
+                st.caption(f":material/{icon}: {label}")
+                if label == "Rubric 기준":
+                    st.markdown(f"##### {_history_rubric_badge(rubric_drift)}")
+                else:
+                    st.markdown(f"##### {value}")
                 st.caption(detail_text)
 
         target = _history_next_action_target(run_item, case_results, run_action, case_action)
@@ -5942,6 +6010,9 @@ def render_voc_history():
                     "실행 가능": "-" if item.get("executable_count") is None else f"{item.get('executable_count')}",
                     "후속 구현": "-" if item.get("pending_count") is None else f"{item.get('pending_count')}",
                     "원본 Run": item.get("parent_run_id") or "-",
+                    "계보 기준": item.get("lineage_label") or _voc_status_label(item.get("run_type")),
+                    "Rubric 기준": item.get("rubric_status") or "기준 확인",
+                    "변경 범위": item.get("rubric_changed_labels") or "-",
                     "완료": item.get("completed_count", 0),
                     "진행률": item.get("completion_rate", 0.0),
                     "통과": item.get("counts", {}).get("PASS", 0),
@@ -5975,6 +6046,9 @@ def render_voc_history():
                 "실행 가능",
                 "후속 구현",
                 "원본 Run",
+                "계보 기준",
+                "Rubric 기준",
+                "변경 범위",
                 "완료",
                 "진행률",
                 "통과",
@@ -5997,6 +6071,9 @@ def render_voc_history():
                 "실행 가능": st.column_config.TextColumn("실행 가능", width=74),
                 "후속 구현": st.column_config.TextColumn("후속 구현", width=74),
                 "원본 Run": st.column_config.TextColumn("원본 Run", width=150),
+                "계보 기준": st.column_config.TextColumn("계보 기준", width=108),
+                "Rubric 기준": st.column_config.TextColumn("Rubric 기준", width=104),
+                "변경 범위": st.column_config.TextColumn("변경 범위", width=132),
                 "완료": st.column_config.NumberColumn("완료", width=58),
                 "진행률": st.column_config.ProgressColumn("진행률", min_value=0, max_value=100, format="%.0f%%", width=92),
                 "통과": st.column_config.NumberColumn("통과", width=58),
