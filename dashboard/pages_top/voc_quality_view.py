@@ -5454,6 +5454,17 @@ HISTORY_SELECTED_RUN_ID_KEY = "voc_history_selected_run_id"
 HISTORY_TABLE_KEY = "voc_history_table"
 HISTORY_TABLE_SIGNATURE_KEY = "voc_history_table_signature"
 HISTORY_DETAIL_DIALOG_RUN_ID_KEY = "voc_history_detail_dialog_run_id"
+VOC_QUALITY_MENU_NAME = "VOC 품질진단"
+VOC_VALIDITY_PAGE_NAME = "개선안 타당성 검증"
+VOC_REPORT_PAGE_NAME = "품질 보고서"
+VOC_ACCEPTANCE_PAGE_NAME = "최종 인수·시연"
+VOC_HISTORY_NAVIGABLE_VALIDITY_ACTIONS = {
+    "RUN_VALIDITY",
+    "REWORK_AND_RETEST",
+    "QA_REVIEW",
+    "BUSINESS_APPROVAL",
+    "CHECK_REMAINING_CASES",
+}
 
 
 def _open_history_detail_dialog(run_id: str) -> None:
@@ -5615,6 +5626,107 @@ def _history_priority_case_action(case_results: list[dict]) -> dict:
     return voc_case_next_action({})
 
 
+def _history_case_for_next_action(case_results: list[dict], action_code: str) -> dict | None:
+    if not case_results:
+        return None
+    preferred_codes = [action_code]
+    if action_code == "CHECK_REMAINING_CASES":
+        preferred_codes = [
+            "RUN_VALIDITY",
+            "REWORK_AND_RETEST",
+            "QA_REVIEW",
+            "BUSINESS_APPROVAL",
+            "CHECK_REMAINING_CASES",
+        ]
+    for code in preferred_codes:
+        for case in case_results:
+            if voc_case_next_action(case)["code"] == code:
+                return case
+    return case_results[0]
+
+
+def _history_next_action_target(
+    run_item: dict,
+    case_results: list[dict],
+    run_action: dict,
+    case_action: dict,
+) -> dict:
+    run_id = str(run_item.get("run_id") or "")
+    action_code = str(case_action.get("code") or run_action.get("code") or "")
+    if action_code in VOC_HISTORY_NAVIGABLE_VALIDITY_ACTIONS:
+        target_case = _history_case_for_next_action(case_results, action_code)
+        if not target_case:
+            return {
+                "enabled": False,
+                "button_label": "다음 액션 대상 없음",
+                "detail": "선택 Run에서 이어서 처리할 Case를 찾지 못했습니다.",
+            }
+        case_id = str(target_case.get("case_id") or "")
+        return {
+            "enabled": True,
+            "page": VOC_VALIDITY_PAGE_NAME,
+            "run_id": run_id,
+            "case_id": case_id,
+            "action_code": action_code,
+            "button_label": f"{case_id} 다음 액션 진행",
+            "detail": f"{VOC_VALIDITY_PAGE_NAME} 화면으로 이동해 {case_id}를 선택합니다.",
+        }
+    if str(run_action.get("code")) == "REPORT_READY" or action_code == "REPORT_READY":
+        return {
+            "enabled": True,
+            "page": VOC_REPORT_PAGE_NAME,
+            "run_id": run_id,
+            "case_id": "",
+            "action_code": "REPORT_READY",
+            "button_label": "품질 보고서로 이동",
+            "detail": "승인 완료 Run을 품질 보고서 생성 대상으로 선택합니다.",
+        }
+    if action_code in {"CHECK_PIPELINE_ERROR", "REVIEW_PIPELINE_RESULT", "RUN_JUDGE"}:
+        return {
+            "enabled": True,
+            "page": "history_detail",
+            "run_id": run_id,
+            "case_id": "",
+            "action_code": action_code,
+            "button_label": "Run 증적 확인",
+            "detail": "수행 이력 상세 팝업에서 Case 증적과 Judge 상태를 확인합니다.",
+        }
+    return {
+        "enabled": False,
+        "button_label": "추가 이동 없음",
+        "detail": "현재 상태에서는 바로 이동할 후속 화면이 없습니다.",
+    }
+
+
+def _apply_history_next_action_target(target: dict) -> None:
+    page = target.get("page")
+    run_id = str(target.get("run_id") or "")
+    case_id = str(target.get("case_id") or "")
+    if page == "history_detail":
+        _open_history_detail_dialog(run_id)
+        return
+    if page == VOC_VALIDITY_PAGE_NAME:
+        st.session_state.current_menu = VOC_QUALITY_MENU_NAME
+        st.session_state.current_sub_menu = VOC_VALIDITY_PAGE_NAME
+        st.session_state.voc_validity_selected_key = f"{run_id}::{case_id}"
+        st.session_state.voc_validity_candidate_query = case_id or run_id
+        st.session_state.voc_validity_run_type = "전체"
+        st.session_state.voc_validity_candidate_status = "전체"
+        st.session_state.voc_validity_focus_notice = (
+            f"수행 이력의 다음 액션에서 이동했습니다. 대상: {run_id} / {case_id}"
+        )
+        st.session_state.pop("voc_validity_candidate_table", None)
+        st.session_state.pop("voc_validity_dialog_opened_key", None)
+        return
+    if page == VOC_REPORT_PAGE_NAME:
+        st.session_state.current_menu = VOC_QUALITY_MENU_NAME
+        st.session_state.current_sub_menu = VOC_REPORT_PAGE_NAME
+        st.session_state.voc_report_run_id = run_id
+        st.session_state.voc_report_focus_notice = (
+            f"수행 이력의 다음 액션에서 이동했습니다. 보고서 대상 Run: {run_id}"
+        )
+
+
 def _render_history_next_action_cards(run_item: dict) -> None:
     run_id = str(run_item.get("run_id") or "")
     try:
@@ -5671,6 +5783,22 @@ def _render_history_next_action_cards(run_item: dict) -> None:
                 st.caption(f":material/{icon}: {label}")
                 st.markdown(f"##### {value}")
                 st.caption(detail_text)
+
+        target = _history_next_action_target(run_item, case_results, run_action, case_action)
+        action_col, guide_col = st.columns([0.9, 2.8], gap="medium", vertical_alignment="center")
+        with action_col:
+            if st.button(
+                target["button_label"],
+                type="primary" if target.get("enabled") else "secondary",
+                icon=":material/arrow_forward:",
+                disabled=not target.get("enabled"),
+                width="stretch",
+                key=f"voc_history_next_action_go_{run_id}",
+            ):
+                _apply_history_next_action_target(target)
+                st.rerun()
+        with guide_col:
+            st.caption(target.get("detail", "선택 Run의 다음 업무 단계로 이동합니다."))
 
 
 def _remember_history_run_selection(table_key: str, run_ids: tuple[str, ...]) -> None:
@@ -7664,6 +7792,9 @@ def render_improvement_validity():
     notice = st.session_state.pop("voc_validity_notice", None)
     if notice:
         st.success(notice)
+    focus_notice = st.session_state.pop("voc_validity_focus_notice", None)
+    if focus_notice:
+        st.info(focus_notice, icon=":material/conversion_path:")
     st.markdown("## 검증 대상 선택")
     st.caption("성공한 VOC 파이프라인 결과를 자동 채점한 뒤 QA와 업무 담당자가 순서대로 검토합니다.")
     candidates = _load_validity_candidates()
@@ -10048,6 +10179,9 @@ def _render_quality_report_preview(model: dict):
 
 
 def _render_voc_quality_report():
+    focus_notice = st.session_state.pop("voc_report_focus_notice", None)
+    if focus_notice:
+        st.info(focus_notice, icon=":material/summarize:")
     st.caption("선택한 실행의 저장 증적과 중앙 이력을 자동 대조해 텍스트·JUnit XML·HTML을 동일 데이터로 생성합니다.")
     history = [row for row in _load_voc_history_rows() if row.get("status") != "RUNNING"]
     if not history:
