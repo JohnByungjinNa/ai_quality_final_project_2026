@@ -31,6 +31,7 @@ from services.voc_quality_state_model import (
     build_state_model_snapshot,
     build_verification_scope,
     validity_human_review_readiness,
+    voc_run_next_action,
 )
 
 
@@ -859,7 +860,7 @@ def _agent_rpc_error_details(error_text: str) -> tuple[str, str]:
     if "deadline_exceeded" in lowered or "deadline exceeded" in lowered:
         return (
             "TIMEOUT",
-            "응답 시간 초과 · Agent 프로세스는 RUNNING이지만 실제 처리 또는 외부 LLM 응답이 "
+            "응답 시간 초과 · Agent 프로세스는 실행 중이지만 실제 처리 또는 외부 LLM 응답이 "
             "제한 시간 안에 끝나지 않았습니다. Agent 재시작 후 다시 시도하세요.",
         )
     return "RPC_ERROR", _safe_text(error_text)[:300]
@@ -1185,7 +1186,7 @@ def _evaluate_case_judge(
     if mode != "voc":
         return _not_run_judge_result(judge_config, "격리 장애 Case는 개선안 Judge 평가 대상이 아닙니다.")
     if not execution_ok:
-        return _not_run_judge_result(judge_config, "Pipeline 실행 실패로 Judge를 수행하지 않았습니다.")
+        return _not_run_judge_result(judge_config, "파이프라인 실행 실패로 Judge를 수행하지 않았습니다.")
     return _sanitize_evidence_value(
         voc_judge_service.evaluate_independent_judge(
             case=_sanitize_evidence_value(case),
@@ -1306,7 +1307,7 @@ def run_test_case(
                 "message": (
                     "자동 100점 채점은 후속 Step에서 구현합니다. 현재 결과는 사람 검토가 필요합니다."
                     if execution_ok
-                    else "Pipeline 실행 오류로 품질 채점을 수행하지 않았습니다."
+                    else "파이프라인 실행 오류로 품질 채점을 수행하지 않았습니다."
                 ),
             },
             judge_result=judge_result,
@@ -1361,7 +1362,7 @@ def run_test_case(
                     "status": "NOT_RUN",
                     "message": "실행 저장 중 오류로 품질 채점을 수행하지 않았습니다.",
                 },
-                judge_result=_not_run_judge_result(judge_config, "Pipeline 또는 저장 오류로 Judge를 수행하지 않았습니다."),
+                judge_result=_not_run_judge_result(judge_config, "파이프라인 또는 저장 오류로 Judge를 수행하지 않았습니다."),
             )
             voc_run_store.complete_voc_run(
                 run_id,
@@ -1409,7 +1410,7 @@ def batch_preflight(case_ids: list[str] | None = None) -> dict:
     if not health.get("ok"):
         blockers.append(f"런타임 필수 파일 누락: {', '.join(health.get('missing', []))}")
     if needs_agents and not agents.get("all_running"):
-        blockers.append("일반 VOC Case 실행에 필요한 6개 Agent가 모두 RUNNING 상태가 아닙니다.")
+        blockers.append("일반 VOC Case 실행에 필요한 6개 Agent가 모두 실행 중 상태가 아닙니다.")
     return {
         "ok": not blockers,
         "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1617,7 +1618,7 @@ def execute_batch_run(
                 runtime_progress={
                     "phase": "RUNNING",
                     "phase_label": "TC 수행 중",
-                    "message": f"{case_id} Pipeline과 품질 평가를 수행하고 있습니다.",
+                    "message": f"{case_id} 파이프라인과 품질 평가를 수행하고 있습니다.",
                     "current_case_id": case_id,
                     "current_position": position + 1,
                     "phase_started_at": case_started_at,
@@ -1859,22 +1860,22 @@ def list_voc_run_history() -> list[dict]:
         completed_count = sum(int(counts.get(status, 0)) for status in voc_run_store.CASE_STATUSES)
         decided = int(counts.get("PASS", 0)) + int(counts.get("FAIL", 0))
         success_rate = round(int(counts.get("PASS", 0)) / decided * 100, 1) if decided else None
-        rows.append(
-            {
-                **item,
-                "selected_count": selected_count,
-                "completed_count": completed_count,
-                "completion_rate": round(completed_count / selected_count * 100, 1) if selected_count else 0.0,
-                "state_model_version": item.get("state_model_version", STATE_MODEL_VERSION),
-                "executable_count": verification_scope.get("executable_count"),
-                "pending_count": verification_scope.get("pending_count"),
-                "verification_scope": verification_scope,
-                "parent_run_id": item.get("parent_run_id", ""),
-                "success_rate": success_rate,
-                "judge_status": "사용" if item.get("judge_enabled") else "미사용",
-                "deployment_decision": item.get("deployment_decision") or "미판정",
-            }
-        )
+        row = {
+            **item,
+            "selected_count": selected_count,
+            "completed_count": completed_count,
+            "completion_rate": round(completed_count / selected_count * 100, 1) if selected_count else 0.0,
+            "state_model_version": item.get("state_model_version", STATE_MODEL_VERSION),
+            "executable_count": verification_scope.get("executable_count"),
+            "pending_count": verification_scope.get("pending_count"),
+            "verification_scope": verification_scope,
+            "parent_run_id": item.get("parent_run_id", ""),
+            "success_rate": success_rate,
+            "judge_status": "사용" if item.get("judge_enabled") else "미사용",
+            "deployment_decision": item.get("deployment_decision") or "미판정",
+        }
+        row["next_action"] = voc_run_next_action(row)
+        rows.append(row)
     return rows
 
 
@@ -1910,7 +1911,7 @@ def reevaluate_voc_run_case(
     if mode == "voc":
         execution_ok = execution_ok and bool(execution.get("result", {}).get("ok"))
     if mode != "voc" or not execution_ok:
-        raise ValueError("성공한 VOC Pipeline Case만 Judge 재평가할 수 있습니다.")
+        raise ValueError("성공한 VOC 파이프라인 Case만 Judge 재평가할 수 있습니다.")
 
     run_dir = Path(stored["run_dir"])
     snapshot_path = run_dir / "snapshots" / "selected_test_cases.json"
@@ -1941,7 +1942,7 @@ def validity_provider_options() -> list[dict]:
 
 
 def list_improvement_validity_candidates() -> list[dict]:
-    """완료된 VOC Pipeline Case를 타당성 검증 대상 목록으로 반환합니다."""
+    """완료된 VOC 파이프라인 Case를 타당성 검증 대상 목록으로 반환합니다."""
     candidates = []
     for run in voc_run_store.list_voc_runs(recover=False):
         if run.get("status") == "RUNNING":
@@ -1969,28 +1970,33 @@ def list_improvement_validity_candidates() -> list[dict]:
                 immediate_hold_count=immediate_hold_count,
                 formal_approval=bool(validity.get("formal_approval")),
             )
-            candidates.append(
-                {
-                    "run_id": run["run_id"],
-                    "case_id": case_id,
-                    "started_at": run.get("started_at", ""),
-                    "run_type": run.get("run_type", ""),
-                    "parent_run_id": stored.get("manifest", {}).get("run_metadata", {}).get("parent_run_id", ""),
-                    "question": execution.get("question", ""),
-                    "judge_status": artifacts.get("judge_result", {}).get("decision", "NOT_RUN"),
-                    "judge_score": artifacts.get("judge_result", {}).get("total_score"),
-                    "validity_status": validity.get("decision", "NOT_RUN"),
-                    "validity_score": validity.get("total_score"),
-                    "workflow_state": validity.get("workflow_state", "DRAFT"),
-                    "formal_approval": bool(validity.get("formal_approval")),
-                    "immediate_hold_count": immediate_hold_count,
-                    "qa_review_ready": review_readiness["can_qa_review"],
-                    "business_review_ready": review_readiness["can_business_approve"],
-                    "review_action": review_readiness["action"],
-                    "review_action_label": review_readiness["action_label"],
-                    "deployment_decision": review_readiness["deployment_decision"],
-                }
-            )
+            candidate = {
+                "run_id": run["run_id"],
+                "case_id": case_id,
+                "started_at": run.get("started_at", ""),
+                "run_type": run.get("run_type", ""),
+                "parent_run_id": stored.get("manifest", {}).get("run_metadata", {}).get("parent_run_id", ""),
+                "question": execution.get("question", ""),
+                "judge_status": artifacts.get("judge_result", {}).get("decision", "NOT_RUN"),
+                "judge_score": artifacts.get("judge_result", {}).get("total_score"),
+                "validity_status": validity.get("decision", "NOT_RUN"),
+                "validity_score": validity.get("total_score"),
+                "workflow_state": validity.get("workflow_state", "DRAFT"),
+                "formal_approval": bool(validity.get("formal_approval")),
+                "immediate_hold_count": immediate_hold_count,
+                "qa_review_ready": review_readiness["can_qa_review"],
+                "business_review_ready": review_readiness["can_business_approve"],
+                "review_action": review_readiness["action"],
+                "review_action_label": review_readiness["action_label"],
+                "deployment_decision": review_readiness["deployment_decision"],
+            }
+            candidate["next_action"] = {
+                "code": review_readiness["action"],
+                "label": review_readiness["action_label"],
+                "menu": "개선안 타당성 검증",
+                "detail": "선택한 Run·Case의 타당성/QA 승인 단계에서 이어서 처리합니다.",
+            }
+            candidates.append(candidate)
     candidates.sort(key=lambda item: item.get("started_at", ""), reverse=True)
     return candidates
 
@@ -2025,7 +2031,7 @@ def evaluate_voc_improvement_validity(
     execution = pipeline.get("execution", {})
     result = execution.get("result", {}) if isinstance(execution, dict) else {}
     if pipeline.get("mode") != "voc" or not execution.get("ok") or not result.get("ok"):
-        raise ValueError("성공한 VOC Pipeline Case만 타당성을 평가할 수 있습니다.")
+        raise ValueError("성공한 VOC 파이프라인 Case만 타당성을 평가할 수 있습니다.")
     supplement = artifacts.get("validity_supplement", {})
     evaluation_execution = _execution_with_validity_supplement(execution, supplement)
     validity = voc_validity_service.evaluate_improvement_validity(
@@ -2265,14 +2271,14 @@ def compare_voc_runs(baseline_run_id: str, candidate_run_id: str) -> dict:
 
 def _execution_message(execution: dict, execution_ok: bool) -> str:
     if execution_ok:
-        return "Pipeline 실행 완료 — 자동 품질 채점 전 사람 검토 필요"
+        return "파이프라인 실행 완료 — 자동 품질 채점 전 사람 검토 필요"
     result = execution.get("result", {}) if isinstance(execution, dict) else {}
     return _safe_text(
         str(
             result.get("message")
             or result.get("error")
             or execution.get("output")
-            or "Pipeline 실행 오류"
+            or "파이프라인 실행 오류"
         )
     )[:500]
 
@@ -2770,7 +2776,7 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
         if "pass_floor" in item:
             pass_floor = item.get("pass_floor")
             if not _is_number(pass_floor) or not 0 < float(pass_floor) <= float(max_points):
-                errors.append(f"{item_id}: PASS 하한은 0보다 크고 배점 이하여야 합니다.")
+                errors.append(f"{item_id}: 통과 하한은 0보다 크고 배점 이하여야 합니다.")
 
     if items and abs(item_total - 100.0) > 0.001:
         errors.append(f"평가 항목 배점 합계는 100이어야 합니다. 현재 합계: {item_total:g}")
