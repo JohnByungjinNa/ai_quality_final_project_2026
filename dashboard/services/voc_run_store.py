@@ -730,12 +730,23 @@ def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -
         human_reviews = []
         if path.exists():
             previous = _read_json(path)
-            evaluation_history.extend(previous.pop("evaluation_history", []))
-            human_reviews = previous.pop("human_reviews", [])
+            previous_evaluations = previous.pop("evaluation_history", [])
+            previous_reviews = previous.pop("human_reviews", [])
+            if isinstance(previous_evaluations, list):
+                evaluation_history.extend(previous_evaluations)
+            if isinstance(previous_reviews, list):
+                human_reviews = previous_reviews
             evaluation_history.append(previous)
         saved = dict(validity_result)
         saved["evaluation_history"] = evaluation_history
         saved["human_reviews"] = human_reviews
+        saved["evaluation_sequence"] = len(evaluation_history) + 1
+        if human_reviews:
+            saved["approval_history_preserved"] = True
+            saved["approval_reset_reason"] = (
+                "자동 타당성 재평가로 기존 사람 검토는 감사 이력으로 보존하고, "
+                "최신 평가 결과 기준으로 QA·업무 승인 단계를 다시 진행합니다."
+            )
         _atomic_write_json(path, saved)
 
         target = next(
@@ -748,6 +759,16 @@ def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -
         target["validity_score"] = saved.get("total_score")
         target["approval_state"] = saved.get("workflow_state", "DRAFT")
         target["formal_approval"] = bool(saved.get("formal_approval"))
+        immediate_holds = saved.get("immediate_hold_rules_triggered") or []
+        if isinstance(immediate_holds, str):
+            immediate_hold_count = 1 if immediate_holds.strip() else 0
+        else:
+            try:
+                immediate_hold_count = len(immediate_holds)
+            except TypeError:
+                immediate_hold_count = int(bool(immediate_holds))
+        target["immediate_hold_count"] = immediate_hold_count
+        target["validity_evaluation_count"] = saved["evaluation_sequence"]
         _refresh_validity_summary(summary)
         _atomic_write_json(run_dir / "summary.json", summary)
 

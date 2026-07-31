@@ -5785,14 +5785,21 @@ def _history_next_action_target(
                 "detail": "선택 Run에서 이어서 처리할 Case를 찾지 못했습니다.",
             }
         case_id = str(target_case.get("case_id") or "")
+        action_label = {
+            "RUN_VALIDITY": "타당성 평가 진행",
+            "REWORK_AND_RETEST": "보완·재시험 진행",
+            "QA_REVIEW": "QA 검토 진행",
+            "BUSINESS_APPROVAL": "업무 승인 진행",
+            "CHECK_REMAINING_CASES": "잔여 Case 검토",
+        }.get(action_code, "다음 액션 진행")
         return {
             "enabled": True,
             "page": VOC_VALIDITY_PAGE_NAME,
             "run_id": run_id,
             "case_id": case_id,
             "action_code": action_code,
-            "button_label": f"{case_id} 다음 액션 진행",
-            "detail": f"{VOC_VALIDITY_PAGE_NAME} 화면으로 이동해 {case_id}를 선택합니다.",
+            "button_label": f"{case_id} {action_label}",
+            "detail": f"{VOC_VALIDITY_PAGE_NAME} 화면으로 이동해 {case_id}의 {action_label} 흐름을 이어갑니다.",
         }
     if str(run_action.get("code")) == "REPORT_READY" or action_code == "REPORT_READY":
         return {
@@ -5836,6 +5843,7 @@ def _apply_history_next_action_target(target: dict) -> None:
     page = target.get("page")
     run_id = str(target.get("run_id") or "")
     case_id = str(target.get("case_id") or "")
+    action_code = str(target.get("action_code") or "")
     if page == "rubric_reevaluation_plan":
         _save_history_rubric_reevaluation_plan(run_id)
         return
@@ -5848,7 +5856,14 @@ def _apply_history_next_action_target(target: dict) -> None:
         st.session_state.voc_validity_selected_key = f"{run_id}::{case_id}"
         st.session_state.voc_validity_candidate_query = case_id or run_id
         st.session_state.voc_validity_run_type = "전체"
-        st.session_state.voc_validity_candidate_status = "전체"
+        st.session_state.voc_validity_candidate_status = {
+            "RUN_VALIDITY": "평가 전",
+            "QA_REVIEW": "QA 검토 가능",
+            "BUSINESS_APPROVAL": "업무 승인 가능",
+            "REPORT_READY": "정식 승인",
+        }.get(action_code, "전체")
+        st.session_state.voc_validity_focus_action_code = action_code
+        st.session_state.voc_validity_focus_target_key = f"{run_id}::{case_id}"
         st.session_state.voc_validity_focus_notice = (
             f"수행 이력의 다음 액션에서 이동했습니다. 대상: {run_id} / {case_id}"
         )
@@ -6487,9 +6502,11 @@ def _validity_qa_gate_model(candidate: dict, result: dict | None) -> dict:
     has_result = bool(result)
     decision = result.get("decision") or candidate.get("validity_status", "NOT_RUN")
     workflow_state = result.get("workflow_state") or candidate.get("workflow_state", "DRAFT")
+    formal_approval = bool(result.get("formal_approval"))
     holds = _validity_immediate_holds(result)
     if not holds and candidate.get("immediate_hold_count"):
         holds = [f"{candidate.get('immediate_hold_count')}건"]
+    approval_stage_ok = workflow_state in {"AI_REVIEWED", "QA_REVIEWED", "BUSINESS_APPROVED"} or formal_approval
     checks = [
         {
             "label": "자동 타당성 평가",
@@ -6512,12 +6529,12 @@ def _validity_qa_gate_model(candidate: dict, result: dict | None) -> dict:
         {
             "label": "승인 단계",
             "value": _voc_status_label(workflow_state),
-            "ok": workflow_state == "AI_REVIEWED",
-            "detail": "AI 검토 완료 상태에서 QA 검토가 열립니다.",
+            "ok": approval_stage_ok,
+            "detail": "AI 검토 완료 이후 QA 검토와 업무 승인이 순차로 열립니다.",
         },
     ]
     ready = all(item["ok"] for item in checks)
-    completed = workflow_state == "BUSINESS_APPROVED" or bool(result.get("formal_approval"))
+    completed = workflow_state == "BUSINESS_APPROVED" or formal_approval
     if completed:
         summary = "정식 승인 완료"
     elif workflow_state == "QA_REVIEWED":
@@ -6578,6 +6595,48 @@ def _render_validity_selection_basis(candidate: dict, artifacts: dict | None = N
                 st.caption(detail)
         if basis["parent_run_id"]:
             st.caption(f"RETEST 회차입니다. 원본 Run: {basis['parent_run_id']}")
+
+
+def _render_validity_history_focus_action(candidate: dict) -> None:
+    action_code = str(st.session_state.get("voc_validity_focus_action_code") or "")
+    target_key = str(st.session_state.get("voc_validity_focus_target_key") or "")
+    if not action_code or target_key != _validity_candidate_key(candidate):
+        return
+
+    spec = VALIDITY_FOCUS_ACTION_LABELS.get(
+        action_code,
+        {
+            "label": "다음 액션",
+            "detail": "수행 이력에서 선택한 대상의 다음 처리 단계를 이어갑니다.",
+            "icon": "conversion_path",
+            "tone": "blue",
+        },
+    )
+    tone = {
+        "green": "green",
+        "blue": "blue",
+        "orange": "orange",
+        "red": "red",
+        "gray": "gray",
+    }.get(str(spec.get("tone") or "blue"), "blue")
+    with st.container(border=True):
+        icon_col, text_col, action_col = st.columns([0.18, 2.6, 0.8], gap="small", vertical_alignment="center")
+        with icon_col:
+            st.markdown(f"### :material/{spec['icon']}:")
+        with text_col:
+            st.markdown(f"#### 수행 이력 연결 액션 · {spec['label']}")
+            st.caption(spec["detail"])
+        with action_col:
+            st.markdown(f":{tone}-badge[{spec['label']}]", text_alignment="right")
+            if st.button(
+                "연결 안내 닫기",
+                icon=":material/close:",
+                width="stretch",
+                key=f"voc_validity_focus_clear_{_validity_candidate_key(candidate)}",
+            ):
+                st.session_state.pop("voc_validity_focus_action_code", None)
+                st.session_state.pop("voc_validity_focus_target_key", None)
+                st.rerun()
 
 
 VALIDITY_SUPPLEMENT_FIELDS = (
@@ -7930,6 +7989,8 @@ def _render_validity_result(
             if rows
             else "이 평가 결과는 사용자 보완 입력을 함께 반영했습니다."
         )
+    if result.get("approval_history_preserved") and result.get("approval_reset_reason"):
+        st.caption(result["approval_reset_reason"])
     if result.get("error"):
         st.error(result["error"])
     holds = result.get("immediate_hold_rules_triggered", [])
@@ -7960,6 +8021,94 @@ DEPLOYMENT_DECISION_LABELS = {
     "미판정": "미판정",
 }
 
+VALIDITY_FOCUS_ACTION_LABELS = {
+    "RUN_VALIDITY": {
+        "label": "타당성 자동 평가",
+        "detail": "자동 평가 설정에서 Provider와 모델을 확인한 뒤 평가를 실행합니다.",
+        "icon": "fact_check",
+        "tone": "blue",
+    },
+    "REWORK_AND_RETEST": {
+        "label": "보완 입력·RETEST",
+        "detail": "부족한 담당·일정·KPI·근거를 보완하고 필요하면 연결 재시험을 실행합니다.",
+        "icon": "edit_note",
+        "tone": "red",
+    },
+    "QA_REVIEW": {
+        "label": "QA 검토 저장",
+        "detail": "승인/보완 요청/반려 중 하나를 선택해 QA 검토 결과를 저장합니다.",
+        "icon": "rate_review",
+        "tone": "green",
+    },
+    "BUSINESS_APPROVAL": {
+        "label": "업무 승인 저장",
+        "detail": "QA 검토 완료 건을 업무 관점에서 최종 승인하거나 보완/반려 처리합니다.",
+        "icon": "verified",
+        "tone": "green",
+    },
+    "CHECK_REMAINING_CASES": {
+        "label": "잔여 Case 검토",
+        "detail": "아직 승인되지 않은 Case를 선택해 평가·보완·승인을 이어갑니다.",
+        "icon": "pending_actions",
+        "tone": "orange",
+    },
+}
+
+VALIDITY_REVIEW_DECISION_CARDS = {
+    "QA": (
+        {
+            "decision": "APPROVE",
+            "title": "QA 승인",
+            "detail": "평가 근거가 충분하면 업무 승인 단계로 넘깁니다.",
+            "button": "QA 승인 저장",
+            "icon": "rate_review",
+            "type": "primary",
+        },
+        {
+            "decision": "REVISION_REQUIRED",
+            "title": "보완 요청",
+            "detail": "담당·일정·KPI·근거가 부족하면 보완 후 재평가로 돌립니다.",
+            "button": "보완 요청",
+            "icon": "edit_note",
+            "type": "secondary",
+        },
+        {
+            "decision": "REJECTED",
+            "title": "반려",
+            "detail": "현 개선안으로 진행할 수 없으면 반려 상태로 종료합니다.",
+            "button": "반려",
+            "icon": "block",
+            "type": "secondary",
+        },
+    ),
+    "BUSINESS": (
+        {
+            "decision": "APPROVE",
+            "title": "업무 승인",
+            "detail": "업무 적용 가능성이 충분하면 정식 승인으로 확정합니다.",
+            "button": "업무 승인 저장",
+            "icon": "verified",
+            "type": "primary",
+        },
+        {
+            "decision": "REVISION_REQUIRED",
+            "title": "보완 요청",
+            "detail": "배포 전 실행계획 보완이 필요하면 보완 상태로 되돌립니다.",
+            "button": "보완 요청",
+            "icon": "edit_note",
+            "type": "secondary",
+        },
+        {
+            "decision": "REJECTED",
+            "title": "반려",
+            "detail": "업무 적용이 부적합하면 반려 상태로 확정합니다.",
+            "button": "반려",
+            "icon": "block",
+            "type": "secondary",
+        },
+    ),
+}
+
 
 def _validity_approval_workflow_model(result: dict | None) -> dict:
     result = result or {}
@@ -7976,6 +8125,38 @@ def _validity_approval_workflow_model(result: dict | None) -> dict:
     needs_rework = action == "REWORK_REQUIRED"
     qa_done = state in {"QA_REVIEWED", "BUSINESS_APPROVED"} or readiness["formal_approval"]
     business_done = state == "BUSINESS_APPROVED" or readiness["formal_approval"]
+    evaluation_history = result.get("evaluation_history", []) or []
+    human_reviews = result.get("human_reviews", []) or []
+    if not isinstance(evaluation_history, list):
+        evaluation_history = []
+    if not isinstance(human_reviews, list):
+        human_reviews = []
+    audit_cards = [
+        {
+            "icon": "history",
+            "label": "타당성 재평가",
+            "value": f"{len(evaluation_history)}회",
+            "detail": "이전 자동 평가 결과는 이력으로 보존됩니다.",
+        },
+        {
+            "icon": "assignment_ind",
+            "label": "검토 감사 이력",
+            "value": f"{len(human_reviews)}건",
+            "detail": "QA·업무 결정은 append-only로 누적됩니다.",
+        },
+        {
+            "icon": "schedule",
+            "label": "최신 평가 시각",
+            "value": _dashboard_timestamp(result.get("evaluated_at", "")) if has_result else "-",
+            "detail": f"Rubric {result.get('rubric_version', '-')}" if has_result else "평가 후 표시됩니다.",
+        },
+        {
+            "icon": "published_with_changes",
+            "label": "재승인 기준",
+            "value": "재승인 필요" if result.get("approval_history_preserved") and not business_done else "최신 상태 기준",
+            "detail": result.get("approval_reset_reason") or "재평가 후에는 최신 판정 상태를 기준으로 승인합니다.",
+        },
+    ]
     stages = [
         {
             "label": "자동 타당성",
@@ -8014,6 +8195,7 @@ def _validity_approval_workflow_model(result: dict | None) -> dict:
         "readiness": readiness,
         "stages": stages,
         "holds": holds,
+        "audit_cards": audit_cards,
     }
 
 
@@ -8047,6 +8229,12 @@ def _render_validity_approval_workflow(result: dict | None):
                 st.markdown(f"**{stage['label']}**")
                 st.markdown(badge)
                 st.caption(stage["detail"])
+        audit_columns = st.columns(4, gap="small")
+        for column, audit in zip(audit_columns, model["audit_cards"], strict=False):
+            with column.container(border=True, height=112):
+                st.markdown(f":material/{audit['icon']}: **{audit['label']}**")
+                st.markdown(f"##### {audit['value']}")
+                st.caption(audit["detail"])
         if model["holds"]:
             st.caption("즉시 보류 규칙: " + ", ".join(_validity_hold_rule_label(rule) for rule in model["holds"]))
 
@@ -8077,34 +8265,42 @@ def _render_human_validity_review(
     st.markdown(f"### {heading}")
     st.caption("현재 사용자가 이 단계의 검토자입니다. 저장 시 역할·시각·의견이 감사 이력에 추가됩니다.")
     with st.form(f"validity_review_{_validity_key_base(run_id, case_id, key_scope)}_{role}"):
-        reviewer = st.text_input("검토자", value="현재 사용자", max_chars=100)
-        decision_label = st.segmented_control(
-            "검토 결정",
-            ("승인", "보완 요구", "반려"),
-            default="승인",
-        )
-        comment = st.text_area(
-            "검토 의견",
-            value="현재 화면에서 타당성 평가 결과, 즉시 보류 규칙, 보완 가이드와 증적을 확인했습니다.",
-            max_chars=1000,
-            height=100,
-        )
-        submitted = st.form_submit_button(
-            "검토 결과 저장",
-            type="primary",
-            icon=":material/approval:",
-        )
-    if submitted:
-        decision = {"승인": "APPROVE", "보완 요구": "REVISION_REQUIRED", "반려": "REJECTED"}[
-            decision_label
-        ]
+        reviewer_col, comment_col = st.columns([0.8, 2.2], gap="small", vertical_alignment="top")
+        with reviewer_col:
+            reviewer = st.text_input("검토자", value="현재 사용자", max_chars=100)
+        with comment_col:
+            comment = st.text_area(
+                "검토 의견",
+                value="현재 화면에서 타당성 평가 결과, 즉시 보류 규칙, 보완 가이드와 증적을 확인했습니다.",
+                max_chars=1000,
+                height=96,
+            )
+
+        submitted_decision = None
+        action_columns = st.columns(3, gap="small")
+        for column, card in zip(action_columns, VALIDITY_REVIEW_DECISION_CARDS[role], strict=False):
+            with column.container(border=True, height=154):
+                st.markdown(f":material/{card['icon']}: **{card['title']}**")
+                st.caption(card["detail"])
+                if st.form_submit_button(
+                    card["button"],
+                    key=(
+                        f"validity_review_decision_"
+                        f"{_validity_key_base(run_id, case_id, key_scope)}_{role}_{card['decision']}"
+                    ),
+                    type=card["type"],
+                    icon=f":material/{card['icon']}:",
+                    width="stretch",
+                ):
+                    submitted_decision = card["decision"]
+    if submitted_decision:
         try:
             review_voc_improvement_validity(
                 run_id,
                 case_id,
                 reviewer_role=role,
                 reviewer_name_or_id=reviewer,
-                decision=decision,
+                decision=submitted_decision,
                 comment=comment,
             )
         except Exception as exc:
@@ -8112,7 +8308,9 @@ def _render_human_validity_review(
             return
         _load_validity_candidates.clear()
         _load_voc_history_rows.clear()
-        st.session_state.voc_validity_notice = f"{heading} 결과를 저장했습니다."
+        st.session_state.pop("voc_validity_focus_action_code", None)
+        st.session_state.pop("voc_validity_focus_target_key", None)
+        st.session_state.voc_validity_notice = f"{heading} 결과를 저장했습니다. 최신 승인 단계가 갱신되었습니다."
         st.rerun()
 
 
@@ -8362,6 +8560,7 @@ def render_improvement_validity():
     artifacts = load_voc_case_history_detail(selected["run_id"], selected["case_id"])
     validity = artifacts.get("validity_result", {})
     validity_rubric = load_improvement_validity_rubric()
+    _render_validity_history_focus_action(selected)
     _render_validity_selection_basis(selected, artifacts)
     _render_validity_workflow_status(selected, artifacts, validity, validity_rubric)
     artifacts = _render_validity_supplement_editor(selected, artifacts)
