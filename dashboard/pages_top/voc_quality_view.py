@@ -5802,14 +5802,16 @@ def _history_next_action_target(
             "detail": f"{VOC_VALIDITY_PAGE_NAME} 화면으로 이동해 {case_id}의 {action_label} 흐름을 이어갑니다.",
         }
     if str(run_action.get("code")) == "REPORT_READY" or action_code == "REPORT_READY":
+        target_case = _history_case_for_next_action(case_results, "REPORT_READY")
+        case_id = str((target_case or {}).get("case_id") or "")
         return {
             "enabled": True,
             "page": VOC_REPORT_PAGE_NAME,
             "run_id": run_id,
-            "case_id": "",
+            "case_id": case_id,
             "action_code": "REPORT_READY",
-            "button_label": "품질 보고서로 이동",
-            "detail": "승인 완료 Run을 품질 보고서 생성 대상으로 선택합니다.",
+            "button_label": "품질 보고서·최종 시연 연결",
+            "detail": "업무 승인 완료 증적을 품질 보고서와 최종 인수·시연 대상으로 연결합니다.",
         }
     if str(run_action.get("code")) == "RUBRIC_REEVALUATE" or action_code == "RUBRIC_REEVALUATE":
         plan_status = str(run_item.get("rubric_reevaluation_plan_status") or "")
@@ -5871,12 +5873,31 @@ def _apply_history_next_action_target(target: dict) -> None:
         st.session_state.pop("voc_validity_dialog_opened_key", None)
         return
     if page == VOC_REPORT_PAGE_NAME:
-        st.session_state.current_menu = VOC_QUALITY_MENU_NAME
-        st.session_state.current_sub_menu = VOC_REPORT_PAGE_NAME
-        st.session_state.voc_report_run_id = run_id
-        st.session_state.voc_report_focus_notice = (
-            f"수행 이력의 다음 액션에서 이동했습니다. 보고서 대상 Run: {run_id}"
+        _go_to_voc_report(
+            run_id,
+            case_id,
+            notice=f"수행 이력의 다음 액션에서 이동했습니다. 보고서 대상 Run: {run_id}",
         )
+
+
+def _go_to_voc_report(run_id: str, case_id: str = "", *, notice: str = "") -> None:
+    st.session_state.current_menu = VOC_QUALITY_MENU_NAME
+    st.session_state.current_sub_menu = VOC_REPORT_PAGE_NAME
+    st.session_state.voc_report_run_id = run_id
+    st.session_state.voc_report_focus_case_id = case_id
+    st.session_state.voc_report_focus_notice = notice or (
+        f"업무 승인 완료 증적을 품질 보고서 대상으로 연결했습니다. Run: {run_id}"
+    )
+
+
+def _go_to_voc_acceptance(run_id: str, case_id: str = "", *, notice: str = "") -> None:
+    st.session_state.current_menu = VOC_QUALITY_MENU_NAME
+    st.session_state.current_sub_menu = VOC_ACCEPTANCE_PAGE_NAME
+    st.session_state.voc_acceptance_focus_run_id = run_id
+    st.session_state.voc_acceptance_focus_case_id = case_id
+    st.session_state.voc_acceptance_focus_notice = notice or (
+        f"업무 승인 완료 증적을 최종 인수·시연 대상으로 연결했습니다. Run: {run_id}"
+    )
 
 
 def _render_history_next_action_cards(run_item: dict) -> None:
@@ -6282,6 +6303,246 @@ def _load_validity_candidates():
 
 def _validity_candidate_key(candidate: dict) -> str:
     return f"{candidate.get('run_id', '')}::{candidate.get('case_id', '')}"
+
+
+def _approved_demo_cases(
+    *,
+    focus_run_id: str = "",
+    focus_case_id: str = "",
+) -> list[dict]:
+    approved = [
+        dict(candidate)
+        for candidate in _load_validity_candidates()
+        if candidate.get("formal_approval")
+        or str(candidate.get("workflow_state") or "") == "BUSINESS_APPROVED"
+    ]
+    approved.sort(key=lambda item: item.get("started_at", ""), reverse=True)
+    if focus_run_id:
+        run_cases = [
+            item
+            for item in approved
+            if str(item.get("run_id") or "") == focus_run_id
+        ]
+        focused = [
+            item
+            for item in run_cases
+            if not focus_case_id or str(item.get("case_id") or "") == focus_case_id
+        ] or run_cases
+        if focused:
+            return focused + [
+                item
+                for item in approved
+                if _validity_candidate_key(item) not in {_validity_candidate_key(focus) for focus in focused}
+            ]
+    return approved
+
+
+def _approved_demo_case_label(candidate: dict) -> str:
+    score = candidate.get("validity_score")
+    score_text = "-" if score in (None, "") else f"{score}점"
+    return (
+        f"{candidate.get('case_id', '-')} · "
+        f"{candidate.get('run_id', '-')} · "
+        f"타당성 {score_text}"
+    )
+
+
+def _approved_demo_case_rows(candidates: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Run ID": item.get("run_id", "-"),
+                "Case ID": item.get("case_id", "-"),
+                "수행 유형": _voc_status_label(item.get("run_type", "-")),
+                "질문": item.get("question", "-") or "-",
+                "Judge": _voc_status_label(item.get("judge_status", "NOT_RUN")),
+                "타당성": _voc_status_label(item.get("validity_status", "NOT_RUN")),
+                "점수": item.get("validity_score"),
+                "승인 단계": _voc_status_label(item.get("workflow_state", "DRAFT")),
+            }
+            for item in candidates
+        ]
+    )
+
+
+def _render_demo_flow_step_cards(candidate: dict) -> None:
+    judge_status = str(candidate.get("judge_status") or "NOT_RUN")
+    validity_status = str(candidate.get("validity_status") or "NOT_RUN")
+    workflow_state = str(candidate.get("workflow_state") or "DRAFT")
+    formal_approval = bool(candidate.get("formal_approval")) or workflow_state == "BUSINESS_APPROVED"
+    qa_done = workflow_state in {"QA_REVIEWED", "BUSINESS_APPROVED"} or formal_approval
+    steps = [
+        {
+            "icon": "account_tree",
+            "label": "A2A",
+            "status": "완료",
+            "tone": "green",
+            "detail": "Agent Pipeline 증적",
+        },
+        {
+            "icon": "psychology",
+            "label": "독립 Judge",
+            "status": _voc_status_label(judge_status),
+            "tone": "green" if judge_status not in {"NOT_RUN", "ERROR", ""} else "gray",
+            "detail": f"{candidate.get('judge_score') if candidate.get('judge_score') is not None else '-'}점",
+        },
+        {
+            "icon": "fact_check",
+            "label": "타당성",
+            "status": _voc_status_label(validity_status),
+            "tone": "green" if validity_status == "AI_PASS" else "orange",
+            "detail": f"{candidate.get('validity_score') if candidate.get('validity_score') is not None else '-'}점",
+        },
+        {
+            "icon": "rate_review",
+            "label": "QA 검토",
+            "status": "완료" if qa_done else "대기",
+            "tone": "green" if qa_done else "gray",
+            "detail": _voc_status_label(workflow_state),
+        },
+        {
+            "icon": "verified",
+            "label": "업무 승인",
+            "status": "완료" if formal_approval else "대기",
+            "tone": "green" if formal_approval else "gray",
+            "detail": "정식 승인 증적",
+        },
+        {
+            "icon": "approval",
+            "label": "보고서·시연",
+            "status": "연결 가능" if formal_approval else "대기",
+            "tone": "blue" if formal_approval else "gray",
+            "detail": "품질 보고서 / 최종 시연",
+        },
+    ]
+    columns = st.columns(6, gap="small")
+    for column, step in zip(columns, steps, strict=False):
+        badge = {
+            "green": f":green-badge[{step['status']}]",
+            "blue": f":blue-badge[{step['status']}]",
+            "orange": f":orange-badge[{step['status']}]",
+            "gray": f":gray-badge[{step['status']}]",
+        }.get(step["tone"], f":gray-badge[{step['status']}]")
+        with column.container(border=True, height=124):
+            st.caption(f":material/{step['icon']}: {step['label']}")
+            st.markdown(badge)
+            st.caption(step["detail"])
+
+
+def _render_approved_demo_flow_panel(
+    location: str,
+    *,
+    focus_run_id: str = "",
+    focus_case_id: str = "",
+) -> dict | None:
+    approved = _approved_demo_cases(focus_run_id=focus_run_id, focus_case_id=focus_case_id)
+    if not approved:
+        with st.container(border=True):
+            st.markdown("#### 업무 승인 완료 → 보고서/최종 시연 연결")
+            st.caption("업무 승인 완료 Case가 생기면 이 영역에서 시연 가능한 한 줄 흐름을 보여줍니다.")
+            st.markdown(":gray-badge[승인 완료 Case 없음]")
+        return None
+
+    keys = [_validity_candidate_key(item) for item in approved]
+    target_key = f"voc_demo_target_{location}"
+    if st.session_state.get(target_key) not in keys:
+        st.session_state[target_key] = keys[0]
+    candidate_map = {
+        _validity_candidate_key(item): item
+        for item in approved
+    }
+
+    with st.container(border=True):
+        heading, summary = st.columns([2.4, 1], vertical_alignment="center")
+        with heading:
+            st.markdown("#### 업무 승인 완료 → 품질 보고서 → 최종 인수·시연")
+            st.caption("업무 승인 완료된 Run·Case를 보고서 증적과 최종 시연 대상으로 연결합니다.")
+        with summary:
+            run_count = len({item.get("run_id") for item in approved})
+            st.markdown(
+                f":green-badge[승인 Case {len(approved)}건] :blue-badge[Run {run_count}개]",
+                text_alignment="right",
+            )
+
+        selected_key = st.selectbox(
+            "시연 대상 승인 Case",
+            keys,
+            index=None,
+            key=target_key,
+            format_func=lambda value: _approved_demo_case_label(candidate_map.get(value, {})),
+            width="stretch",
+        )
+        selected = candidate_map.get(selected_key) or approved[0]
+
+        st.markdown(
+            f"**현재 시연 대상** · `{selected.get('run_id', '-')}` / `{selected.get('case_id', '-')}`"
+        )
+        st.caption(selected.get("question", "-") or "-")
+        _render_demo_flow_step_cards(selected)
+
+        action_columns = st.columns([1, 1, 2], gap="small", vertical_alignment="center")
+        with action_columns[0]:
+            if location != "report":
+                if st.button(
+                    "품질 보고서로 이동",
+                    icon=":material/article:",
+                    width="stretch",
+                    key=f"approved_demo_to_report_{location}_{_validity_candidate_key(selected)}",
+                ):
+                    _go_to_voc_report(
+                        str(selected.get("run_id") or ""),
+                        str(selected.get("case_id") or ""),
+                        notice=(
+                            "업무 승인 완료 Case에서 품질 보고서로 이동했습니다. "
+                            f"대상: {selected.get('run_id')} / {selected.get('case_id')}"
+                        ),
+                    )
+                    st.rerun()
+            else:
+                st.markdown(":blue-badge[보고서 화면]")
+        with action_columns[1]:
+            if location != "acceptance":
+                if st.button(
+                    "최종 시연으로 이동",
+                    icon=":material/approval:",
+                    width="stretch",
+                    key=f"approved_demo_to_acceptance_{location}_{_validity_candidate_key(selected)}",
+                ):
+                    _go_to_voc_acceptance(
+                        str(selected.get("run_id") or ""),
+                        str(selected.get("case_id") or ""),
+                        notice=(
+                            "업무 승인 완료 Case에서 최종 인수·시연으로 이동했습니다. "
+                            f"대상: {selected.get('run_id')} / {selected.get('case_id')}"
+                        ),
+                    )
+                    st.rerun()
+            else:
+                st.markdown(":blue-badge[최종 시연 화면]")
+        with action_columns[2]:
+            st.caption(
+                "정식 배포 판정은 35건 전체 Run 기준을 유지합니다. "
+                "이 카드는 단일 승인 Case의 시연 흐름을 빠르게 확인하는 용도입니다."
+            )
+
+        with st.expander("업무 승인 완료 Case 목록", expanded=False, icon=":material/table_view:"):
+            st.dataframe(
+                _approved_demo_case_rows(approved),
+                hide_index=True,
+                width="stretch",
+                height=min(260, 58 + len(approved) * 34),
+                column_config={
+                    "Run ID": st.column_config.TextColumn(width=220, pinned=True),
+                    "Case ID": st.column_config.TextColumn(width=80),
+                    "수행 유형": st.column_config.TextColumn(width=88),
+                    "질문": st.column_config.TextColumn(width=260),
+                    "Judge": st.column_config.TextColumn(width=92),
+                    "타당성": st.column_config.TextColumn(width=108),
+                    "점수": st.column_config.ProgressColumn(width=82, min_value=0, max_value=100, format="%g점"),
+                    "승인 단계": st.column_config.TextColumn(width=118),
+                },
+            )
+    return selected
 
 
 def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> pd.DataFrame:
@@ -10811,14 +11072,28 @@ def _render_voc_quality_report():
     run_ids = [row["run_id"] for row in history]
     full_suite = [row["run_id"] for row in history if row.get("selected_count") == 35]
     default_id = full_suite[0] if full_suite else run_ids[0]
+    if st.session_state.get("voc_report_run_id") not in run_ids:
+        st.session_state.voc_report_run_id = default_id
     selected_run_id = st.selectbox(
-        "보고 대상 실행", run_ids, index=run_ids.index(default_id),
+        "보고 대상 실행",
+        run_ids,
+        index=None,
         format_func=lambda value: f"{value} · {next(row['selected_count'] for row in history if row['run_id'] == value)}건",
         key="voc_report_run_id",
     )
+    if not selected_run_id:
+        return
+    _render_approved_demo_flow_panel(
+        "report",
+        focus_run_id=str(selected_run_id),
+        focus_case_id=str(st.session_state.get("voc_report_focus_case_id") or ""),
+    )
     baseline_options = [""] + [value for value in full_suite if value != selected_run_id]
+    if st.session_state.get("voc_report_baseline_run_id") not in baseline_options:
+        st.session_state.voc_report_baseline_run_id = ""
     baseline_run_id = st.selectbox(
         "33 통과 / 2 실패 기준선 실행 (선택)", baseline_options,
+        index=None,
         format_func=lambda value: value or "연결하지 않음 · 현재 기준선 증적 없음",
         key="voc_report_baseline_run_id",
         help="동일한 35개 케이스·목록·테스트케이스 해시·평가 기준과 결함 연결이 확인되는 실행만 유효합니다.",
@@ -10888,6 +11163,15 @@ def render_guide():
 
 
 def render_acceptance():
+    focus_notice = st.session_state.pop("voc_acceptance_focus_notice", None)
+    if focus_notice:
+        st.info(focus_notice, icon=":material/approval:")
+    _render_approved_demo_flow_panel(
+        "acceptance",
+        focus_run_id=str(st.session_state.get("voc_acceptance_focus_run_id") or ""),
+        focus_case_id=str(st.session_state.get("voc_acceptance_focus_case_id") or ""),
+    )
+
     history = [
         row for row in _load_voc_history_rows()
         if row.get("status") == "COMPLETED" and row.get("selected_count") == 35
@@ -10900,17 +11184,25 @@ def render_acceptance():
     default_id = latest_voc_full_run_id()
     if default_id not in run_ids:
         default_id = run_ids[0]
+    if st.session_state.get("voc_acceptance_run_id") not in run_ids:
+        st.session_state.voc_acceptance_run_id = default_id
     run_id = st.selectbox(
         "최종 인수 대상 Run",
         run_ids,
-        index=run_ids.index(default_id),
+        index=None,
         key="voc_acceptance_run_id",
         help="완료된 35건 Run의 저장 증적만 최종 품질 게이트에 사용합니다.",
     )
+    if not run_id:
+        return
     baseline_ids = [value for value in run_ids if value != run_id]
+    baseline_options = [""] + baseline_ids
+    if st.session_state.get("voc_acceptance_baseline_run_id") not in baseline_options:
+        st.session_state.voc_acceptance_baseline_run_id = ""
     baseline_run_id = st.selectbox(
         "33 통과 / 2 실패 기준선 Run (선택)",
-        [""] + baseline_ids,
+        baseline_options,
+        index=None,
         format_func=lambda value: value or "연결하지 않음",
         key="voc_acceptance_baseline_run_id",
     )
