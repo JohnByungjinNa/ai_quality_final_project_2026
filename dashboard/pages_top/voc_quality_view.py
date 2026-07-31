@@ -3420,7 +3420,7 @@ def _goal_testcase_selector():
             ),
             width="stretch",
             key=f"goal_execute_{selected_case_id}",
-            on_click=_start_goal_testcase_pipeline_and_rerun,
+            on_click=_start_goal_testcase_pipeline_from_callback,
             args=(selected_case_id,),
         )
         if not case_implemented:
@@ -3552,9 +3552,8 @@ def _start_goal_testcase_pipeline(selected_case_id: str):
     )
 
 
-def _start_goal_testcase_pipeline_and_rerun(selected_case_id: str):
+def _start_goal_testcase_pipeline_from_callback(selected_case_id: str):
     _start_goal_testcase_pipeline(selected_case_id)
-    st.rerun(scope="app")
 
 
 def _render_goal_pipeline_focus_anchor_once():
@@ -3595,7 +3594,7 @@ def _render_goal_execution_step(selected_case: dict):
             disabled=test_running or bool(st.session_state.get("goal_judge_job_id")),
             width="stretch",
             key=f"goal_execute_{selected_case_id}",
-            on_click=_start_goal_testcase_pipeline_and_rerun,
+            on_click=_start_goal_testcase_pipeline_from_callback,
             args=(selected_case_id,),
         )
 
