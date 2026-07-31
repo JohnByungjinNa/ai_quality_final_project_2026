@@ -111,7 +111,7 @@ def create_defect(
     for run_id in runs:
         voc_run_store.load_voc_run(run_id)
     cases = _safe_keys(related_case_ids, "Case ID")
-    traces = _safe_keys(related_trace_ids, "Trace ID")
+    traces = _safe_keys(related_trace_ids, "실행 Trace ID")
     candidate_key = _clean_text(candidate_key, "후보 결함 키", maximum=100)
     if candidate_key and not SAFE_KEY_PATTERN.fullmatch(candidate_key):
         raise ValueError("후보 결함 키에는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.")

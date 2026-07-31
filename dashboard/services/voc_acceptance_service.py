@@ -50,11 +50,11 @@ def _workflow_coverage(run_id: str, report: dict) -> list[dict]:
         ("수동 TC 수행", "MANUAL" in run_types, "MANUAL Run 이력"),
         ("일괄 TC 수행", report["run"]["selected_count"] == 35, f"{run_id} · 35건"),
         ("수행 이력", bool(history), f"저장 Run {len(history)}건"),
-        ("독립 LLM Judge", evaluation["judge_evaluated"] > 0, f"Judge 증적 {evaluation['judge_evaluated']}건"),
-        ("개선안 타당성", evaluation["validity_evaluated"] > 0, f"타당성 증적 {evaluation['validity_evaluated']}건"),
+        ("독립 LLM 평가", evaluation["judge_evaluated"] > 0, f"독립 LLM 평가 증적 {evaluation['judge_evaluated']}건"),
+        ("개선안 타당성 평가", evaluation["validity_evaluated"] > 0, f"개선안 타당성 평가 증적 {evaluation['validity_evaluated']}건"),
         ("장애·결함 관리", bool(defects), f"등록 결함·후보 {len(defects)}건"),
         ("품질 보고서", bool(report.get("report_id")), report.get("report_id", "")),
-        ("연결 RETEST", "RETEST" in run_types, "RETEST Run 이력"),
+        ("연결 재시험", "RETEST" in run_types, "재시험 Run 이력"),
         ("동일 조건 A/B", report["claims"]["improvement_verified"], "33/2 → 35 증적 대조"),
     )
     return [
@@ -69,11 +69,11 @@ def _evaluation_checklist(report: dict) -> dict:
     evaluation = report["evaluation"]
     peer = [
         ("프로젝트 목적 이해도", True, "README 목적·배포 게이트"),
-        ("고객 불만 분석의 적절성", evaluation["trace_cases"] > 0, f"Trace Case {evaluation['trace_cases']}건"),
-        ("정책 개선안의 타당성", evaluation["validity_evaluated"] > 0, f"타당성 평가 {evaluation['validity_evaluated']}건"),
-        ("멀티 에이전트 역할 설명", evaluation["trace_cases"] > 0, "6개 Agent Trace·역할 문서"),
+        ("고객 불만 분석의 적절성", evaluation["trace_cases"] > 0, f"실행 Trace Case {evaluation['trace_cases']}건"),
+        ("정책 개선안의 타당성", evaluation["validity_evaluated"] > 0, f"개선안 타당성 평가 {evaluation['validity_evaluated']}건"),
+        ("멀티 에이전트 역할 설명", evaluation["trace_cases"] > 0, "6개 Agent 실행 Trace·역할 문서"),
         ("내부 품질진단의 충실성", run["selected_count"] == 35, "35건 수행 이력·Case 증적"),
-        ("독립 LLM Judge 평가 설명", evaluation["judge_evaluated"] > 0, f"독립 Judge {evaluation['judge_evaluated']}건"),
+        ("독립 LLM 평가 설명", evaluation["judge_evaluated"] > 0, f"독립 LLM 평가 {evaluation['judge_evaluated']}건"),
         ("테스트 결과의 객관성", sum(counts.values()) == 35, str(counts)),
         ("장애 및 결함관리 내용", bool(report["defects"]), f"결함·후보 {len(report['defects'])}건"),
         ("발표 구성 및 전달력", bool(report.get("report_id")), "품질 보고서·시연 순서"),
@@ -81,8 +81,8 @@ def _evaluation_checklist(report: dict) -> dict:
     ]
     professor = [
         ("요구사항·품질 계약", True, "35건 Catalog·Rubric·증적 계약"),
-        ("멀티 에이전트 구조·정확성", evaluation["trace_cases"] > 0, "Agent Trace와 최종 산출물"),
-        ("독립 평가·객관성", evaluation["judge_evaluated"] == 35, "Judge 35건 완료 여부"),
+        ("멀티 에이전트 구조·정확성", evaluation["trace_cases"] > 0, "Agent 실행 Trace와 최종 산출물"),
+        ("독립 LLM 평가·객관성", evaluation["judge_evaluated"] == 35, "독립 LLM 평가 35건 완료 여부"),
         ("장애·보안·운영성", not report["risks"], "잔여 위험·결함·복구 정책"),
         ("증적·배포 게이트", report["release_decision"] == "FORMAL_APPROVED", "보고서 무결성·최종 판정"),
     ]
@@ -127,9 +127,9 @@ def build_acceptance_snapshot(
     gates = [
         _gate("full_suite", "35건 최종 실행 완료", report["run"]["selected_count"] == 35, str(counts)),
         _gate("integrity", "Run·Case 증적 무결성", bool(report["integrity"].get("ok")), "; ".join(report["integrity"].get("errors", [])) or "무결성 검증 완료"),
-        _gate("pipeline", "Pipeline 35 PASS", counts.get("PASS") == 35, f"PASS {counts.get('PASS', 0)}/35"),
-        _gate("judge", "독립 Judge 35 PASS", evaluation["judge_evaluated"] == 35 and evaluation["judge_counts"].get("PASS") == 35, str(evaluation["judge_counts"])),
-        _gate("validity", "타당성 업무 승인 35건", evaluation["validity_counts"].get("BUSINESS_APPROVED") == 35, str(evaluation["validity_counts"])),
+        _gate("pipeline", "Agent 파이프라인 35건 PASS", counts.get("PASS") == 35, f"PASS {counts.get('PASS', 0)}/35"),
+        _gate("judge", "독립 LLM 평가 35건 PASS", evaluation["judge_evaluated"] == 35 and evaluation["judge_counts"].get("PASS") == 35, str(evaluation["judge_counts"])),
+        _gate("validity", "개선안 타당성 평가 업무 승인 35건", evaluation["validity_counts"].get("BUSINESS_APPROVED") == 35, str(evaluation["validity_counts"])),
         _gate("defects", "미종결 Critical/High 0건", not open_important, f"미종결 {len(open_important)}건"),
         _gate("comparison", "33/2 → 35 동일 조건 개선 증명", report["claims"]["improvement_verified"], report["claims"]["claim_text"]),
         _gate("runtime", "실행환경·6개 Agent 정상", bool(runtime.get("ok")) and bool(agents.get("all_running")), f"Agent {agents.get('running', 0)}/{agents.get('total', 6)}"),
@@ -163,8 +163,8 @@ def build_acceptance_snapshot(
         "remaining_risks": report["risks"],
         "release_report_decision": report["release_decision"],
         "presentation_flow": [
-            "프로젝트 목적", "6개 Agent", "수동·일괄 수행", "A2A Trace",
-            "독립 Judge", "개선안 타당성", "장애·결함", "연결 재시험·A/B",
+            "프로젝트 목적", "6개 Agent", "수동·일괄 수행", "Agent 파이프라인 실행 Trace",
+            "독립 LLM 평가", "개선안 타당성 평가", "장애·결함", "연결 재시험·A/B",
             "품질 보고서", "배포 판정",
         ],
         "verification": verification,

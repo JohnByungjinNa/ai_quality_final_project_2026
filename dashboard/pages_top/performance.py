@@ -79,7 +79,7 @@ k6 결과 요약
                 {"지표": "vus_max", "결과": "20"},
             ]
         )
-        st.dataframe(k6_metrics, hide_index=True, use_container_width=True)
+        st.dataframe(k6_metrics, hide_index=True, width="stretch")
 
     metric_cols = st.columns(5)
     metric_cols[0].metric("checks", "98.50%", "197/200")
@@ -103,7 +103,7 @@ k6 결과 요약
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("#### 응답시간 추이 예시")
@@ -165,7 +165,7 @@ process_cpu_seconds_total 12.4""",
             ]
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     metric_cols = st.columns(4)
@@ -228,5 +228,5 @@ def render_grafana_dashboard_page():
             ]
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )

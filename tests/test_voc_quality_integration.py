@@ -106,7 +106,7 @@ def test_voc_history_page_renders_without_exceptions():
     assert "통과 Case" in rendered_caption
     assert "검토 필요 Case" in rendered_caption
     assert "실패·오류 Case" in rendered_caption
-    assert "Judge 확인 필요" in rendered_caption
+    assert "독립 LLM 평가 필요" in rendered_caption
     assert "후속 조치 Run" in rendered_caption
     history_columns = set(app.dataframe[0].value.columns)
     assert "선택" not in history_columns
@@ -130,7 +130,7 @@ def test_voc_history_selected_run_detail_opens_in_dialog():
     assert not app.exception
     rendered_markdown = "\n".join(item.value for item in app.markdown)
     assert "실행 상세 · RUN-" in rendered_markdown
-    assert {"유형", "상태", "대상", "Judge", "타당성"}.issubset(
+    assert {"유형", "상태", "대상", "독립 LLM 평가", "개선안 타당성"}.issubset(
         {metric.label for metric in app.metric}
     )
 
@@ -154,7 +154,7 @@ def test_voc_history_execution_and_case_evidence_are_human_readable():
     assert "잔여 위험" in rendered_markdown
     assert "보완 권고" in rendered_markdown
     assert "QA·업무 승인 이력" in rendered_markdown
-    assert "Trace ID: trace-demo" in rendered_caption
+    assert "실행 Trace ID: trace-demo" in rendered_caption
     metric_labels = {metric.label for metric in app.metric}
     assert {"수행 상태", "내부 판정", "유효 판정", "자동 판정", "승인 단계"}.issubset(
         metric_labels
@@ -188,7 +188,7 @@ def test_voc_dashboard_renders_operational_quality_summary():
     assert [button.label for button in app.button[:2]] == ["조회", "새로고침"]
     assert any("· Run " in item.value and item.value.endswith("건") for item in app.caption)
     assert any(
-        item.value == "Run별 PASS·검토·실패/오류 비율 · 최근 12건"
+            item.value == "Run별 통과·검토·실패/오류 비율 · 최근 12건"
         for item in app.caption
     )
     assert "vqd-agent-grid" in dashboard_markup
@@ -382,7 +382,7 @@ def test_agent_control_start_skips_already_running_agents(monkeypatch):
 
     assert result["ok"] is True
     assert calls == [("start", "improver")]
-    assert "[SKIPPED] interpreter already RUNNING" in result["output"]
+    assert "[건너뜀] interpreter 이미 실행 중" in result["output"]
     assert "improver started" in result["output"]
 
 
@@ -732,8 +732,8 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
-        "_render_agent_pipeline_comparison",
-        lambda *_args, **_kwargs: render_order.append("pipeline"),
+        "_live_testcase_pipeline",
+        lambda: render_order.append("pipeline"),
     )
     monkeypatch.setattr(
         voc_quality_view,
@@ -787,8 +787,8 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
-        "_render_agent_pipeline_comparison",
-        lambda *_args, **_kwargs: render_order.append("pipeline"),
+        "_live_testcase_pipeline",
+        lambda: render_order.append("pipeline"),
     )
     monkeypatch.setattr(
         voc_quality_view,
@@ -829,7 +829,7 @@ def test_goal_testcase_selector_uses_user_facing_title():
 
     assert 'st.markdown("### Test Case 선택 실행")' in source
     assert "?? ?? ? ? ???? ??" not in source
-    assert 'st.button(\n            "Agent Pipeline 실행"' in source
+    assert 'st.button(\n            "Agent 파이프라인 실행"' in source
     assert "읽기 전용 목록입니다." not in source
     assert "horizontal=True" in source
     assert 'st.markdown("### test_cases.json 선택 실행")' not in source
@@ -856,7 +856,7 @@ def test_goal_pipeline_uses_compact_inline_guide():
 
     source = inspect.getsource(voc_quality_view.render_goal_monitor)
 
-    assert 'st.markdown("### 실시간 Agent Pipeline")' in source
+    assert 'st.markdown("### 실시간 Agent 파이프라인")' in source
     assert "?? ? 2? ?? ? ?? ? ?? Trace ??" not in source
     assert "실행 중에는 현재 흐름을 2초 간격으로 확인하고" not in source
     assert "horizontal=True" in source
@@ -1133,7 +1133,7 @@ def test_manual_pipeline_timeline_explains_policy_feedback_loop(monkeypatch):
     assert "Agent 5 → Agent 6 · 수정 요청 반영" in html
     assert "확정하기 전에 품질과 실행 가능성을 확인" in html
     assert "수정이 필요하다고 판단" in html
-    assert "Trace 사유 미기록·추정" in html
+    assert "실행 Trace 사유 미기록·추정" in html
 
 
 def test_pipeline_run_summary_names_current_agent_number(monkeypatch):
@@ -1486,8 +1486,27 @@ def test_manual_judge_result_renders_directly_as_evaluation_section():
 
     assert not app.exception
     assert {metric.label for metric in app.metric} == {"판정", "총점", "독립성", "수행 시간"}
-    assert any("독립 LLM 평가/판정 결과" in item.value for item in app.markdown)
-    assert app.dataframe[0].value.iloc[0]["평가 차원"] == "accuracy"
+    assert any("독립 LLM 평가 결과" in item.value for item in app.markdown)
+    assert any("Provider별 독립 LLM 평가 비교" in item.value for item in app.markdown)
+    comparison_tables = [
+        dataframe.value
+        for dataframe in app.dataframe
+        if "평가 Provider" in dataframe.value.columns
+    ]
+    assert comparison_tables
+    assert set(comparison_tables[0]["평가 Provider"]) == {"OpenAI", "Anthropic"}
+    assert "수행 시간" in comparison_tables[0].columns
+    openai_row = comparison_tables[0].loc[
+        comparison_tables[0]["평가 Provider"] == "OpenAI"
+    ].iloc[0]
+    assert openai_row["수행 시간"] == "9.1초"
+    assert openai_row["평가 시각"] == "2026-07-31 12:00:00"
+    dimension_tables = [
+        dataframe.value
+        for dataframe in app.dataframe
+        if "평가 차원" in dataframe.value.columns
+    ]
+    assert dimension_tables[0].iloc[0]["평가 차원"] == "accuracy"
 
 
 def test_pipeline_evidence_parsers_tolerate_invalid_or_partial_values():
@@ -1615,7 +1634,7 @@ def test_manual_pipeline_start_callback_requests_full_app_rerun(monkeypatch):
     assert reruns == ["app"]
 
 
-def test_goal_pipeline_focus_anchor_scrolls_once(monkeypatch):
+def test_goal_pipeline_focus_anchor_stays_mounted_and_scrolls_once(monkeypatch):
     state = {"goal_testcase_focus_pipeline_once": True}
     rendered = []
 
@@ -1629,11 +1648,83 @@ def test_goal_pipeline_focus_anchor_scrolls_once(monkeypatch):
     voc_quality_view._render_goal_pipeline_focus_anchor_once()
     voc_quality_view._render_goal_pipeline_focus_anchor_once()
 
-    assert len(rendered) == 1
+    assert len(rendered) == 2
     assert "goal-pipeline-scroll-anchor" in rendered[0][0]
     assert "scrollIntoView" in rendered[0][0]
     assert rendered[0][1]["unsafe_allow_javascript"] is True
+    assert "goal-pipeline-scroll-anchor" in rendered[1][0]
+    assert "scrollIntoView" not in rendered[1][0]
+    assert rendered[1][1]["unsafe_allow_javascript"] is False
     assert "goal_testcase_focus_pipeline_once" not in state
+
+
+def test_goal_result_focus_anchor_stays_mounted_and_scrolls_once(monkeypatch):
+    state = {"goal_testcase_focus_result": True}
+    rendered = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "html",
+        lambda body, **kwargs: rendered.append((body, kwargs)),
+    )
+
+    voc_quality_view._render_goal_result_focus_anchor_once()
+    voc_quality_view._render_goal_result_focus_anchor_once()
+
+    assert len(rendered) == 2
+    assert "goal-result-scroll-anchor" in rendered[0][0]
+    assert "scrollIntoView" in rendered[0][0]
+    assert rendered[0][1]["unsafe_allow_javascript"] is True
+    assert "goal-result-scroll-anchor" in rendered[1][0]
+    assert "scrollIntoView" not in rendered[1][0]
+    assert rendered[1][1]["unsafe_allow_javascript"] is False
+    assert "goal_testcase_focus_result" not in state
+
+
+def test_live_testcase_pipeline_renders_recent_snapshot_without_active_job(monkeypatch):
+    state = {
+        "goal_testcase_selected_case_id": "TC-01",
+        "goal_testcase_started_at": "2026-07-31T13:00:00+09:00",
+        "goal_testcase_trace_id": "trace-recent",
+        "goal_testcase_preparation": {"status": "COMPLETED"},
+    }
+    calls = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_selected_goal_testcase",
+        lambda: {"case_id": "TC-01"},
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_sync_goal_testcase_recent_artifacts",
+        lambda case: calls.append(("sync", case["case_id"])),
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "pipeline_trace_events",
+        lambda started_at, trace_id: {
+            "trace_id": trace_id,
+            "events": [],
+            "started_at": started_at,
+        },
+    )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_agent_pipeline_comparison",
+        lambda snapshot, running, preparation=None: calls.append(
+            ("render", snapshot["trace_id"], running, preparation)
+        ),
+    )
+
+    getattr(voc_quality_view._live_testcase_pipeline, "__wrapped__", voc_quality_view._live_testcase_pipeline)()
+
+    assert calls == [
+        ("sync", "TC-01"),
+        ("render", "trace-recent", False, {"status": "COMPLETED"}),
+    ]
 
 
 def test_embedded_voc_runtime_is_complete():
@@ -1862,27 +1953,27 @@ def test_validity_candidate_rows_remove_empty_select_column_and_localize_statuse
         "Case ID",
         "수행 유형",
         "질문",
-        "독립 평가",
-        "독립 점수",
-        "타당성",
-        "타당 점수",
+        "독립 LLM 평가",
+        "독립 LLM 점수",
+        "개선안 타당성",
+        "타당성 점수",
         "승인 단계",
         "다음 조치",
         "정식 승인",
     ]
     row = rows.iloc[0]
     assert row["수행 유형"] == "일괄 수행"
-    assert row["독립 평가"] == "미실행"
-    assert row["타당성"] == "AI 평가 통과"
+    assert row["독립 LLM 평가"] == "미실행"
+    assert row["개선안 타당성"] == "AI 평가 통과"
     assert row["승인 단계"] == "QA 검토 완료"
     assert row["다음 조치"] == "업무 승인 가능"
 
 
 def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
     assert voc_quality_view.RUBRIC_STAGE_OPTIONS == (
-        "내부 Pipeline 품질",
-        "독립 LLM Judge",
-        "개선안 타당성",
+        "내부 파이프라인 품질",
+        "독립 LLM 평가",
+        "개선안 타당성 평가",
     )
 
     judge_rows = voc_quality_view._rubric_rows(
@@ -1893,7 +1984,7 @@ def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
     )
     assert sum(row["배점"] for row in judge_rows) == 100
     assert sum(row["배점"] for row in validity_rows) == 100
-    assert all("PASS 하한" in row for row in judge_rows + validity_rows)
+    assert all("통과 하한" in row for row in judge_rows + validity_rows)
 
     rendered = []
     tab_labels = []
@@ -1903,7 +1994,7 @@ def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
 
     def select_stage(label, *_args, **_kwargs):
         tab_labels.append(label)
-        return "독립 LLM Judge"
+        return "독립 LLM 평가"
 
     monkeypatch.setattr(
         voc_quality_view.st,
@@ -1915,7 +2006,7 @@ def test_quality_rubric_menu_exposes_three_separate_stages(monkeypatch):
     voc_quality_view.render_rubric()
 
     assert tab_labels == ["수정할 평가 단계"]
-    assert rendered == ["독립 LLM Judge"]
+    assert rendered == ["독립 LLM 평가"]
 
 
 def test_rubric_decision_boundaries_keep_adjacent_ranges_linked():
@@ -1981,7 +2072,7 @@ def test_unified_rubric_page_renders_gauges_without_exceptions():
         "모든 평가 항목의 세부 배점을 합산한 최종 점수입니다." not in item
         for item in captions
     )
-    assert [item.label for item in app.status] == ["즉시 FAIL·보류 규칙"]
+    assert [item.label for item in app.status] == ["즉시 실패·보류 규칙"]
     assert all(
         getattr(item, "type", "") != "status"
         for item in app._tree[0].children.values()
@@ -2021,14 +2112,14 @@ def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
     app.run()
 
     expected_provider_states = {
-        "내부 Pipeline 품질": ("해당 없음", True),
-        "독립 LLM Judge": ("anthropic", False),
-        "개선안 타당성": ("해당 없음", True),
+        "내부 파이프라인 품질": ("해당 없음", True),
+        "독립 LLM 평가": ("anthropic", False),
+        "개선안 타당성 평가": ("해당 없음", True),
     }
     expected_rubric_types = {
-        "내부 Pipeline 품질": "internal_pipeline",
-        "독립 LLM Judge": "independent_judge",
-        "개선안 타당성": "improvement_validity",
+        "내부 파이프라인 품질": "internal_pipeline",
+        "독립 LLM 평가": "independent_judge",
+        "개선안 타당성 평가": "improvement_validity",
     }
     for stage, expected_provider in expected_provider_states.items():
         app.radio[0].set_value(stage).run()
@@ -2051,7 +2142,7 @@ def test_rubric_stage_header_keeps_the_same_controls_and_compact_json_actions():
         assert save_column_children[0].label == "평가 기준 저장"
         assert [item.label for item in app.text_input[:2]] == ["Rubric 버전", "기준명"]
         provider = next(
-            item for item in app.selectbox if item.label == "기본 Judge Provider"
+            item for item in app.selectbox if item.label == "기본 평가 Provider"
         )
         assert (provider.value, provider.disabled) == expected_provider
         assert any(item.label == "JSON D/L" for item in app.get("download_button"))
@@ -2236,7 +2327,7 @@ def test_rubric_stage_switch_clears_all_open_dialog_state():
         for button in app.button
         if button.key == "rubric_detail_next_internal_pipeline_interpreter"
     ).click().run()
-    app.radio[0].set_value("독립 LLM Judge").run()
+    app.radio[0].set_value("독립 LLM 평가").run()
 
     assert not app.exception
     assert all(
@@ -2522,19 +2613,19 @@ def test_batch_case_results_for_display_uses_korean_status_labels():
     ])
 
     assert list(frame.columns) == [
-        "Case ID",
+        "케이스 ID",
         "상태",
         "수행 유형",
         "시도",
-        "독립 평가 상태",
-        "독립 평가 점수",
+        "독립 LLM 평가 상태",
+        "독립 LLM 평가 점수",
         "독립성",
         "처리 내용",
         "완료 시각",
     ]
     assert frame.iloc[0]["상태"] == "미실행"
     assert frame.iloc[0]["수행 유형"] == "VOC"
-    assert frame.iloc[0]["독립 평가 상태"] == "오류"
+    assert frame.iloc[0]["독립 LLM 평가 상태"] == "오류"
 
 
 def test_batch_selector_state_defaults_to_all_cases_and_first_group(monkeypatch):
@@ -2713,7 +2804,7 @@ def test_batch_case_selection_rows_show_active_group_cases_only():
         ["TC-02"],
     )
 
-    assert list(rows.columns)[:4] == ["체크", "Case ID", "상태", "이름"]
+    assert list(rows.columns)[:4] == ["체크", "케이스 ID", "상태", "이름"]
     assert bool(rows.loc[0, "체크"]) is False
     assert bool(rows.loc[1, "체크"]) is True
     assert rows.loc[0, "상태"] == "실행 구현 완료"
@@ -2759,8 +2850,8 @@ def test_batch_execution_uses_list_selector_instead_of_dropdowns():
     assert '"선택"' not in selector_source
     assert "실행 대상 리스트" not in selector_source
     assert "group_column, case_column" in selector_source
-    assert "선택된 TC" in selector_source
-    assert "Judge 옵션" in selector_source
+    assert "선택 건수" in selector_source
+    assert "독립 LLM 평가 옵션" in selector_source
     assert "_render_batch_judge_selection_badge(judge_config)" in selector_source
 
 
@@ -2790,7 +2881,7 @@ def test_batch_judge_selection_summary_shows_selected_provider_and_model(monkeyp
     )
 
     assert enabled_summary["label"] == "OpenAI · gpt-5.2"
-    assert disabled_summary["label"] == "독립 LLM Judge 미실행"
+    assert disabled_summary["label"] == "독립 LLM 평가 미실행"
 
 
 def test_batch_execution_explains_close_and_server_shutdown_behavior():
@@ -3161,7 +3252,7 @@ def test_batch_state_model_defines_35_case_verification_cycle():
     model = describe_batch_state_model()
     scope = model["verification_scope"]
 
-    assert model["model_version"] == "2026-07-26.step3"
+    assert model["model_version"] == "2026-07-31.step3"
     assert model["suite_id"] == "VOC-QA-35"
     assert scope["catalog_total_cases"] == 35
     assert scope["selected_count"] == 35
@@ -3193,7 +3284,7 @@ def test_batch_run_persists_verification_scope_metadata(monkeypatch, tmp_path):
     manifest = store.load_voc_run(run["run_id"])["manifest"]
     scope = manifest["run_metadata"]["verification_scope"]
 
-    assert manifest["state_model_version"] == "2026-07-26.step3"
+    assert manifest["state_model_version"] == "2026-07-31.step3"
     assert manifest["run_metadata"]["state_model"]["menu_io"]["batch_execution"]["state_owner"] == "run_id"
     assert scope["catalog_total_cases"] == 35
     assert scope["selected_count"] == 35
@@ -3202,7 +3293,7 @@ def test_batch_run_persists_verification_scope_metadata(monkeypatch, tmp_path):
 
     progress = voc_quality_service.get_batch_run_progress(run["run_id"])
     assert progress["verification_scope"]["pending_count"] == 9
-    assert progress["state_model_version"] == "2026-07-26.step3"
+    assert progress["state_model_version"] == "2026-07-31.step3"
 
     voc_quality_service.request_batch_stop(run["run_id"])
     voc_quality_service.execute_batch_run(run["run_id"], case_ids, max_retries=0)
@@ -3658,6 +3749,96 @@ def test_retest_comparison_requires_parent_and_same_versions(monkeypatch, tmp_pa
     assert comparison["comparison_type"] == "RETEST_BEFORE_AFTER"
     assert comparison["case_comparison"][0]["baseline_status"] == "FAIL"
     assert comparison["case_comparison"][0]["candidate_status"] == "PASS"
+
+
+def test_history_retest_pair_auto_selects_latest_linked_retest():
+    history = [
+        {
+            "run_id": "RUN-BASE",
+            "run_type": "MANUAL",
+            "status": "COMPLETED",
+            "started_at": "2026-07-31T09:00:00+09:00",
+        },
+        {
+            "run_id": "RUN-RETEST-OLD",
+            "run_type": "RETEST",
+            "status": "COMPLETED",
+            "parent_run_id": "RUN-BASE",
+            "started_at": "2026-07-31T10:00:00+09:00",
+        },
+        {
+            "run_id": "RUN-RETEST-NEW",
+            "run_type": "RETEST",
+            "status": "COMPLETED",
+            "parent_run_id": "RUN-BASE",
+            "started_at": "2026-07-31T11:00:00+09:00",
+        },
+    ]
+
+    basis = voc_quality_view._history_retest_pair_basis(history, history[0])
+
+    assert basis["enabled"] is True
+    assert basis["baseline_run_id"] == "RUN-BASE"
+    assert basis["candidate_run_id"] == "RUN-RETEST-NEW"
+    assert basis["candidate_count"] == 2
+
+
+def test_history_retest_pair_uses_parent_when_retest_is_selected():
+    history = [
+        {
+            "run_id": "RUN-BASE",
+            "run_type": "BATCH",
+            "status": "COMPLETED",
+            "started_at": "2026-07-31T09:00:00+09:00",
+        },
+        {
+            "run_id": "RUN-RETEST",
+            "run_type": "RETEST",
+            "status": "COMPLETED",
+            "parent_run_id": "RUN-BASE",
+            "started_at": "2026-07-31T10:00:00+09:00",
+        },
+    ]
+
+    basis = voc_quality_view._history_retest_pair_basis(history, history[1])
+
+    assert basis["enabled"] is True
+    assert basis["mode"] == "selected_retest"
+    assert basis["baseline_run_id"] == "RUN-BASE"
+    assert basis["candidate_run_id"] == "RUN-RETEST"
+
+
+def test_history_retest_comparison_plan_disables_button_when_versions_differ(monkeypatch):
+    history = [
+        {
+            "run_id": "RUN-BASE",
+            "run_type": "MANUAL",
+            "status": "COMPLETED",
+            "started_at": "2026-07-31T09:00:00+09:00",
+        },
+        {
+            "run_id": "RUN-RETEST",
+            "run_type": "RETEST",
+            "status": "COMPLETED",
+            "parent_run_id": "RUN-BASE",
+            "started_at": "2026-07-31T10:00:00+09:00",
+        },
+    ]
+    monkeypatch.setattr(
+        voc_quality_view,
+        "compare_voc_runs",
+        lambda *_args: {
+            "compatible": False,
+            "compatibility_differences": ["rubric_versions"],
+        },
+    )
+
+    plan = voc_quality_view._history_retest_comparison_plan(history, history[0])
+
+    assert plan["enabled"] is False
+    assert plan["pair_key"] == "RUN-BASE::RUN-RETEST"
+    assert plan["state_label"] == "기준 불일치"
+    assert "rubric_versions" in plan["detail"]
 
 
 def test_run_history_calculates_progress_without_false_success_rate(monkeypatch, tmp_path):

@@ -189,16 +189,16 @@ def _risk_rows(counts: dict, defects: list[dict], integrity: dict, claims: dict)
     if not integrity.get("ok"):
         risks.append({"level": "HIGH", "risk": "Run 증적 무결성 오류", "action": "누락·불일치 증적 복구"})
     if counts.get("ERROR"):
-        risks.append({"level": "HIGH", "risk": f"ERROR {counts['ERROR']}건", "action": "오류 원인 조치 후 연결 RETEST"})
+        risks.append({"level": "HIGH", "risk": f"ERROR {counts['ERROR']}건", "action": "오류 원인 조치 후 연결 재시험"})
     if counts.get("FAIL"):
         risks.append({"level": "HIGH", "risk": f"FAIL {counts['FAIL']}건", "action": "결함 등록과 재시험"})
     if counts.get("REVIEW_REQUIRED"):
-        risks.append({"level": "MEDIUM", "risk": f"사람 검토 필요 {counts['REVIEW_REQUIRED']}건", "action": "Judge·QA 검토 수행"})
+        risks.append({"level": "MEDIUM", "risk": f"사람 검토 필요 {counts['REVIEW_REQUIRED']}건", "action": "독립 LLM 평가·QA 검토 수행"})
     if counts.get("NOT_RUN"):
         risks.append({"level": "MEDIUM", "risk": f"미실행 {counts['NOT_RUN']}건", "action": "후속 품질 단계에서 실행"})
     pending = [item for item in defects if item.get("evidence_status") == "PENDING"]
     if pending:
-        risks.append({"level": "MEDIUM", "risk": f"미확정 결함 후보 {len(pending)}건", "action": "원본 Run·Trace 확보 전 PENDING 유지"})
+        risks.append({"level": "MEDIUM", "risk": f"미확정 결함 후보 {len(pending)}건", "action": "원본 Run·실행 Trace 확보 전 PENDING 유지"})
     if not claims["baseline"]["verified"] or not claims["final"]["verified"]:
         risks.append({"level": "HIGH", "risk": "33/2 → 35 개선 추이 미증명", "action": "동일 조건 기준선·최종 Run 연결"})
     return risks
@@ -277,16 +277,16 @@ def build_quality_report_model(run_id: str, baseline_run_id: str = "") -> dict:
         ],
         "risks": risks,
         "roles": [
-            {"role": "Evaluator", "scope": "Pipeline 내부 후보 상대평가", "independence": "내부"},
-            {"role": "Critic", "scope": "Pipeline 내부 결함·위험 탐지와 수정 지침", "independence": "내부"},
-            {"role": "독립 LLM Judge", "scope": "최종 산출물의 별도 100점 Rubric 평가", "independence": "별도 호출·모델 등급 기록"},
+            {"role": "Evaluator", "scope": "Agent 파이프라인 내부 후보 상대평가", "independence": "내부"},
+            {"role": "Critic", "scope": "Agent 파이프라인 내부 결함·위험 탐지와 수정 지침", "independence": "내부"},
+            {"role": "독립 LLM 평가", "scope": "최종 산출물의 별도 100점 Rubric 평가", "independence": "별도 호출·모델 등급 기록"},
         ],
         "formula": {
             "status_count": "각 Case summary.status의 단순 건수",
             "coverage": "그룹별 선택 Case 수 / Catalog 그룹 기대 건수",
             "success_rate": "PASS / 전체 35 × 100; 35건이 아니면 정식 성공률로 사용하지 않음",
             "improvement_claim": "동일 suite·catalog·TC hash·Rubric·35 Case인 33/2 기준선과 35 PASS 최종 Run이 모두 검증될 때만 참",
-            "release": "35 PASS + Judge 35 PASS + 타당성 BUSINESS_APPROVED 35건 + 미종결 High/Critical 0건",
+            "release": "35 PASS + 독립 LLM 평가 35 PASS + 개선안 타당성 평가 BUSINESS_APPROVED 35건 + 미종결 High/Critical 0건",
         },
     }
 
@@ -315,9 +315,9 @@ def render_report_txt(model: dict) -> str:
         "1단계: VOC 분석 및 정책 개선안 생성",
         f"- 산출물 확인 Case: {len(model['evaluation']['voc_examples'])}건(대표 표본)",
         "2단계: 6개 멀티 에이전트 내부 품질진단",
-        f"- Trace 보유 Case: {model['evaluation']['trace_cases']}건, 이벤트: {model['evaluation']['trace_events']}건",
-        "3단계: 독립 LLM Judge 평가",
-        f"- 평가 Case: {model['evaluation']['judge_evaluated']}건, 판정: {model['evaluation']['judge_counts']}",
+        f"- 실행 Trace 보유 Case: {model['evaluation']['trace_cases']}건, 이벤트: {model['evaluation']['trace_events']}건",
+        "3단계: 독립 LLM 평가",
+        f"- 독립 LLM 평가 Case: {model['evaluation']['judge_evaluated']}건, 판정: {model['evaluation']['judge_counts']}",
         "",
         "35건 정량 분석",
     ]
@@ -339,7 +339,7 @@ def render_report_txt(model: dict) -> str:
         lines.append(
             f"- {item['defect_id']} | {item['title']} | {item['severity']} | {item['status']} | 증적 {item['evidence_status']}"
         )
-    lines.extend(["", "Evaluator·Critic과 독립 Judge 역할 구분"])
+    lines.extend(["", "Evaluator·Critic과 독립 LLM 평가 역할 구분"])
     for item in model["roles"]:
         lines.append(f"- {item['role']}: {item['scope']} ({item['independence']})")
     lines.extend(["", "잔여 위험과 운영 권고"])
@@ -428,16 +428,16 @@ th,td{{border:1px solid #dce5ee;padding:8px;text-align:left}} th{{background:#ed
 <div class="meta"><b>상태: {html.escape(model['report_state'])}</b> · 최종 판정: <b>{html.escape(model['release_decision'])}</b><br>
 Run ID: {html.escape(run['run_id'])}<br>실행: {html.escape(str(run['started_at']))} ~ {html.escape(str(run['finished_at']))}</div>
 <div class="kpis"><div class="kpi">전체<b>{run['selected_count']}</b></div><div class="kpi">PASS<b>{counts['PASS']}</b></div><div class="kpi">검토 필요<b>{counts['REVIEW_REQUIRED']}</b></div><div class="kpi">오류·실패<b>{counts['ERROR'] + counts['FAIL']}</b></div></div>
-<h2>1단계: VOC 분석 및 정책 개선안 생성</h2><p>대표 산출물 확인 {len(model['evaluation']['voc_examples'])}건. 원문 전체가 아닌 산출물 존재와 Trace 연결 여부를 증적으로 집계했습니다.</p>
-<h2>2단계: 6개 멀티 에이전트 내부 품질진단</h2><p>Trace 보유 Case {model['evaluation']['trace_cases']}건, Trace 이벤트 {model['evaluation']['trace_events']}건.</p>
-<h2>3단계: 독립 LLM Judge 평가</h2><p>Judge 평가 {model['evaluation']['judge_evaluated']}건 · {html.escape(str(model['evaluation']['judge_counts']))}</p>
+<h2>1단계: VOC 분석 및 정책 개선안 생성</h2><p>대표 산출물 확인 {len(model['evaluation']['voc_examples'])}건. 원문 전체가 아닌 산출물 존재와 실행 Trace 연결 여부를 증적으로 집계했습니다.</p>
+<h2>2단계: 6개 멀티 에이전트 내부 품질진단</h2><p>실행 Trace 보유 Case {model['evaluation']['trace_cases']}건, 실행 Trace 이벤트 {model['evaluation']['trace_events']}건.</p>
+<h2>3단계: 독립 LLM 평가</h2><p>독립 LLM 평가 {model['evaluation']['judge_evaluated']}건 · {html.escape(str(model['evaluation']['judge_counts']))}</p>
 <h2>전체 테스트 정량 분석</h2><div class="card">{bars}</div>{coverage_table}
 <h2>테스트 추이와 완료 주장</h2><div class="card warning"><b>{html.escape(model['claims']['claim_text'])}: {claim_state}</b><br>
 기준선: {html.escape('; '.join(model['claims']['baseline']['errors']) or '검증 완료')}<br>
 최종: {html.escape('; '.join(model['claims']['final']['errors']) or '검증 완료')}</div>
 <h2>분기 인터페이스 오류와 API 429 결함관리</h2>{defect_table}
-<h2>Evaluator·Critic과 독립 Judge 역할 구분</h2>{_table_html(['역할','범위','독립성'], [[r['role'],r['scope'],r['independence']] for r in model['roles']])}
-<h2>성공적인 품질평가 판단 근거</h2><p>수행 이력 수치, Case 증적, 독립 Judge, 타당성 승인, 결함 상태를 서로 대조합니다. 현재 미충족 항목이 있어 정식 품질 승인으로 판정하지 않았습니다.</p>
+<h2>Evaluator·Critic과 독립 LLM 평가 역할 구분</h2>{_table_html(['역할','범위','독립성'], [[r['role'],r['scope'],r['independence']] for r in model['roles']])}
+<h2>성공적인 품질평가 판단 근거</h2><p>수행 이력 수치, Case 증적, 독립 LLM 평가, 개선안 타당성 평가 승인, 결함 상태를 서로 대조합니다. 현재 미충족 항목이 있어 정식 품질 승인으로 판정하지 않았습니다.</p>
 <h2>잔여 위험과 운영 권고</h2>{risk_table}
 <h2>최종 완료 판정</h2><div class="card"><b>{html.escape(model['release_decision'])}</b><p>EVIDENCE_DRAFT는 재현 가능한 현재 상태 보고서이며 정식 완료 판정이 아닙니다.</p></div>
 <h2>산식</h2><pre>{html.escape(json.dumps(model['formula'], ensure_ascii=False, indent=2))}</pre>

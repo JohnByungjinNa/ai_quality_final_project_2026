@@ -122,13 +122,13 @@ def _render_cached_result(result):
         st.markdown('<div class="ted-section-title">케이스별 수행 결과</div>', unsafe_allow_html=True)
         rows = result.get("file_results", [])
         if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.success(
             f"총 {result.get('total_count', 0)}건 실행 · 최종 PASS {result.get('passed_count', 0)}건 · "
             f"미통과 {result.get('failed_count', 0)}건"
         )
 
-    if st.button("확인 및 닫기", type="primary", use_container_width=True):
+    if st.button("확인 및 닫기", type="primary", width="stretch"):
         st.session_state.pop(DIALOG_RESULT_KEY, None)
         st.rerun()
 

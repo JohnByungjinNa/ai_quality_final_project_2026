@@ -120,7 +120,7 @@ def compute_release_decision(pipeline_outputs, rule_rate, api_rate, quality_crit
     safety_avg = sum(safety_scores) / len(safety_scores) if safety_scores else 0
 
     if judge_unavailable:
-        return "조건부 배포", "AI Judge API 평가가 실패하여 규칙 검증 결과 중심으로만 판단했습니다."
+        return "조건부 배포", "독립 LLM 평가 API가 실패하여 규칙 검증 결과 중심으로만 판단했습니다."
     if (
         rule_rate >= criteria.rule_pass_rate_min
         and api_rate >= criteria.api_pass_rate_min
@@ -795,12 +795,12 @@ def show_execution_detail_dialog(history_item, focus_case_id=None):
         st.dataframe(
             pd.DataFrame(detail["file_results"]),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         failed_rows = build_failed_case_rows(pipeline_outputs, quality_criteria)
         if failed_rows:
             st.markdown("#### 실패/위험 사례")
-            st.dataframe(pd.DataFrame(failed_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(failed_rows), hide_index=True, width="stretch")
 
     with tab_rule:
         render_agent_quality_report(
@@ -858,7 +858,7 @@ def show_execution_detail_dialog(history_item, focus_case_id=None):
         st.dataframe(
             pd.DataFrame([report_rows]),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         if reports:
@@ -871,7 +871,7 @@ def show_execution_detail_dialog(history_item, focus_case_id=None):
                     {"구분": "Archive", "경로": reports.get("archive", {}).get("run_dir", "") if isinstance(reports.get("archive"), dict) else ""},
                 ]
             )
-            st.dataframe(report_table, hide_index=True, use_container_width=True)
+            st.dataframe(report_table, hide_index=True, width="stretch")
 
         inputs = detail.get("inputs", {})
         if inputs:
@@ -882,7 +882,7 @@ def show_execution_detail_dialog(history_item, focus_case_id=None):
                     {"구분": "선택 업로드 목록", "경로": inputs.get("selected_uploads", "")},
                 ]
             )
-            st.dataframe(input_table, hide_index=True, use_container_width=True)
+            st.dataframe(input_table, hide_index=True, width="stretch")
 
         if pipeline_outputs:
             st.markdown("#### 전체 AI 답변 평가")

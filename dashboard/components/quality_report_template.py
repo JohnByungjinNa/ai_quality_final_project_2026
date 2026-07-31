@@ -64,10 +64,10 @@ VOC_DISPLAY_LABELS = {
     "UNKNOWN": "확인 필요",
     "Evaluator": "내부 평가자",
     "Critic": "위험 검토자",
-    "독립 LLM Judge": "독립 AI 평가자",
-    "LLM Judge": "독립 AI 평가자",
+    "독립 LLM 평가": "독립 LLM 평가자",
+    "LLM Judge": "독립 LLM 평가자",
     "Agent": "에이전트",
-    "Pipeline": "파이프라인",
+    "Pipeline": "Agent 파이프라인",
     "Rubric": "평가 기준",
     "Catalog": "테스트 목록",
     "Artifact": "증적 파일",
@@ -539,16 +539,16 @@ def build_voc_quality_report_html(model):
             "2단계 · 6개 에이전트 내부 진단",
             int(evaluation.get("trace_cases", 0) or 0),
             total,
-            f"추적 이벤트 {int(evaluation.get('trace_events', 0) or 0)}건",
+            f"실행 Trace 이벤트 {int(evaluation.get('trace_events', 0) or 0)}건",
         ),
         (
-            "3단계 · 독립 AI 평가",
+            "3단계 · 독립 LLM 평가",
             int(evaluation.get("judge_evaluated", 0) or 0),
             total,
             _voc_count_summary(evaluation.get("judge_counts", {})),
         ),
         (
-            "4단계 · 개선안 타당성",
+            "4단계 · 개선안 타당성 평가",
             int(evaluation.get("validity_evaluated", 0) or 0),
             total,
             _voc_count_summary(evaluation.get("validity_counts", {})),
@@ -653,7 +653,7 @@ def build_voc_quality_report_html(model):
 
     return style + f"""
     <div class="qrt-report">
-      <header class="qrt-head"><div><h1>VOC 품질진단 결과 보고서</h1><p>VOC 개선안 생성부터 에이전트 내부 진단, 독립 평가, 업무 승인까지 연결된 품질 증적입니다.</p></div><div class="qrt-meta">{metadata_rows}</div></header>
+      <header class="qrt-head"><div><h1>VOC 품질진단 결과 보고서</h1><p>VOC 개선안 생성부터 에이전트 내부 진단, 독립 LLM 평가, 업무 승인까지 연결된 품질 증적입니다.</p></div><div class="qrt-meta">{metadata_rows}</div></header>
       <section class="qrt-section"><div class="qrt-section-title">1. 테스트 요약</div><div class="qrt-kpis">{card_html}</div>
         <div class="qrt-charts">
           <div class="qrt-chart"><h3>판정 결과</h3><div class="qrt-donut-wrap"><div class="qrt-donut" style="{donut_style}"><b>합계<br>{total}건</b></div><div class="qrt-legend">{''.join(legend_rows)}</div></div></div>

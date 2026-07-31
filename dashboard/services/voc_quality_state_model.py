@@ -11,20 +11,20 @@ RUN_TYPES = ("MANUAL", "BATCH", "RETEST", "BASELINE")
 RUN_OPERATION_POLICIES = {
     "MANUAL": {
         "label": "수동 단건 수행",
-        "basis": "Case 1건을 즉시 실행해 Agent Pipeline·Judge·타당성 흐름을 확인합니다.",
+        "basis": "Case 1건을 즉시 실행해 Agent 파이프라인·독립 LLM 평가·개선안 타당성 평가 흐름을 확인합니다.",
         "recommended_when": "개별 Case 디버깅, 시연 전 단건 확인, 개선안 보완 후 빠른 확인",
         "lineage_rule": "동일 Case를 다시 실행해도 과거 Run은 유지되며 새 Run으로 기록합니다.",
-        "next_review": "결과가 안정적이면 독립 Judge와 타당성 평가로 넘깁니다.",
+        "next_review": "결과가 안정적이면 독립 LLM 평가와 개선안 타당성 평가로 넘깁니다.",
     },
     "BATCH": {
         "label": "검증 회차",
         "basis": "선택한 Case 묶음을 하나의 회차로 실행해 배포 후보 품질을 봅니다.",
         "recommended_when": "35건 전체 회차, 실행 가능 Case 묶음, 릴리즈 전 회귀 검증",
         "lineage_rule": "새 회차이므로 부모 Run 없이 독립 Run으로 기록합니다.",
-        "next_review": "회차 기준 통과율, 미실행/후속 구현, 결함, 타당성 상태를 확인합니다.",
+        "next_review": "회차 기준 통과율, 미실행/후속 구현, 결함, 개선안 타당성 상태를 확인합니다.",
     },
     "RETEST": {
-        "label": "보완 후 RETEST",
+        "label": "보완 후 재시험",
         "basis": "기존 Run에서 발견된 실패·검토 필요 Case를 보완한 뒤 부모 Run과 비교합니다.",
         "recommended_when": "VOC 근거 보강, 개선안 재작성, Agent/프롬프트 수정 후 확인",
         "lineage_rule": "parent_run_id로 원본 Run과 연결되어 전후 비교 대상이 됩니다.",
@@ -35,20 +35,20 @@ RUN_OPERATION_POLICIES = {
         "basis": "향후 개선 비교를 위해 저장하는 기준 Run입니다.",
         "recommended_when": "초기 기준 수립, Rubric/모델 변경 전 비교점 고정",
         "lineage_rule": "비교 기준으로 사용하며 배포 승인을 직접 의미하지 않습니다.",
-        "next_review": "후속 BATCH 또는 RETEST Run과 비교합니다.",
+        "next_review": "후속 일괄 Run 또는 재시험 Run과 비교합니다.",
     },
     "RUBRIC_REEVALUATION": {
         "label": "Rubric 변경 재평가",
         "basis": "Run 저장 당시 Rubric과 현재 Rubric의 버전 또는 해시가 달라졌는지 확인합니다.",
         "recommended_when": "Rubric 기준 변경 후 과거 Run을 현재 기준으로 다시 판단해야 할 때",
-        "lineage_rule": "A2A 실행 결과는 유지하고 평가 기준만 새로 적용하는 재평가 흐름입니다.",
-        "next_review": "기준 변경 항목을 확인한 뒤 Judge/타당성 재평가 여부를 결정합니다.",
+        "lineage_rule": "Agent 파이프라인 실행 결과는 유지하고 평가 기준만 새로 적용하는 재평가 흐름입니다.",
+        "next_review": "기준 변경 항목을 확인한 뒤 독립 LLM 평가/개선안 타당성 평가 재평가 여부를 결정합니다.",
     },
 }
 RUBRIC_VERSION_SCOPES = {
-    "internal_pipeline": "내부 Pipeline",
-    "independent_judge": "독립 Judge",
-    "improvement_validity": "개선안 타당성",
+    "internal_pipeline": "내부 파이프라인",
+    "independent_judge": "독립 LLM 평가",
+    "improvement_validity": "개선안 타당성 평가",
 }
 RUN_LIFECYCLE_STATUSES = ("RUNNING", "COMPLETED", "ERROR", "INTERRUPTED")
 CASE_EXECUTION_STATUSES = ("PASS", "FAIL", "ERROR", "NOT_RUN", "REVIEW_REQUIRED")
@@ -81,8 +81,8 @@ VALIDITY_REVIEW_ACTIONS = (
     "NO_ACTION",
 )
 VALIDITY_REVIEW_ACTION_LABELS = {
-    "VALIDITY_EVALUATION_REQUIRED": "타당성 평가 필요",
-    "REWORK_REQUIRED": "보완/RETEST 필요",
+    "VALIDITY_EVALUATION_REQUIRED": "개선안 타당성 평가 필요",
+    "REWORK_REQUIRED": "보완·재시험 필요",
     "QA_REVIEW": "QA 검토 가능",
     "BUSINESS_APPROVAL": "업무 승인 가능",
     "FORMAL_APPROVED": "정식 승인 완료",
@@ -151,8 +151,8 @@ VOC_STATUS_DISPLAY_LABELS = {
     "CLIENT_ERROR": "클라이언트 오류",
     "SERVER_ERROR": "서버 오류",
     "RPC_ERROR": "RPC 오류",
-    "VALIDITY_EVALUATION_REQUIRED": "타당성 평가 필요",
-    "REWORK_REQUIRED": "보완/RETEST 필요",
+    "VALIDITY_EVALUATION_REQUIRED": "개선안 타당성 평가 필요",
+    "REWORK_REQUIRED": "보완·재시험 필요",
     "QA_REVIEW": "QA 검토 가능",
     "BUSINESS_APPROVAL": "업무 승인 가능",
     "NO_ACTION": "추가 조치 없음",
@@ -161,42 +161,42 @@ VOC_STATUS_DISPLAY_LABELS = {
 
 VOC_NEXT_ACTIONS = {
     "WAIT_PIPELINE": {
-        "label": "파이프라인 완료 대기",
+        "label": "Agent 파이프라인 완료 대기",
         "menu": "수동/일괄 TC 수행",
         "detail": "현재 실행 중인 회차가 끝날 때까지 진행 상태를 확인합니다.",
         "tone": "blue",
         "icon": "progress_activity",
     },
     "CHECK_PIPELINE_ERROR": {
-        "label": "파이프라인 오류 확인",
+        "label": "Agent 파이프라인 오류 확인",
         "menu": "수행 이력",
-        "detail": "오류 Case의 Trace와 증적을 확인한 뒤 Agent 상태 또는 입력 데이터를 보완합니다.",
+        "detail": "오류 Case의 실행 Trace와 증적을 확인한 뒤 Agent 상태 또는 입력 데이터를 보완합니다.",
         "tone": "red",
         "icon": "error",
     },
     "REVIEW_PIPELINE_RESULT": {
-        "label": "파이프라인 결과 보완",
+        "label": "Agent 파이프라인 결과 보완",
         "menu": "수행 이력",
         "detail": "실패·검토 필요 Case의 VOC 근거, 기대값, Agent 응답을 확인합니다.",
         "tone": "orange",
         "icon": "rate_review",
     },
     "RUN_JUDGE": {
-        "label": "독립 Judge 평가",
+        "label": "독립 LLM 평가",
         "menu": "수행 이력",
-        "detail": "저장된 파이프라인 결과를 독립 LLM Judge로 재평가해 객관 판정 증적을 만듭니다.",
+        "detail": "저장된 Agent 파이프라인 결과를 독립 LLM 평가로 재평가해 객관 판정 증적을 만듭니다.",
         "tone": "blue",
         "icon": "rule",
     },
     "RUN_VALIDITY": {
-        "label": "타당성 자동 평가",
+        "label": "개선안 타당성 평가",
         "menu": "개선안 타당성 검증",
-        "detail": "A2A 최종 개선안과 Judge 증적을 기준으로 실행 가능성·근거·KPI를 평가합니다.",
+        "detail": "Agent 파이프라인 최종 개선안과 독립 LLM 평가 증적을 기준으로 실행 가능성·근거·KPI를 평가합니다.",
         "tone": "blue",
         "icon": "fact_check",
     },
     "REWORK_AND_RETEST": {
-        "label": "보완 입력·RETEST",
+        "label": "보완 입력·재시험",
         "menu": "개선안 타당성 검증",
         "detail": "부족한 담당·일정·KPI·근거를 보완하고 필요하면 연결 재시험을 수행합니다.",
         "tone": "red",
@@ -226,7 +226,7 @@ VOC_NEXT_ACTIONS = {
     "RUBRIC_REEVALUATE": {
         "label": "Rubric 재평가",
         "menu": "수행 이력",
-        "detail": "Run 저장 당시 평가 기준과 현재 Rubric이 달라졌습니다. 기존 A2A 결과를 보존한 상태에서 평가 기준 변경 영향을 확인합니다.",
+        "detail": "Run 저장 당시 평가 기준과 현재 Rubric이 달라졌습니다. 기존 Agent 파이프라인 결과를 보존한 상태에서 평가 기준 변경 영향을 확인합니다.",
         "tone": "orange",
         "icon": "rule_settings",
     },
@@ -343,17 +343,17 @@ def _case_judge_action(case_result: dict) -> dict | None:
     if judge_status == "ERROR":
         return _action_payload(
             "RUN_JUDGE",
-            detail="독립 Judge 평가가 오류로 끝났습니다. Provider/API Key 상태를 확인한 뒤 재평가합니다.",
+            detail="독립 LLM 평가가 오류로 끝났습니다. Provider/API Key 상태를 확인한 뒤 재평가합니다.",
         )
     if judge_status == "NOT_RUN":
         return _action_payload(
             "RUN_JUDGE",
-            detail="파이프라인 결과는 있으나 독립 Judge 증적이 없습니다. 저장된 결과 재평가를 실행합니다.",
+            detail="Agent 파이프라인 결과는 있으나 독립 LLM 평가 증적이 없습니다. 저장된 결과 재평가를 실행합니다.",
         )
     if judge_status in {"FAIL", "REVIEW_REQUIRED"}:
         return _action_payload(
             "REVIEW_PIPELINE_RESULT",
-            detail=f"독립 Judge 판정이 {voc_status_label(judge_status)}입니다. 판정 근거와 개선안을 확인합니다.",
+            detail=f"독립 LLM 평가 판정이 {voc_status_label(judge_status)}입니다. 판정 근거와 개선안을 확인합니다.",
         )
     return None
 
@@ -452,12 +452,12 @@ def voc_run_next_action(run: dict) -> dict:
     if judge_error:
         return _action_payload(
             "RUN_JUDGE",
-            detail=f"독립 Judge 오류 {judge_error}건이 있습니다. Provider/API Key 상태 확인 후 재평가합니다.",
+            detail=f"독립 LLM 평가 오류 {judge_error}건이 있습니다. Provider/API Key 상태 확인 후 재평가합니다.",
         )
     if pass_count and judge_missing:
         return _action_payload(
             "RUN_JUDGE",
-            detail=f"파이프라인 통과 Case 중 Judge 미수행 대상이 있습니다. 독립 Judge 증적을 먼저 만듭니다.",
+            detail=f"Agent 파이프라인 통과 Case 중 독립 LLM 평가 미수행 대상이 있습니다. 독립 LLM 평가 증적을 먼저 만듭니다.",
         )
 
     validity_state = str(run.get("validity_state") or "DRAFT")
@@ -650,7 +650,7 @@ def run_lineage_policy(run: dict | None) -> dict:
         }
     )
     if run_type == "RETEST" and not parent_run_id:
-        policy["lineage_rule"] = "RETEST로 표시되었지만 parent_run_id가 없어 원본 Run 연결 확인이 필요합니다."
+        policy["lineage_rule"] = "재시험으로 표시되었지만 parent_run_id가 없어 원본 Run 연결 확인이 필요합니다."
     return policy
 
 

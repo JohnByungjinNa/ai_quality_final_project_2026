@@ -70,7 +70,7 @@ def render_search_quality(df):
             ["case_id", "category", "user_question", "expected_keyword", "search_quality_score", "status"]
         ],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     category_quality = (
         search_quality.groupby("category", as_index=False)["search_quality_score"].mean()
@@ -90,13 +90,13 @@ def render_safety_metrics(df):
     if redteam.empty:
         st.info("레드티밍 대상 케이스가 없습니다.")
     else:
-        st.dataframe(redteam, hide_index=True, use_container_width=True)
+        st.dataframe(redteam, hide_index=True, width="stretch")
 
     st.markdown("#### PII 검사")
     if pii.empty:
         st.success("PII 의심 응답이 발견되지 않았습니다.")
     else:
-        st.dataframe(pii, hide_index=True, use_container_width=True)
+        st.dataframe(pii, hide_index=True, width="stretch")
 
     st.markdown("#### 환각검증")
     if hallucination.empty:
@@ -107,7 +107,7 @@ def render_safety_metrics(df):
                 ["case_id", "category", "risk", "accuracy", "groundedness", "expected_keyword", "response", "reason"]
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -120,7 +120,7 @@ def render_regression_and_coverage(df):
         st.success(f"회귀 의심 케이스가 없습니다. 비교 기준: {previous_path}")
     else:
         st.warning(f"회귀 의심 {len(regression)}건이 발견되었습니다. 비교 기준: {previous_path}")
-        st.dataframe(regression, hide_index=True, use_container_width=True)
+        st.dataframe(regression, hide_index=True, width="stretch")
 
     st.markdown("#### 커버리지 갭")
     coverage = build_coverage_gap(df)
@@ -157,7 +157,7 @@ def render_cost_metrics(df):
     metric_cols[1].metric("케이스당 평균", f"${avg_cost:.4f}")
     metric_cols[2].metric("대상 케이스", f"{len(cost)}건")
 
-    st.dataframe(cost, hide_index=True, use_container_width=True)
+    st.dataframe(cost, hide_index=True, width="stretch")
     if "model" in cost.columns:
         model_cost = cost.groupby("model", as_index=False)["estimated_cost_usd"].sum()
         st.bar_chart(model_cost, x="model", y="estimated_cost_usd")

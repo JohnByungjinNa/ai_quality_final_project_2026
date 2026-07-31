@@ -60,7 +60,7 @@ def render_knowledge_base_page():
                     "업로드 저장",
                     key="knowledge_upload_save_button",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not pending_upload_files,
                 )
     with status_cols[1]:
@@ -92,7 +92,7 @@ def render_knowledge_base_page():
                     "검색 반영 확인",
                     key="rag_rebuild_button",
                     type="primary" if has_changes else "secondary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not has_changes,
                     help="업로드/삭제/수정된 파일을 답변 검색 인덱스에 반영합니다.",
                 )
@@ -185,7 +185,7 @@ def render_knowledge_base_page():
             file_list.drop(columns=["_filename"]),
             key="knowledge_file_table",
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             height=250,
             disabled=["NO", "파일명", "형식", "크기(KB)", "수정일시", "상태"],
             column_config={
@@ -208,7 +208,7 @@ def render_knowledge_base_page():
 
         st.session_state.knowledge_preview_file = preview_filename
 
-        if st.button("선택 삭제", use_container_width=True, disabled=not selected_filenames):
+        if st.button("선택 삭제", width="stretch", disabled=not selected_filenames):
             for filename in selected_filenames:
                 remove_knowledge_upload_file(filename)
             st.session_state.knowledge_preview_file = None
@@ -305,7 +305,7 @@ def render_knowledge_base_page():
                     for match in matches
                 ]
             )
-            st.dataframe(match_rows, hide_index=True, use_container_width=True)
+            st.dataframe(match_rows, hide_index=True, width="stretch")
         else:
             st.info("업로드 문서에서 관련 내용을 찾지 못했습니다.")
 

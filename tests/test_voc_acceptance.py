@@ -137,5 +137,5 @@ def test_acceptance_page_renders_without_exceptions():
     app.run()
 
     assert not app.exception
-    assert app.selectbox[0].label == "최종 인수 대상 Run"
+    assert any(selectbox.label == "최종 인수 대상 Run" for selectbox in app.selectbox)
     assert app.metric[0].label == "인수 판정"

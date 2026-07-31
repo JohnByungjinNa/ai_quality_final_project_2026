@@ -85,10 +85,10 @@ def independence_grade(provider: str, model: str, generator_snapshot: dict) -> d
     judge_provider = str(provider or "").lower()
     if judge_provider != generator_provider:
         grade = "A"
-        reason = "최종 개선안 생성 Provider와 Judge Provider가 다릅니다."
+        reason = "최종 개선안 생성 Provider와 독립 LLM 평가 Provider가 다릅니다."
     elif _normalized_model(model) != _normalized_model(generator_model):
         grade = "B"
-        reason = "Provider는 같지만 모델과 호출 세션·Judge 프롬프트가 분리됩니다."
+        reason = "Provider는 같지만 모델과 호출 세션·독립 LLM 평가 프롬프트가 분리됩니다."
     else:
         grade = "C"
         reason = "최종 개선안 생성과 같은 Provider·모델이어서 편향 위험이 높습니다."
@@ -137,9 +137,9 @@ def evaluate_independent_judge(
 ) -> dict:
     provider = str(provider or "").lower()
     if provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(f"지원하지 않는 Judge Provider입니다: {provider}")
+        raise ValueError(f"지원하지 않는 독립 LLM 평가 Provider입니다: {provider}")
     if not str(model or "").strip():
-        raise ValueError("Judge 모델명을 입력하세요.")
+        raise ValueError("독립 LLM 평가 모델명을 입력하세요.")
 
     prompt = _build_prompt(case, execution, trace, rubric)
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -244,7 +244,7 @@ def evaluate_independent_judge(
                 }
             time.sleep(max(0.0, backoff_base_seconds) * (2 ** (attempt - 1)))
 
-    raise RuntimeError("Judge 실행이 예상하지 못한 상태로 종료되었습니다.")
+    raise RuntimeError("독립 LLM 평가가 예상하지 못한 상태로 종료되었습니다.")
 
 
 def _build_prompt(case: dict, execution: dict, trace: dict, rubric: dict) -> str:
@@ -282,7 +282,7 @@ def _build_prompt(case: dict, execution: dict, trace: dict, rubric: dict) -> str
         "recommendations": ["보완 권고"],
     }
     return (
-        "당신은 VOC 개선안 생성 Pipeline과 분리된 독립 품질 Judge입니다.\n"
+        "당신은 VOC 개선안 생성 Agent 파이프라인과 분리된 독립 LLM 평가자입니다.\n"
         "아래 증적만 사용하고, 없는 사실을 추정하지 마세요. 각 차원 점수는 max_points 이하여야 합니다.\n"
         "각 차원의 reason은 300자 이내, evidence·risks·recommendations는 각각 최대 5개와 항목당 200자 이내로 작성하세요.\n"
         "응답은 설명문이나 Markdown 없이 JSON 객체 하나만 반환하세요.\n\n"
@@ -366,7 +366,7 @@ def _parse_json_response(raw_text: str) -> dict:
         text = fenced.group(1).strip()
     payload = json.loads(text)
     if not isinstance(payload, dict):
-        raise ValueError("Judge 응답은 JSON 객체여야 합니다.")
+        raise ValueError("독립 LLM 평가 응답은 JSON 객체여야 합니다.")
     return payload
 
 
@@ -374,7 +374,7 @@ def _validate_and_score(payload: dict, rubric: dict) -> dict:
     dimensions = rubric.get("dimensions", {})
     scores = payload.get("dimension_scores")
     if not isinstance(scores, dict) or set(scores) != set(dimensions):
-        raise ValueError("Judge 차원 점수 키가 Rubric과 일치하지 않습니다.")
+        raise ValueError("독립 LLM 평가 차원 점수 키가 Rubric과 일치하지 않습니다.")
     normalized = {}
     all_floors = True
     for key, spec in dimensions.items():
@@ -396,7 +396,7 @@ def _validate_and_score(payload: dict, rubric: dict) -> dict:
         raise ValueError("정의되지 않은 즉시 FAIL 규칙이 포함됐습니다.")
     for field in ("evidence", "risks", "recommendations"):
         if field not in payload or not isinstance(payload[field], list):
-            raise ValueError(f"Judge 응답의 {field}는 배열이어야 합니다.")
+            raise ValueError(f"독립 LLM 평가 응답의 {field}는 배열이어야 합니다.")
     total = round(sum(item["score"] for item in normalized.values()), 2)
     if triggered or total < 65:
         decision = "FAIL"

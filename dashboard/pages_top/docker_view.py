@@ -61,7 +61,7 @@ def render_service_links():
         with link_cols[index]:
             st.markdown(f"**{service['서비스']}**")
             st.caption(service["역할"])
-            st.link_button("열기", service["URL"], use_container_width=True)
+            st.link_button("열기", service["URL"], width="stretch")
 
 
 def render_compose_status():
@@ -78,7 +78,7 @@ def render_compose_status():
 
     rows = parse_compose_json(result["stdout"])
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
         st.code(result["stdout"] or "표시할 Compose 서비스가 없습니다.", language="text")
 

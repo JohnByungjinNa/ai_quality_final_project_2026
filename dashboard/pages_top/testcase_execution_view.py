@@ -120,7 +120,7 @@ def render_testcase_execution_page():
         target_list.drop(columns=["_id"]),
         key="testcase_execution_target_table",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         disabled=["NO", "파일명", "형식", "테스트케이스 수", "컬럼 수", "업로드일시", "상태"],
         column_config={
             "선택": st.column_config.CheckboxColumn("선택", help="실행할 테스트케이스를 선택하세요."),
@@ -154,7 +154,7 @@ def render_testcase_execution_page():
     run_clicked = st.button(
         "테스트케이스 실행",
         type="primary",
-        use_container_width=False,
+        width="content",
         disabled=not selected_items or bool(criteria_errors),
     )
 

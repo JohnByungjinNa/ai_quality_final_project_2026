@@ -113,7 +113,7 @@ def render_report_tab(result_json_path=None, run_id=None, pipeline_outputs=None,
             mime="text/html",
             disabled=not html_bytes,
             key=f"download_html_{run_key}",
-            use_container_width=True,
+            width="stretch",
         )
     with header_cols[3]:
         st.download_button(
@@ -123,7 +123,7 @@ def render_report_tab(result_json_path=None, run_id=None, pipeline_outputs=None,
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             disabled=not docx_bytes,
             key=f"download_docx_{run_key}",
-            use_container_width=True,
+            width="stretch",
         )
     with header_cols[4]:
         st.download_button(
@@ -133,7 +133,7 @@ def render_report_tab(result_json_path=None, run_id=None, pipeline_outputs=None,
             mime="application/pdf",
             disabled=not pdf_bytes,
             key=f"download_pdf_{run_key}",
-            use_container_width=True,
+            width="stretch",
         )
 
     if not html_report:

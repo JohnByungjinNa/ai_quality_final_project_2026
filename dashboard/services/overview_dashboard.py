@@ -196,7 +196,7 @@ def build_quality_indicators(items):
 def build_latency_breakdown(items):
     metrics = {
         "api.duration_ms": "API 전체",
-        "llm.duration_ms": "LLM Judge",
+        "llm.duration_ms": "독립 LLM 평가",
         "rag.duration_ms": "RAG 검색",
         "test.duration_ms": "테스트 실행",
     }

@@ -512,7 +512,7 @@ VALIDITY_SUPPLEMENT_FIELDS = (
     ("schedule", "일정/마일스톤"),
     ("kpi", "정량 KPI"),
     ("priority", "우선순위"),
-    ("evidence", "VOC·Trace 근거"),
+    ("evidence", "VOC·실행 Trace 근거"),
     ("risk", "리스크/우회방안"),
     ("note", "검토 메모"),
 )
@@ -568,9 +568,9 @@ def _execution_with_validity_supplement(execution: dict, supplement: dict | None
     supplement_text = _validity_supplement_text(normalized)
     original_policy = str(result.get("policy") or "").strip()
     result["policy"] = (
-        f"{original_policy}\n\n[사용자 타당성 보완 입력]\n{supplement_text}"
+        f"{original_policy}\n\n[사용자 개선안 타당성 평가 보완 입력]\n{supplement_text}"
         if original_policy
-        else f"[사용자 타당성 보완 입력]\n{supplement_text}"
+        else f"[사용자 개선안 타당성 평가 보완 입력]\n{supplement_text}"
     )
     result["validity_supplement"] = normalized
     result["validity_supplement_applied"] = True
@@ -1147,10 +1147,10 @@ def _normalize_judge_config(config: dict | None) -> dict:
     options = {item["provider"]: item for item in judge_provider_options()}
     provider = str(config.get("provider") or "anthropic").lower()
     if provider not in options:
-        raise ValueError(f"지원하지 않는 Judge Provider입니다: {provider}")
+        raise ValueError(f"지원하지 않는 독립 LLM 평가 Provider입니다: {provider}")
     model = str(config.get("model") or options[provider]["default_model"]).strip()
     if enabled and not options[provider]["credential_configured"]:
-        raise ValueError(f"{options[provider]['label']} Judge API 자격 증명이 설정되지 않았습니다.")
+        raise ValueError(f"{options[provider]['label']} 독립 LLM 평가 API 자격 증명이 설정되지 않았습니다.")
     return {
         "enabled": enabled,
         "provider": provider,
@@ -1185,11 +1185,11 @@ def _evaluate_case_judge(
     model_snapshot: dict,
 ) -> dict:
     if not judge_config["enabled"]:
-        return _not_run_judge_result(judge_config, "Judge를 선택하지 않았습니다.")
+        return _not_run_judge_result(judge_config, "독립 LLM 평가를 선택하지 않았습니다.")
     if mode != "voc":
-        return _not_run_judge_result(judge_config, "격리 장애 Case는 개선안 Judge 평가 대상이 아닙니다.")
+        return _not_run_judge_result(judge_config, "격리 장애 Case는 독립 LLM 평가 대상이 아닙니다.")
     if not execution_ok:
-        return _not_run_judge_result(judge_config, "파이프라인 실행 실패로 Judge를 수행하지 않았습니다.")
+        return _not_run_judge_result(judge_config, "Agent 파이프라인 실행 실패로 독립 LLM 평가를 수행하지 않았습니다.")
     return _sanitize_evidence_value(
         voc_judge_service.evaluate_independent_judge(
             case=_sanitize_evidence_value(case),
@@ -1365,7 +1365,7 @@ def run_test_case(
                     "status": "NOT_RUN",
                     "message": "실행 저장 중 오류로 품질 채점을 수행하지 않았습니다.",
                 },
-                judge_result=_not_run_judge_result(judge_config, "파이프라인 또는 저장 오류로 Judge를 수행하지 않았습니다."),
+                judge_result=_not_run_judge_result(judge_config, "Agent 파이프라인 또는 저장 오류로 독립 LLM 평가를 수행하지 않았습니다."),
             )
             voc_run_store.complete_voc_run(
                 run_id,
@@ -1903,7 +1903,7 @@ def _successful_voc_case_ids(run_id: str, case_results: list[dict]) -> tuple[lis
             skipped.append(
                 {
                     "case_id": case_id,
-                    "reason": "성공한 VOC Pipeline 결과가 없어 평가 재사용 대상이 아닙니다.",
+                    "reason": "성공한 VOC Agent 파이프라인 결과가 없어 평가 재사용 대상이 아닙니다.",
                 }
             )
     return eligible, skipped
@@ -1927,39 +1927,39 @@ def build_voc_rubric_reevaluation_plan(run_id: str) -> dict:
         actions.append(
             {
                 "scope": "internal_pipeline",
-                "label": "내부 Pipeline",
+                "label": "내부 파이프라인",
                 "method": "RETEST_REQUIRED",
-                "method_label": "RETEST 권장",
+                "method_label": "재시험 권장",
                 "target_count": len(selected_case_ids),
                 "target_case_ids": selected_case_ids,
                 "menu": "일괄 TC 수행 또는 수동 TC 수행",
-                "description": "Agent Pipeline 기준이 바뀐 경우 기존 답변을 재점수화하기보다 부모 Run을 둔 RETEST로 다시 실행하는 것이 안전합니다.",
+                "description": "Agent 파이프라인 기준이 바뀐 경우 기존 답변을 재점수화하기보다 부모 Run을 둔 재시험으로 다시 실행하는 것이 안전합니다.",
             }
         )
     if "independent_judge" in changed_scopes:
         actions.append(
             {
                 "scope": "independent_judge",
-                "label": "독립 Judge",
+                "label": "독립 LLM 평가",
                 "method": "JUDGE_REEVALUATION",
-                "method_label": "Judge 재평가",
+                "method_label": "독립 LLM 재평가",
                 "target_count": len(eligible_case_ids),
                 "target_case_ids": eligible_case_ids,
                 "menu": "수행 이력 상세",
-                "description": "저장된 A2A Pipeline 결과는 유지하고 현재 독립 Judge Rubric으로 다시 평가합니다.",
+                "description": "저장된 Agent 파이프라인 결과는 유지하고 현재 독립 LLM 평가 Rubric으로 다시 평가합니다.",
             }
         )
     if "improvement_validity" in changed_scopes:
         actions.append(
             {
                 "scope": "improvement_validity",
-                "label": "개선안 타당성",
+                "label": "개선안 타당성 평가",
                 "method": "VALIDITY_REEVALUATION",
-                "method_label": "타당성 재평가",
+                "method_label": "개선안 타당성 재평가",
                 "target_count": len(eligible_case_ids),
                 "target_case_ids": eligible_case_ids,
                 "menu": "개선안 타당성 검증",
-                "description": "저장된 A2A 개선안과 Judge 증적을 유지하고 현재 타당성 Rubric으로 다시 평가합니다.",
+                "description": "저장된 Agent 파이프라인 개선안과 독립 LLM 평가 증적을 유지하고 현재 개선안 타당성 Rubric으로 다시 평가합니다.",
             }
         )
 
@@ -1968,23 +1968,23 @@ def build_voc_rubric_reevaluation_plan(run_id: str) -> dict:
         recommendation = "현재 Rubric 기준과 Run 저장 당시 기준이 같아 재평가가 필요하지 않습니다."
     elif "internal_pipeline" in changed_scopes:
         status = "RETEST_RECOMMENDED"
-        recommendation = "내부 Pipeline 기준 변경이 포함되어 RETEST를 우선 권장합니다. Judge/타당성 기준 변경은 RETEST 결과 기준으로 다시 평가하는 편이 가장 안전합니다."
+        recommendation = "내부 파이프라인 기준 변경이 포함되어 재시험을 우선 권장합니다. 독립 LLM 평가/개선안 타당성 평가 기준 변경은 재시험 결과 기준으로 다시 평가하는 편이 가장 안전합니다."
     elif {"independent_judge", "improvement_validity"}.issubset(changed_scopes):
         status = "REEVALUATION_READY"
-        recommendation = "Judge 재평가 후 타당성 재평가 순서로 진행하세요. 타당성 평가는 Judge 증적을 함께 참고합니다."
+        recommendation = "독립 LLM 재평가 후 개선안 타당성 재평가 순서로 진행하세요. 개선안 타당성 평가는 독립 LLM 평가 증적을 함께 참고합니다."
     elif "independent_judge" in changed_scopes:
         status = "REEVALUATION_READY"
-        recommendation = "저장된 A2A 결과를 기준으로 독립 Judge 재평가를 진행하세요."
+        recommendation = "저장된 Agent 파이프라인 결과를 기준으로 독립 LLM 재평가를 진행하세요."
     else:
         status = "REEVALUATION_READY"
-        recommendation = "저장된 A2A 개선안과 현재 Judge 증적을 기준으로 타당성 재평가를 진행하세요."
+        recommendation = "저장된 Agent 파이프라인 개선안과 현재 독립 LLM 평가 증적을 기준으로 개선안 타당성 재평가를 진행하세요."
 
     return {
         "run_id": run_id,
         "created_at": datetime.now().astimezone().isoformat(),
         "status": status,
         "recommendation": recommendation,
-        "result_policy": "원본 A2A Pipeline 결과는 덮어쓰지 않고, 재평가 결과는 기존 평가 이력에 누적합니다.",
+        "result_policy": "원본 Agent 파이프라인 결과는 덮어쓰지 않고, 재평가 결과는 기존 평가 이력에 누적합니다.",
         "run_type": manifest.get("run_type", ""),
         "parent_run_id": manifest.get("run_metadata", {}).get("parent_run_id", ""),
         "selected_count": len(selected_case_ids),
@@ -2065,7 +2065,7 @@ def load_voc_case_history_detail(run_id: str, case_id: str) -> dict:
 def save_voc_validity_supplement(run_id: str, case_id: str, supplement: dict) -> dict:
     normalized = _normalize_validity_supplement(supplement)
     if normalized["is_empty"]:
-        raise ValueError("저장할 타당성 보완 입력이 없습니다.")
+        raise ValueError("저장할 개선안 타당성 평가 보완 입력이 없습니다.")
     return voc_run_store.save_validity_supplement(run_id, case_id, normalized)
 
 
@@ -2084,7 +2084,7 @@ def reevaluate_voc_run_case(
     if mode == "voc":
         execution_ok = execution_ok and bool(execution.get("result", {}).get("ok"))
     if mode != "voc" or not execution_ok:
-        raise ValueError("성공한 VOC 파이프라인 Case만 Judge 재평가할 수 있습니다.")
+        raise ValueError("성공한 VOC 파이프라인 Case만 독립 LLM 재평가할 수 있습니다.")
 
     run_dir = Path(stored["run_dir"])
     snapshot_path = run_dir / "snapshots" / "selected_test_cases.json"
@@ -2115,7 +2115,7 @@ def validity_provider_options() -> list[dict]:
 
 
 def list_improvement_validity_candidates() -> list[dict]:
-    """완료된 VOC 파이프라인 Case를 타당성 검증 대상 목록으로 반환합니다."""
+    """완료된 VOC 파이프라인 Case를 개선안 타당성 검증 대상 목록으로 반환합니다."""
     candidates = []
     for run in voc_run_store.list_voc_runs(recover=False):
         if run.get("status") == "RUNNING":
@@ -2193,7 +2193,7 @@ def evaluate_voc_improvement_validity(
     provider = str(config.get("provider") or "anthropic").lower()
     options = {item["provider"]: item for item in validity_provider_options()}
     if provider not in options:
-        raise ValueError("지원하지 않는 타당성 평가 Provider입니다.")
+        raise ValueError("지원하지 않는 개선안 타당성 평가 Provider입니다.")
     model = str(config.get("model") or options[provider]["default_model"]).strip()
     if not options[provider]["credential_configured"]:
         raise ValueError(f"{options[provider]['label']} API 자격 증명이 설정되지 않았습니다.")
@@ -2204,7 +2204,7 @@ def evaluate_voc_improvement_validity(
     execution = pipeline.get("execution", {})
     result = execution.get("result", {}) if isinstance(execution, dict) else {}
     if pipeline.get("mode") != "voc" or not execution.get("ok") or not result.get("ok"):
-        raise ValueError("성공한 VOC 파이프라인 Case만 타당성을 평가할 수 있습니다.")
+        raise ValueError("성공한 VOC 파이프라인 Case만 개선안 타당성 평가를 수행할 수 있습니다.")
     supplement = artifacts.get("validity_supplement", {})
     evaluation_execution = _execution_with_validity_supplement(execution, supplement)
     validity = voc_validity_service.evaluate_improvement_validity(
@@ -2997,12 +2997,12 @@ def validate_quality_rubric(rubric_type: str, payload: dict) -> list[str]:
 
     if rubric_type == "independent_judge":
         if payload.get("judge_provider_policy") != "runtime_configurable":
-            errors.append("독립 LLM Judge의 provider 정책은 runtime_configurable이어야 합니다.")
+            errors.append("독립 LLM 평가의 provider 정책은 runtime_configurable이어야 합니다.")
         if not str(payload.get("default_provider") or "").strip():
-            errors.append("독립 LLM Judge의 default_provider가 필요합니다.")
+            errors.append("독립 LLM 평가의 default_provider가 필요합니다.")
         required_statuses = {"ERROR", "NOT_RUN"}
         if set(payload.get("non_quality_statuses", {})) != required_statuses:
-            errors.append("독립 LLM Judge 실행 상태에는 ERROR와 NOT_RUN이 필요합니다.")
+            errors.append("독립 LLM 평가 실행 상태에는 ERROR와 NOT_RUN이 필요합니다.")
     if rubric_type == "improvement_validity":
         decision_rows = decisions if isinstance(decisions, list) else []
         states = set(payload.get("workflow_states", []))

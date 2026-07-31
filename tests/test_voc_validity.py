@@ -326,7 +326,7 @@ def test_validity_supplement_is_saved_and_used_for_auto_evaluation(monkeypatch, 
     )
 
     policy = captured["execution"]["result"]["policy"]
-    assert "[사용자 타당성 보완 입력]" in policy
+    assert "[사용자 개선안 타당성 평가 보완 입력]" in policy
     assert "모바일앱개발팀 리드" in policy
     assert captured["execution"]["result"]["validity_supplement_applied"] is True
     assert evaluated["validity_result"]["supplemental_evidence_applied"] is True
@@ -355,19 +355,19 @@ def test_improvement_validity_page_renders_without_exceptions():
     assert not app.exception
     assert any("검증 대상 선택" in item.value for item in app.markdown)
     assert {metric.label for metric in app.metric}.issuperset(
-        {"자동 평가 필요", "보완/RETEST 필요", "QA 검토 가능", "업무 승인 가능", "정식 승인 완료"}
+        {"개선안 타당성 평가 필요", "보완·재시험 필요", "QA 검토 가능", "업무 승인 가능", "정식 승인 완료"}
     )
     assert {control.label for control in app.segmented_control}.issuperset({"회차 유형", "평가 상태"})
     assert not any(selectbox.label in {"회차 유형", "평가 상태"} for selectbox in app.selectbox)
     assert len(app.dataframe) >= 3
     assert app.dataframe[0].value.columns.tolist() == [
-        "수행 일시", "Run ID", "Case ID", "수행 유형", "질문", "독립 평가",
-        "독립 점수", "타당성", "타당 점수", "승인 단계", "다음 조치", "정식 승인",
+        "수행 일시", "Run ID", "Case ID", "수행 유형", "질문", "독립 LLM 평가",
+        "독립 LLM 점수", "개선안 타당성", "타당성 점수", "승인 단계", "다음 조치", "정식 승인",
     ]
     assert any("QA 검토/승인 대기 대상" in item.value for item in app.markdown)
     assert any("선택 기준 · TC-01" in item.value for item in app.markdown)
     assert any("평가 항목과 점수 지표" in item.value for item in app.markdown)
-    assert any("자동 평가 수행 절차" in item.value for item in app.markdown)
+    assert any("개선안 타당성 평가 수행 절차" in item.value for item in app.markdown)
     assert any("QA 검토 가능 조건" in item.value for item in app.markdown)
 
     app.toggle[0].set_value(True).run()
@@ -383,11 +383,11 @@ def test_validity_candidate_detail_dialog_renders_execution_evidence():
     assert not app.exception
     import inspect
     source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)
-    assert '["대상 요약", "A2A 수행 결과", "독립 Judge", "타당성 평가", "QA·승인"]' in source
-    assert any("Pipeline 요약" in item.value for item in app.markdown)
+    assert '["대상 요약", "Agent 파이프라인 결과", "독립 LLM 평가", "개선안 타당성 평가", "QA 검토·승인"]' in source
+    assert any("Agent 파이프라인 요약" in item.value for item in app.markdown)
     assert any("최종 개선안" in item.value for item in app.markdown)
     assert {metric.label for metric in app.metric}.issuperset(
-        {"Case", "독립 평가", "타당성", "승인 단계", "독립 평가 점수", "타당성 점수"}
+        {"Case", "독립 LLM 평가", "개선안 타당성 평가", "승인 단계", "독립 LLM 평가 점수", "개선안 타당성 점수"}
     )
     assert not any(button.label == "이 대상으로 검증 진행" for button in app.button)
 
@@ -451,8 +451,8 @@ def test_validity_candidate_filter_and_rows_are_list_friendly():
     assert rows.loc[1, "정식 승인"] == "승인"
     assert rows.loc[2, "다음 조치"] == "QA 검토 가능"
     cards = {card["label"]: card for card in voc_quality_view._validity_focus_cards(candidates)}
-    assert cards["자동 평가 필요"]["value"] == "1건"
-    assert cards["보완/RETEST 필요"]["value"] == "0건"
+    assert cards["개선안 타당성 평가 필요"]["value"] == "1건"
+    assert cards["보완·재시험 필요"]["value"] == "0건"
     assert cards["QA 검토 가능"]["value"] == "1건"
     assert cards["업무 승인 가능"]["value"] == "1건"
     assert cards["정식 승인 완료"]["delta"] == "전체 대비 25%"
@@ -531,7 +531,7 @@ def test_validity_approval_workflow_model_moves_from_qa_to_business_approval():
     assert model["readiness"]["action_label"] == "업무 승인 가능"
     assert model["readiness"]["deployment_decision"] == "BUSINESS_REVIEW_REQUIRED"
     assert [stage["label"] for stage in model["stages"]] == [
-        "자동 타당성", "QA 검토", "업무 승인", "최종 배포 판정"
+        "개선안 타당성 평가", "QA 검토", "업무 승인", "최종 배포 판정"
     ]
     assert model["stages"][1]["status"] == "완료"
     assert model["stages"][2]["status"] == "현재 단계"
@@ -605,8 +605,8 @@ def test_ai_pass_failure_model_separates_four_failure_types():
     assert categories["score"]["failed"] is True
     assert categories["score"]["value"] == "77 / 80점"
     assert categories["floors"]["failed"] is True
-    assert "VOC·Trace 근거 추적성" in categories["floors"]["details"][0]
-    assert categories["holds"]["details"] == ["Judge 미수행·오류"]
+    assert "VOC·실행 Trace 근거 추적성" in categories["floors"]["details"][0]
+    assert categories["holds"]["details"] == ["독립 LLM 평가 미수행·오류"]
     assert categories["evidence"]["failed"] is True
     assert any("Trace ID" in detail for detail in categories["evidence"]["details"])
 
@@ -656,7 +656,7 @@ def test_ai_pass_failure_visualization_renders_four_categories():
     assert "점수 부족" in rendered
     assert "항목별 하한 미달" in rendered
     assert "즉시 보류 규칙" in rendered
-    assert "VOC·Trace 근거 부족" in rendered
+    assert "VOC·실행 Trace 근거 부족" in rendered
     assert "실패 원인 4개 유형" in rendered
 
 

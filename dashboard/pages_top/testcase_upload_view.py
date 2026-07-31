@@ -75,13 +75,13 @@ def render_testcase_upload_page():
         upload_clicked = st.button(
             "업로드",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=not uploaded_files,
         )
     with action_cols[1]:
         clear_clicked = st.button(
             "초기화",
-            use_container_width=True,
+            width="stretch",
             disabled=not st.session_state.testcase_uploads,
         )
 
@@ -152,7 +152,7 @@ def render_testcase_upload_page():
         upload_list.drop(columns=["_id"]),
         key="testcase_upload_table",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         disabled=["NO", "파일명", "형식", "테스트케이스 수", "컬럼 수", "업로드일시", "상태"],
         column_config={
             "선택": st.column_config.CheckboxColumn("선택", help="삭제할 항목을 선택하세요."),
@@ -176,7 +176,7 @@ def render_testcase_upload_page():
     with bottom_cols[0]:
         if st.button(
             "선택 삭제",
-            use_container_width=True,
+            width="stretch",
             disabled=not selected_ids,
         ):
             for item in st.session_state.testcase_uploads:

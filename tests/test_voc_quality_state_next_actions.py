@@ -24,7 +24,7 @@ def test_run_next_action_waits_for_running_pipeline():
     )
 
     assert action["code"] == "WAIT_PIPELINE"
-    assert action["label"] == "파이프라인 완료 대기"
+    assert action["label"] == "Agent 파이프라인 완료 대기"
     assert "3/35" in action["detail"]
 
 
@@ -42,7 +42,7 @@ def test_run_next_action_moves_from_pipeline_success_to_judge():
     )
 
     assert action["code"] == "RUN_JUDGE"
-    assert action["label"] == "독립 Judge 평가"
+    assert action["label"] == "독립 LLM 평가"
 
 
 def test_run_next_action_moves_from_ai_reviewed_to_qa_review():
@@ -78,7 +78,7 @@ def test_rubric_drift_marks_changed_hash_for_reevaluation():
 
     assert drift["requires_reevaluation"] is True
     assert drift["status"] == "재평가 필요"
-    assert drift["changed_labels"] == ["내부 Pipeline"]
+    assert drift["changed_labels"] == ["내부 파이프라인"]
 
 
 def test_run_next_action_prioritizes_rubric_reevaluation():

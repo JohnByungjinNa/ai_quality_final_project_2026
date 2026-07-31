@@ -589,9 +589,9 @@ def verify_run_integrity(run_id: str) -> dict:
             if not (case_dir / filename).exists():
                 errors.append(f"Case 증적 누락: {case_id}/{filename}")
         if manifest.get("judge_enabled") and not (case_dir / "judge_result.json").exists():
-            errors.append(f"Judge 증적 누락: {case_id}/judge_result.json")
+            errors.append(f"독립 LLM 평가 증적 누락: {case_id}/judge_result.json")
         if manifest.get("validity_reviewed") and not (case_dir / "validity_result.json").exists():
-            errors.append(f"타당성 증적 누락: {case_id}/validity_result.json")
+            errors.append(f"개선안 타당성 평가 증적 누락: {case_id}/validity_result.json")
     stored_counts = summary.get("counts", {})
     if any(int(stored_counts.get(status, 0)) != counted[status] for status in CASE_STATUSES):
         errors.append("summary 상태별 건수와 Case 결과 집계가 일치하지 않습니다.")
@@ -626,18 +626,18 @@ def build_run_evidence_zip(run_id: str) -> bytes:
 
 
 def save_judge_reevaluation(run_id: str, case_id: str, judge_result: dict) -> dict:
-    """동일 Pipeline 결과의 Judge 재평가를 이전 결과와 함께 보존합니다."""
+    """동일 Agent 파이프라인 결과의 독립 LLM 재평가를 이전 결과와 함께 보존합니다."""
     with _STORE_LOCK:
         run_dir = _run_dir(run_id)
         case_id = _safe_case_id(case_id)
         manifest = _read_json(run_dir / "manifest.json")
         summary = _read_json(run_dir / "summary.json")
         if manifest.get("status") == "RUNNING":
-            raise ValueError("실행 중인 Run은 Judge 재평가할 수 없습니다.")
+            raise ValueError("실행 중인 Run은 독립 LLM 재평가할 수 없습니다.")
         case_dir = run_dir / "cases" / case_id
         pipeline_path = case_dir / "pipeline_result.json"
         if not pipeline_path.exists():
-            raise FileNotFoundError("Judge 재평가에 필요한 Pipeline 증적이 없습니다.")
+            raise FileNotFoundError("독립 LLM 재평가에 필요한 Agent 파이프라인 증적이 없습니다.")
 
         judge_path = case_dir / "judge_result.json"
         history = []
@@ -654,7 +654,7 @@ def save_judge_reevaluation(run_id: str, case_id: str, judge_result: dict) -> di
             None,
         )
         if target is None:
-            raise ValueError("summary에 Judge 재평가 대상 Case가 없습니다.")
+            raise ValueError("summary에 독립 LLM 재평가 대상 Case가 없습니다.")
         decision = saved.get("decision", "ERROR")
         target["judge_status"] = decision
         target["judge_score"] = saved.get("total_score")
@@ -686,17 +686,17 @@ def save_judge_reevaluation(run_id: str, case_id: str, judge_result: dict) -> di
 
 
 def save_validity_supplement(run_id: str, case_id: str, supplement: dict) -> dict:
-    """Store user-provided improvement validity evidence without changing the source A2A result."""
+    """Store user-provided improvement validity evidence without changing the source Agent pipeline result."""
     with _STORE_LOCK:
         run_dir = _run_dir(run_id)
         case_id = _safe_case_id(case_id)
         manifest = _read_json(run_dir / "manifest.json")
         summary = _read_json(run_dir / "summary.json")
         if manifest.get("status") == "RUNNING":
-            raise ValueError("실행 중인 Run에는 타당성 보완 입력을 저장할 수 없습니다.")
+            raise ValueError("실행 중인 Run에는 개선안 타당성 평가 보완 입력을 저장할 수 없습니다.")
         case_dir = run_dir / "cases" / case_id
         if not (case_dir / "pipeline_result.json").exists():
-            raise FileNotFoundError("타당성 보완 입력에 필요한 Pipeline 증적이 없습니다.")
+            raise FileNotFoundError("개선안 타당성 평가 보완 입력에 필요한 Agent 파이프라인 증적이 없습니다.")
 
         saved = dict(supplement or {})
         saved["run_id"] = run_id
@@ -713,17 +713,17 @@ def save_validity_supplement(run_id: str, case_id: str, supplement: dict) -> dic
 
 
 def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -> dict:
-    """자동 타당성 재평가를 보존하고 사람 검토 이력은 이어받습니다."""
+    """개선안 타당성 재평가를 보존하고 사람 검토 이력은 이어받습니다."""
     with _STORE_LOCK:
         run_dir = _run_dir(run_id)
         case_id = _safe_case_id(case_id)
         manifest = _read_json(run_dir / "manifest.json")
         summary = _read_json(run_dir / "summary.json")
         if manifest.get("status") == "RUNNING":
-            raise ValueError("실행 중인 Run은 타당성을 평가할 수 없습니다.")
+            raise ValueError("실행 중인 Run은 개선안 타당성 평가를 수행할 수 없습니다.")
         case_dir = run_dir / "cases" / case_id
         if not (case_dir / "pipeline_result.json").exists():
-            raise FileNotFoundError("타당성 평가에 필요한 Pipeline 증적이 없습니다.")
+            raise FileNotFoundError("개선안 타당성 평가에 필요한 Agent 파이프라인 증적이 없습니다.")
 
         path = case_dir / "validity_result.json"
         evaluation_history = []
@@ -744,7 +744,7 @@ def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -
         if human_reviews:
             saved["approval_history_preserved"] = True
             saved["approval_reset_reason"] = (
-                "자동 타당성 재평가로 기존 사람 검토는 감사 이력으로 보존하고, "
+                "개선안 타당성 재평가로 기존 사람 검토는 감사 이력으로 보존하고, "
                 "최신 평가 결과 기준으로 QA·업무 승인 단계를 다시 진행합니다."
             )
         _atomic_write_json(path, saved)
@@ -754,7 +754,7 @@ def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -
             None,
         )
         if target is None:
-            raise ValueError("summary에 타당성 평가 대상 Case가 없습니다.")
+            raise ValueError("summary에 개선안 타당성 평가 대상 Case가 없습니다.")
         target["validity_status"] = saved.get("decision", "ERROR")
         target["validity_score"] = saved.get("total_score")
         target["approval_state"] = saved.get("workflow_state", "DRAFT")
@@ -807,7 +807,7 @@ def apply_validity_human_review(
         summary = _read_json(run_dir / "summary.json")
         path = run_dir / "cases" / case_id / "validity_result.json"
         if not path.exists():
-            raise FileNotFoundError("자동 타당성 평가를 먼저 수행하세요.")
+            raise FileNotFoundError("개선안 타당성 평가를 먼저 수행하세요.")
         payload = _read_json(path)
         current = payload.get("workflow_state", "DRAFT")
         if payload.get("decision") != "AI_PASS" or payload.get("immediate_hold_rules_triggered"):

@@ -64,9 +64,9 @@ def evaluate_improvement_validity(
     provider = str(provider or "").lower()
     model = str(model or "").strip()
     if provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(f"지원하지 않는 타당성 평가 Provider입니다: {provider}")
+        raise ValueError(f"지원하지 않는 개선안 타당성 평가 Provider입니다: {provider}")
     if not model:
-        raise ValueError("타당성 평가 모델명을 입력하세요.")
+        raise ValueError("개선안 타당성 평가 모델명을 입력하세요.")
 
     pre_holds = _evidence_hold_rules(trace, judge_result, defects)
     prompt = _build_prompt(case, execution, trace, judge_result, defects, rubric)
@@ -164,7 +164,7 @@ def evaluate_improvement_validity(
                 }
             time.sleep(max(0.0, backoff_base_seconds) * (2 ** (attempt - 1)))
 
-    raise RuntimeError("타당성 평가가 예상하지 못한 상태로 종료되었습니다.")
+    raise RuntimeError("개선안 타당성 평가가 예상하지 못한 상태로 종료되었습니다.")
 
 
 def _evidence_hold_rules(trace: dict, judge_result: dict, defects: dict) -> list[str]:
@@ -224,9 +224,9 @@ def _build_prompt(
         "recommendations": ["실행 가능한 보완 조치"],
     }
     return (
-        "당신은 최종 VOC 정책 개선안의 실행 타당성을 검증하는 독립 평가자입니다.\n"
+        "당신은 최종 VOC 정책 개선안의 실행 타당성을 검증하는 개선안 타당성 평가자입니다.\n"
         "아래 증적만 사용하고 없는 담당자·일정·KPI·법규·결함을 만들지 마세요.\n"
-        "즉시 보류 규칙은 model_assessable_hold_rules 안에서만 선택하세요. Trace·Judge·결함 보류는 서버가 판정합니다.\n"
+        "즉시 보류 규칙은 model_assessable_hold_rules 안에서만 선택하세요. 실행 Trace·독립 LLM 평가·결함 보류는 서버가 판정합니다.\n"
         "각 reason은 300자 이내, 배열은 최대 5개와 항목당 200자 이내로 작성하세요.\n"
         "응답은 Markdown 없이 JSON 객체 하나만 반환하세요.\n\n"
         f"[평가 기준 및 판정 규칙]\n{json.dumps(contract, ensure_ascii=False)}\n\n"
@@ -259,7 +259,7 @@ def _validate_and_score(payload: dict, rubric: dict, pre_holds: list[str]) -> di
     dimensions = rubric.get("dimensions", {})
     scores = payload.get("dimension_scores")
     if not isinstance(scores, dict) or set(scores) != set(dimensions):
-        raise ValueError("타당성 차원 점수 키가 Rubric과 일치하지 않습니다.")
+        raise ValueError("개선안 타당성 평가 차원 점수 키가 Rubric과 일치하지 않습니다.")
     normalized = {}
     all_floors = True
     for key, spec in dimensions.items():
@@ -281,7 +281,7 @@ def _validate_and_score(payload: dict, rubric: dict, pre_holds: list[str]) -> di
     for field in ("evidence", "risks", "recommendations"):
         values = payload.get(field)
         if not isinstance(values, list):
-            raise ValueError(f"타당성 응답의 {field}는 배열이어야 합니다.")
+            raise ValueError(f"개선안 타당성 평가 응답의 {field}는 배열이어야 합니다.")
     holds = list(dict.fromkeys([*pre_holds, *model_holds]))
     configured_holds = set(rubric.get("immediate_hold_rules", []))
     unknown_holds = [rule for rule in holds if rule not in configured_holds]

@@ -73,7 +73,7 @@ def render_testcase_history_page():
         history_list.drop(columns=["_id"]),
         key="testcase_history_table",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         on_select="rerun",
         selection_mode="single-row",
         column_config={
@@ -110,7 +110,7 @@ def render_testcase_history_page():
     with bottom_cols[0]:
         if st.button(
             "선택 삭제",
-            use_container_width=True,
+            width="stretch",
             disabled=not selected_history_ids,
         ):
             selected_history = [
@@ -132,7 +132,7 @@ def render_testcase_history_page():
             )
             st.rerun()
     with bottom_cols[1]:
-        if st.button("전체 삭제", use_container_width=True):
+        if st.button("전체 삭제", width="stretch"):
             for item in st.session_state.testcase_execution_history:
                 remove_test_run_artifacts(item)
             st.session_state.testcase_execution_history = []

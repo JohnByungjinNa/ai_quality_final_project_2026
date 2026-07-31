@@ -82,7 +82,7 @@ def render_jira_page(sub_menu):
         pd.DataFrame(table_cases),
         key="jira_fail_case_editor",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         column_order=["register", "case_id", "severity", "summary", "owner", "status"],
         column_config={
             "register": st.column_config.CheckboxColumn("등록", help="Jira 이슈로 등록할 FAIL 사례를 선택합니다."),
@@ -99,7 +99,7 @@ def render_jira_page(sub_menu):
 
     button_cols = st.columns([1, 1, 4])
     with button_cols[0]:
-        register_clicked = st.button("Jira 등록", type="primary", use_container_width=True)
+        register_clicked = st.button("Jira 등록", type="primary", width="stretch")
     with button_cols[1]:
         csv_bytes = selected_cases.drop(columns=["register"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
         st.download_button(
@@ -107,7 +107,7 @@ def render_jira_page(sub_menu):
             data=csv_bytes,
             file_name="jira_fail_cases.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
     if register_clicked:
@@ -152,18 +152,18 @@ def render_jira_page(sub_menu):
                 )
                 save_json_file(JIRA_REGISTERED_ISSUES_FILE, st.session_state.jira_registered_issues)
                 st.success(f"Jira 이슈 {len(created_issues)}건을 등록했습니다.")
-                st.dataframe(pd.DataFrame(created_issues), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(created_issues), hide_index=True, width="stretch")
                 st.rerun()
             if failed_issues:
                 st.error("일부 Jira 등록에 실패했습니다.")
-                st.dataframe(pd.DataFrame(failed_issues), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(failed_issues), hide_index=True, width="stretch")
 
     if st.session_state.jira_registered_issues:
         st.markdown("#### 최근 Jira 등록 결과")
         st.dataframe(
             pd.DataFrame(st.session_state.jira_registered_issues),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown("#### Jira 등록 필드")
@@ -178,7 +178,7 @@ def render_jira_page(sub_menu):
             ]
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("#### 처리 흐름")

@@ -49,7 +49,8 @@ def test_report_page_renders_without_exceptions():
     app.run()
 
     assert not app.exception
-    assert app.segmented_control[0].options == ["품질 증적 보고서", "기존 진단 보고서"]
+    assert app.radio[0].options == ["최종 품질 보고서", "증적 초안"]
+    assert app.segmented_control[0].options == list(voc_quality_service.REPORT_CATEGORIES)
 
 
 def test_report_generation_keeps_txt_xml_html_counts_consistent(monkeypatch, tmp_path):
