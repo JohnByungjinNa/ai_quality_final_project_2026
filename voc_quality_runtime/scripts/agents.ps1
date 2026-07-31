@@ -61,7 +61,9 @@ function Import-DotEnv {
         }
     }
 
-    $required = @("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "TAVILY_API_KEY")
+    # OpenAI는 Summarizer/Evaluator/Critic 기본 실행에 필요합니다.
+    # Anthropic은 Improver의 1순위 Provider지만, Gemini/OpenAI fallback을 지원하므로 필수 시작 조건에서 제외합니다.
+    $required = @("OPENAI_API_KEY", "TAVILY_API_KEY")
     $missing = @($required | Where-Object {
         $currentValue = [Environment]::GetEnvironmentVariable($_, "Process")
         [string]::IsNullOrWhiteSpace($currentValue) -or $currentValue.StartsWith("YOUR_")

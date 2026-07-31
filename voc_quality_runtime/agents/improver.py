@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 # 비동기 프로그래밍 지원
 import asyncio
+# Provider fallback 순서 파싱
+import re
 # 데이터 클래스 정의 (타입 안전한 구조체)
 from dataclasses import dataclass
 
@@ -22,8 +24,6 @@ import voc_pb2
 import voc_pb2_grpc
 
 # ============ 프로젝트 내부 모듈 임포트 ============
-# Anthropic Chat API를 사용하기 위한 래퍼 클래스
-from llm_wrappers.anthropic_chat import AnthropicChat
 # JSON 파싱 유틸리티 함수
 from utils.json_utils import safe_json_loads
 # JSON 데이터 처리
@@ -45,6 +45,224 @@ class PolicyResult:
     policy: str  # 생성된 정책 개선안 텍스트
 
 
+SUPPORTED_POLICY_PROVIDERS = ("anthropic", "gemini", "openai")
+DEFAULT_POLICY_PROVIDER_ORDER = ("anthropic", "gemini", "openai")
+PROVIDER_ALIASES = {
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "gemini": "gemini",
+    "google": "gemini",
+    "google_genai": "gemini",
+    "openai": "openai",
+    "gpt": "openai",
+}
+
+
+def _provider_order_from_env() -> list[str]:
+    raw = (
+        os.environ.get("A2A_POLICY_PROVIDER_ORDER")
+        or os.environ.get("IMPROVER_PROVIDER_ORDER")
+        or ""
+    )
+    tokens = re.split(r"[,;>\s]+", raw.strip().lower()) if raw.strip() else []
+    order: list[str] = []
+    for token in tokens:
+        provider = PROVIDER_ALIASES.get(token)
+        if provider and provider not in order:
+            order.append(provider)
+    if not order:
+        order = list(DEFAULT_POLICY_PROVIDER_ORDER)
+    return [provider for provider in order if provider in SUPPORTED_POLICY_PROVIDERS]
+
+
+def _gemini_api_key() -> str:
+    return (
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_GENAI_API_KEY")
+        or ""
+    )
+
+
+def _is_configured_secret(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and not text.upper().startswith("YOUR_")
+
+
+def _provider_has_credentials(provider: str) -> bool:
+    if provider == "anthropic":
+        return _is_configured_secret(os.environ.get("ANTHROPIC_API_KEY"))
+    if provider == "gemini":
+        return _is_configured_secret(_gemini_api_key())
+    if provider == "openai":
+        return _is_configured_secret(os.environ.get("OPENAI_API_KEY"))
+    return False
+
+
+def _policy_model(provider: str, override: str | None = None) -> str:
+    if provider == "anthropic":
+        return (
+            override
+            or os.environ.get("A2A_MODEL_POLICY_ANTHROPIC")
+            or os.environ.get("A2A_MODEL_POLICY")
+            or "claude-haiku-4-5"
+        )
+    if provider == "gemini":
+        return (
+            override
+            or os.environ.get("A2A_MODEL_POLICY_GEMINI")
+            or os.environ.get("A2A_MODEL_GEMINI")
+            or "gemini-3.5-flash-lite"
+        )
+    return (
+        override
+        or os.environ.get("A2A_MODEL_POLICY_OPENAI")
+        or os.environ.get("A2A_MODEL_SUMMARY")
+        or os.environ.get("OPENAI_MODEL")
+        or "gpt-5.2"
+    )
+
+
+def _safe_error(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:600]
+
+
+async def _call_anthropic_policy(prompt: str, *, model: str, max_tokens: int) -> str:
+    from anthropic import AsyncAnthropic
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("Anthropic credentials missing")
+    response = await AsyncAnthropic(api_key=api_key, max_retries=0).messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(str(getattr(block, "text", "") or "") for block in response.content)
+
+
+async def _call_openai_policy(prompt: str, *, model: str, max_tokens: int) -> str:
+    from openai import AsyncOpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OpenAI credentials missing")
+    response = await AsyncOpenAI(api_key=api_key, max_retries=0).chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content or ""
+
+
+def _call_gemini_policy_sync(prompt: str, *, model: str, max_tokens: int) -> str:
+    from google import genai
+    from google.genai import types
+
+    api_key = _gemini_api_key()
+    if not api_key:
+        raise RuntimeError("Gemini credentials missing")
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            max_output_tokens=max_tokens,
+        ),
+    )
+    return str(getattr(response, "text", "") or "")
+
+
+async def _call_policy_provider(provider: str, prompt: str, *, model: str, max_tokens: int) -> str:
+    if provider == "anthropic":
+        return await _call_anthropic_policy(prompt, model=model, max_tokens=max_tokens)
+    if provider == "gemini":
+        return await asyncio.to_thread(
+            _call_gemini_policy_sync,
+            prompt,
+            model=model,
+            max_tokens=max_tokens,
+        )
+    if provider == "openai":
+        return await _call_openai_policy(prompt, model=model, max_tokens=max_tokens)
+    raise ValueError(f"Unsupported policy provider: {provider}")
+
+
+class PolicyLLMFallback:
+    """Improver 정책 생성용 Provider fallback 라우터."""
+
+    def __init__(self, model: str | None = None):
+        self.model_override = model
+        self.provider_order = _provider_order_from_env()
+        self.last_provider = ""
+        self.last_model = ""
+        self.last_attempts: list[dict] = []
+
+    async def __call__(self, prompt: str, max_tokens: int = 1024) -> str:
+        attempts: list[dict] = []
+        for provider in self.provider_order:
+            model = _policy_model(provider, self.model_override)
+            if not _provider_has_credentials(provider):
+                attempts.append(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "status": "SKIPPED",
+                        "message": "credentials missing",
+                    }
+                )
+                continue
+            try:
+                text = (await _call_policy_provider(
+                    provider,
+                    prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                )).strip()
+                if not text:
+                    raise RuntimeError("empty response")
+                attempts.append(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "status": "SUCCESS",
+                    }
+                )
+                self.last_provider = provider
+                self.last_model = model
+                self.last_attempts = attempts
+                if len(attempts) > 1:
+                    print(
+                        f"[Improver] Policy provider fallback selected "
+                        f"{provider}/{model} after {len(attempts) - 1} prior attempt(s)."
+                    )
+                return text
+            except Exception as exc:
+                message = _safe_error(exc)
+                attempts.append(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "status": "ERROR",
+                        "message": message,
+                    }
+                )
+                print(f"[Improver] Policy provider {provider}/{model} failed: {message}")
+
+        self.last_attempts = attempts
+        summarized = "; ".join(
+            f"{item['provider']}/{item['model']}={item['status']}"
+            + (f"({item['message']})" if item.get("message") else "")
+            for item in attempts
+        )
+        raise RuntimeError(
+            "Improver policy generation failed on all configured providers. "
+            f"Attempts: {summarized or 'none'}"
+        )
+
+
 # ============ 정책 개선 에이전트 클래스 ============
 class PolicyImproverAgent:
     """
@@ -58,15 +276,15 @@ class PolicyImproverAgent:
         PolicyImproverAgent 인스턴스를 초기화합니다.
         
         Args:
-            model: 사용할 Anthropic 모델명 (None이면 환경변수 또는 기본값 사용)
+            model: 사용할 정책 생성 모델명 (None이면 Provider별 환경변수 또는 기본값 사용)
             
         Raises:
-            RuntimeError: Anthropic 클라이언트가 설정되지 않았을 때
+            RuntimeError: 설정된 모든 Provider 호출이 실패했을 때
         """
-        # ============ LLM 래퍼 인스턴스 생성 ============
-        # Anthropic Chat 래퍼를 인스턴스 변수로 생성합니다
-        # 반드시 인스턴스 생성!! (클래스 변수가 아닌 인스턴스 변수)
-        self.llm = AnthropicChat(model=model)
+        # ============ LLM fallback 라우터 생성 ============
+        # Anthropic 고정 대신 호출 시점에 Anthropic → Gemini → OpenAI 순으로 우회합니다.
+        # 특정 Provider 키가 없거나 크레딧/쿼터 오류가 나도 Agent 프로세스 자체는 기동됩니다.
+        self.llm = PolicyLLMFallback(model=model)
         # 다른 에이전트 엔드포인트 설정
         self.critic_endpoint = os.environ.get("CRITIC_ENDPOINT", "localhost:6105")
 
@@ -222,6 +440,11 @@ class PolicyImproverAgent:
         result = await self.improve(summary)
         policy = result.policy
         trace.append("policy_created")
+        if self.llm.last_provider:
+            trace.append(f"policy_provider={self.llm.last_provider}")
+            trace.append(f"policy_model={self.llm.last_model}")
+        if len(self.llm.last_attempts) > 1:
+            trace.append(f"policy_attempts={len(self.llm.last_attempts)}")
         
         # ============ 2단계: Critic 호출 ============
         return {

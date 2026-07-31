@@ -1055,12 +1055,84 @@ def judge_provider_options() -> list[dict]:
     return voc_judge_service.judge_provider_options()
 
 
+_POLICY_PROVIDER_ALIASES = {
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "gemini": "gemini",
+    "google": "gemini",
+    "google_genai": "gemini",
+    "openai": "openai",
+    "gpt": "openai",
+}
+_DEFAULT_POLICY_PROVIDER_ORDER = ("anthropic", "gemini", "openai")
+
+
+def _policy_provider_order() -> list[str]:
+    raw = (
+        os.environ.get("A2A_POLICY_PROVIDER_ORDER")
+        or os.environ.get("IMPROVER_PROVIDER_ORDER")
+        or ""
+    )
+    tokens = re.split(r"[,;>\s]+", raw.strip().lower()) if raw.strip() else []
+    order: list[str] = []
+    for token in tokens:
+        provider = _POLICY_PROVIDER_ALIASES.get(token)
+        if provider and provider not in order:
+            order.append(provider)
+    return order or list(_DEFAULT_POLICY_PROVIDER_ORDER)
+
+
+def _policy_model(provider: str) -> str:
+    if provider == "anthropic":
+        return (
+            os.environ.get("A2A_MODEL_POLICY_ANTHROPIC")
+            or os.environ.get("A2A_MODEL_POLICY")
+            or "claude-haiku-4-5"
+        )
+    if provider == "gemini":
+        return (
+            os.environ.get("A2A_MODEL_POLICY_GEMINI")
+            or os.environ.get("A2A_MODEL_GEMINI")
+            or "gemini-3.5-flash-lite"
+        )
+    return (
+        os.environ.get("A2A_MODEL_POLICY_OPENAI")
+        or os.environ.get("A2A_MODEL_SUMMARY")
+        or os.environ.get("OPENAI_MODEL")
+        or "gpt-5.2"
+    )
+
+
+def _is_configured_secret(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and not text.upper().startswith("YOUR_")
+
+
+def _policy_credential_configured(provider: str) -> bool:
+    if provider == "anthropic":
+        return _is_configured_secret(os.environ.get("ANTHROPIC_API_KEY"))
+    if provider == "gemini":
+        return _is_configured_secret(voc_judge_service.gemini_api_key())
+    if provider == "openai":
+        return _is_configured_secret(os.environ.get("OPENAI_API_KEY"))
+    return False
+
+
+def _policy_generation_snapshot() -> dict:
+    order = _policy_provider_order()
+    selected = next((provider for provider in order if _policy_credential_configured(provider)), order[0])
+    return {
+        "provider": selected,
+        "model": _policy_model(selected),
+        "credential_configured": _policy_credential_configured(selected),
+        "provider_order": order,
+        "fallback_enabled": len(order) > 1,
+    }
+
+
 def judge_independence_preview(provider: str, model: str) -> dict:
     generator_snapshot = {
-        "policy": {
-            "provider": "anthropic",
-            "model": os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5"),
-        }
+        "policy": _policy_generation_snapshot()
     }
     return voc_judge_service.independence_grade(provider, model, generator_snapshot)
 
@@ -2248,11 +2320,7 @@ def _start_voc_run(
             "model": os.environ.get("A2A_MODEL_SUMMARY", "gpt-5.2"),
             "credential_configured": bool(os.environ.get("OPENAI_API_KEY")),
         },
-        "policy": {
-            "provider": "anthropic",
-            "model": os.environ.get("A2A_MODEL_POLICY", "claude-haiku-4-5"),
-            "credential_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        },
+        "policy": _policy_generation_snapshot(),
         "judge": {
             "enabled": judge_config["enabled"],
             "provider": judge_config["provider"],
