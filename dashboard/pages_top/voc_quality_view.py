@@ -237,6 +237,11 @@ VOC_EXECUTION_TYPE_LABELS = {
     "quality_gate": "품질 게이트",
     "defined_only": "정의만 있음",
 }
+JUDGE_INDEPENDENCE_GRADE_LABELS = {
+    "A": "A등급 · 제공자 분리",
+    "B": "B등급 · 모델 분리",
+    "C": "C등급 · 편향 검토 필요",
+}
 VALIDITY_RUN_TYPE_FILTERS = ("전체", "수동 수행", "일괄 수행", "재시험")
 VALIDITY_RUN_TYPE_FILTER_VALUES = {
     "수동 수행": "MANUAL",
@@ -273,6 +278,13 @@ VALIDITY_HOLD_RULE_LABELS = {
 def _voc_status_label(value, default: str = "-") -> str:
     text = voc_status_label(value, default=default)
     return VOC_STATUS_LABELS.get(text, VOC_STATUS_LABELS.get(str(text).upper(), text))
+
+
+def _judge_independence_grade_label(value, default: str = "-") -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return default
+    return JUDGE_INDEPENDENCE_GRADE_LABELS.get(text, text)
 
 
 def _voc_status_counts_for_display(counts: dict | None) -> dict:
@@ -589,7 +601,7 @@ def _batch_executor():
 def _judge_config_controls(key_prefix: str, *, fault_only: bool = False) -> dict:
     options = judge_provider_options()
     enabled = st.toggle(
-        "독립 LLM Judge 평가",
+        "독립 LLM 평가",
         key=f"{key_prefix}_judge_enabled",
         help="파이프라인 성공 후 별도 LLM이 100점 Rubric으로 최종 결과를 평가합니다.",
     )
@@ -598,26 +610,26 @@ def _judge_config_controls(key_prefix: str, *, fault_only: bool = False) -> dict
         return {"enabled": False, "provider": default["provider"], "model": default["default_model"]}
 
     provider = st.selectbox(
-        "Judge Provider",
+        "독립 평가 제공자",
         [item["provider"] for item in options],
         format_func=lambda value: next(item["label"] for item in options if item["provider"] == value),
         key=f"{key_prefix}_judge_provider",
     )
     selected = next(item for item in options if item["provider"] == provider)
     model = st.text_input(
-        "Judge 모델",
+        "독립 평가 모델",
         value=selected["default_model"],
         key=f"{key_prefix}_judge_model_{provider}",
     )
     independence = judge_independence_preview(provider, model)
     if selected["credential_configured"]:
         st.caption(
-            f"자격 증명 설정됨 · 예상 독립성 {independence['grade']} · {independence['reason']}"
+            f"자격 증명 설정됨 · 예상 독립성 {_judge_independence_grade_label(independence['grade'])} · {independence['reason']}"
         )
     else:
         st.error(f"{selected['label']} API 자격 증명이 설정되지 않았습니다.")
     if fault_only:
-        st.info("격리 장애 Case는 개선안이 없으므로 Judge가 미실행으로 기록됩니다.")
+        st.info("격리 장애 Case는 개선안이 없으므로 독립 평가가 미실행으로 기록됩니다.")
     return {
         "enabled": enabled,
         "provider": provider,
@@ -639,7 +651,7 @@ def _judge_config_summary(judge_config: dict) -> dict:
         "provider": provider,
         "provider_label": provider_label,
         "model": model,
-        "label": f"{provider_label} · {model}" if enabled else "독립 LLM Judge 미실행",
+        "label": f"{provider_label} · {model}" if enabled else "독립 LLM 평가 미실행",
     }
 
 
@@ -652,7 +664,7 @@ def _render_batch_judge_selection_badge(judge_config: dict) -> None:
         <div class="vqa-batch-judge-summary {tone}">
             <span class="material-symbols-rounded">{icon}</span>
             <div>
-                <small>선택 Judge</small>
+                <small>선택된 독립 평가</small>
                 <strong>{escape(summary["label"])}</strong>
             </div>
         </div>
@@ -4000,7 +4012,7 @@ def _batch_case_selection_rows(
         rows.append(
             {
                 "체크": case_id in selected_set,
-                "Case ID": case_id,
+                "케이스 ID": case_id,
                 "상태": _voc_status_label(
                     str(item.get("implementation_status")).upper()
                     if item.get("implementation_status") else None
@@ -4231,11 +4243,11 @@ def _render_batch_case_selector(cases: list[dict], groups: dict) -> dict:
                     height=252,
                     row_height=34,
                     key=f"voc_batch_case_editor_{active_group}_{case_editor_nonce}",
-                    disabled=["Case ID", "상태", "이름", "_case_id"],
-                    column_order=["체크", "Case ID", "상태", "이름"],
+                    disabled=["케이스 ID", "상태", "이름", "_case_id"],
+                    column_order=["체크", "케이스 ID", "상태", "이름"],
                     column_config={
                         "체크": st.column_config.CheckboxColumn("✓", width=50),
-                        "Case ID": st.column_config.TextColumn("Case ID", width=86, pinned=True),
+                        "케이스 ID": st.column_config.TextColumn("케이스 ID", width=86, pinned=True),
                         "상태": st.column_config.TextColumn("상태", width=96),
                         "이름": st.column_config.TextColumn("이름", width="large"),
                         "_case_id": None,
@@ -4262,10 +4274,10 @@ def _render_batch_case_selector(cases: list[dict], groups: dict) -> dict:
             for group_key in group_keys
         )
         st.markdown("#### 선택 대상")
-        st.metric("선택된 TC", f"{len(selected_ids)}건")
+        st.metric("선택 건수", f"{len(selected_ids)}건")
         st.caption(f"선택 그룹 {selected_group_count} / {len(group_keys)}개")
         with st.popover(
-            "Judge 옵션",
+            "독립 평가 옵션",
             icon=":material/fact_check:",
             width="stretch",
             key="voc_batch_judge_options",
@@ -4326,7 +4338,7 @@ def _batch_case_results_for_display(case_results: list[dict]) -> pd.DataFrame:
         return _voc_status_label(str(value).upper())
 
     display_rows = pd.DataFrame()
-    display_rows["Case ID"] = rows.get("case_id", "-")
+    display_rows["케이스 ID"] = rows.get("case_id", "-")
     if "status" in rows:
         display_rows["상태"] = rows["status"].map(label_value)
     if "mode" in rows:
@@ -4338,7 +4350,7 @@ def _batch_case_results_for_display(case_results: list[dict]) -> pd.DataFrame:
     if "judge_score" in rows:
         display_rows["독립 평가 점수"] = rows["judge_score"]
     if "judge_independence_grade" in rows:
-        display_rows["독립성"] = rows["judge_independence_grade"]
+        display_rows["독립성"] = rows["judge_independence_grade"].map(_judge_independence_grade_label)
     if "message" in rows:
         display_rows["처리 내용"] = rows["message"]
     if "finished_at" in rows:
@@ -4414,7 +4426,7 @@ def _render_batch_stage_flow(progress: dict):
     stages = (
         ("PREFLIGHT", "사전 점검", "환경·에이전트·대상 검증"),
         ("PREPARING", "처리 준비", "실행 폴더·카탈로그 준비"),
-        ("RUNNING", "TC 수행", "파이프라인·독립 평가 실행"),
+        ("RUNNING", "테스트케이스 수행", "파이프라인·독립 평가 실행"),
         ("FINALIZING", "결과 정리", "증적·집계 저장"),
     )
     phase_index = next((index for index, stage in enumerate(stages) if stage[0] == phase), -1)
@@ -4561,7 +4573,7 @@ def _close_batch_progress_dialog():
 
 
 @st.dialog(
-    "일괄 TC 수행 진행 상황",
+    "일괄 테스트케이스 수행 진행 상황",
     width="large",
     icon=":material/pending_actions:",
     on_dismiss=_close_batch_progress_dialog,
@@ -4620,7 +4632,7 @@ def _render_batch_running_summary(active_state: dict):
             st.markdown("#### 진행 중인 일괄 수행")
             st.caption("팝업을 닫거나 다른 페이지로 이동해도 백그라운드 실행은 계속됩니다.")
         header[1].metric("현재 단계", phase_label)
-        header[2].metric("현재 TC", current_case)
+        header[2].metric("현재 테스트케이스", current_case)
         header[3].metric("진행", f"{completed}/{total}건")
         with header[4]:
             if st.button(
@@ -4647,7 +4659,7 @@ def _render_batch_execution_safety_notice() -> None:
         with cols[0]:
             st.badge("계속 실행", color="green", icon=":material/check_circle:")
             st.markdown("**팝업·브라우저 탭 닫기**")
-            st.caption("Streamlit 서버가 살아 있으면 일괄 TC는 백그라운드에서 계속 수행됩니다.")
+            st.caption("Streamlit 서버가 살아 있으면 일괄 테스트케이스는 백그라운드에서 계속 수행됩니다.")
         with cols[1]:
             st.badge("중단 가능", color="orange", icon=":material/warning:")
             st.markdown("**Streamlit 서버 종료**")
@@ -4682,7 +4694,7 @@ def _batch_preflight_display_state(preflight: dict) -> dict:
             "tone": "idle",
             "icon": "touch_app",
             "title": "대상 선택 필요",
-            "message": "왼쪽 목록에서 일괄 수행할 Test Case를 선택하세요.",
+            "message": "왼쪽 목록에서 일괄 수행할 테스트케이스를 선택하세요.",
             "items": [],
         }
     if warnings:
