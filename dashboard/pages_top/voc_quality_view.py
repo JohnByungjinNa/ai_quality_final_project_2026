@@ -1723,6 +1723,94 @@ def _jira_context_labels(*values: object) -> list[str]:
     return list(dict.fromkeys(labels))
 
 
+def _jira_context_line_has_positive_signal(line: str) -> bool:
+    match = re.search(r":\s*(\d+)\s*건", str(line or ""))
+    return int(match.group(1)) > 0 if match else True
+
+
+def _jira_context_diagnostic_model(
+    *,
+    status_label: str = "",
+    extra_detail: str = "",
+) -> dict:
+    status_text = str(status_label or "").strip()
+    detail_lines = [
+        re.sub(r"^\s*[-•]\s*", "", str(line or "").strip())
+        for line in str(extra_detail or "").splitlines()
+        if str(line or "").strip()
+    ]
+    status_lines = []
+    if status_text:
+        status_lines.append(f"현재 상태/다음 액션: {status_text}")
+    for line in detail_lines:
+        if ":" in line:
+            status_lines.append(line)
+    status_lines = list(dict.fromkeys(status_lines))
+
+    signal_source = "\n".join([status_text, *detail_lines]).lower()
+    positive_signal_lines = [
+        line
+        for line in status_lines
+        if _jira_context_line_has_positive_signal(line)
+    ]
+    positive_signal_text = "\n".join(positive_signal_lines).lower()
+
+    error_markers = ("오류", "error", "exception", "traceback", "deadline_exceeded")
+    fail_markers = ("실패", "fail", "failed")
+    review_markers = (
+        "검토 필요",
+        "보완",
+        "수정 필요",
+        "반려",
+        "revision",
+        "review_required",
+        "revision_required",
+        "rejected",
+    )
+    not_run_markers = ("미실행", "not_run", "대기")
+
+    issue_lines = [
+        line
+        for line in positive_signal_lines
+        if any(marker in line.lower() for marker in [*error_markers, *fail_markers, *review_markers, *not_run_markers])
+    ]
+
+    if any(marker in positive_signal_text for marker in error_markers):
+        category = "오류/버그 확인 필요"
+        issue_type = "버그"
+        priority = "High"
+        labels = ["voc-error", "voc-bug"]
+    elif any(marker in positive_signal_text for marker in fail_markers):
+        category = "Fail 원인 확인 필요"
+        issue_type = "버그"
+        priority = "High"
+        labels = ["voc-fail", "voc-bug"]
+    elif any(marker in signal_source for marker in review_markers):
+        category = "검토/보완 필요"
+        issue_type = "작업"
+        priority = "Medium"
+        labels = ["voc-review"]
+    elif any(marker in signal_source for marker in not_run_markers):
+        category = "미실행/대기 확인 필요"
+        issue_type = "작업"
+        priority = "Medium"
+        labels = ["voc-not-run"]
+    else:
+        category = "상태 확인"
+        issue_type = "작업"
+        priority = "미지정"
+        labels = ["voc-check"]
+
+    return {
+        "category": category,
+        "issue_type": issue_type,
+        "priority": priority,
+        "labels": labels,
+        "status_lines": status_lines,
+        "issue_lines": list(dict.fromkeys(issue_lines)),
+    }
+
+
 def _jira_context_summary(
     *,
     area_label: str,
@@ -1731,8 +1819,12 @@ def _jira_context_summary(
     case_id: str = "",
     status_label: str = "",
     question: str = "",
+    extra_detail: str = "",
 ) -> str:
     parts = ["VOC"]
+    diagnostic = _jira_context_diagnostic_model(status_label=status_label, extra_detail=extra_detail)
+    if diagnostic.get("category") and diagnostic.get("category") != "상태 확인":
+        parts.append(str(diagnostic["category"]))
     if case_id:
         parts.append(case_id)
     elif run_id:
@@ -1755,6 +1847,10 @@ def _jira_context_description(
     question: str = "",
     extra_detail: str = "",
 ) -> str:
+    diagnostic = _jira_context_diagnostic_model(
+        status_label=status_label,
+        extra_detail=extra_detail,
+    )
     lines = [
         "VOC 품질진단 화면에서 선택한 표 Row 기준으로 등록한 Jira 이슈입니다.",
         "",
@@ -1767,6 +1863,20 @@ def _jira_context_description(
         lines.append(f"- Case ID: {case_id}")
     if status_label:
         lines.append(f"- 현재 상태/다음 액션: {status_label}")
+    lines.extend(["", "등록 진단 요약:", f"- 구분: {diagnostic['category']}"])
+    status_lines = diagnostic.get("status_lines") or []
+    if status_lines:
+        lines.append("- Run/Case 상태 정보:")
+        lines.extend(f"  - {line}" for line in status_lines[:10])
+    issue_lines = diagnostic.get("issue_lines") or []
+    if issue_lines:
+        lines.append("- 오류/버그/Fail 확인 포인트:")
+        lines.extend(f"  - {line}" for line in issue_lines[:8])
+    lines.extend(
+        [
+            "- 조치 확인 기준: 증적 파일, Trace, 평가 결과, 재현 조건을 함께 확인합니다.",
+        ]
+    )
     if question:
         lines.extend(["", "질문/요약:", str(question).strip()])
     if extra_detail:
@@ -1780,6 +1890,50 @@ def _jira_context_description(
         ]
     )
     return "\n".join(lines)
+
+
+def _jira_context_run_detail_extra(run_id: str) -> str:
+    try:
+        detail = load_voc_run_history_detail(run_id)
+    except Exception:
+        return "Run 상태: 상세 정보를 불러오지 못했습니다."
+    manifest = detail.get("manifest", {}) if isinstance(detail.get("manifest"), dict) else {}
+    summary = detail.get("summary", {}) if isinstance(detail.get("summary"), dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    judge_counts = summary.get("judge_counts") if isinstance(summary.get("judge_counts"), dict) else {}
+    total = summary.get("total") or summary.get("selected_count") or sum(
+        int(counts.get(key, 0) or 0)
+        for key in ("PASS", "REVIEW_REQUIRED", "FAIL", "ERROR", "NOT_RUN")
+    )
+    run_context = {
+        "run_id": run_id,
+        "status": manifest.get("status") or summary.get("status"),
+        "run_type": manifest.get("run_type") or summary.get("run_type"),
+        "selected_count": total,
+        "counts": counts,
+        "judge_counts": judge_counts,
+        "validity_state": summary.get("validity_state"),
+        "deployment_decision": summary.get("deployment_decision"),
+    }
+    next_action = voc_run_next_action(run_context)
+    return "\n".join(
+        [
+            f"유형: {_voc_status_label(run_context.get('run_type'))}",
+            f"Run 상태: {_voc_status_label(run_context.get('status'))}",
+            f"다음 조치: {next_action.get('label', '-')}",
+            f"대상: {total or 0}건",
+            f"통과: {int(counts.get('PASS', 0) or 0)}건",
+            f"검토 필요: {int(counts.get('REVIEW_REQUIRED', 0) or 0)}건",
+            f"실패: {int(counts.get('FAIL', 0) or 0)}건",
+            f"오류: {int(counts.get('ERROR', 0) or 0)}건",
+            f"독립 LLM 통과: {int(judge_counts.get('PASS', 0) or 0)}건",
+            f"독립 LLM 검토 필요: {int(judge_counts.get('REVIEW_REQUIRED', 0) or 0)}건",
+            f"독립 LLM 실패: {int(judge_counts.get('FAIL', 0) or 0)}건",
+            f"독립 LLM 오류: {int(judge_counts.get('ERROR', 0) or 0)}건",
+            f"개선안 타당성: {_voc_status_label(summary.get('validity_state'))}",
+            f"배포 판정: {_voc_status_label(summary.get('deployment_decision'))}",
+        ]
+    )
 
 
 def _ensure_contextual_jira_history() -> list[dict]:
@@ -1804,6 +1958,7 @@ def _render_contextual_jira_action_menu(
     question: str = "",
     extra_detail: str = "",
     key: str,
+    dialog_mode: bool = False,
 ) -> None:
     """Register a Jira issue from a selected table row context."""
     safe_key = _jira_context_key(key)
@@ -1815,6 +1970,7 @@ def _render_contextual_jira_action_menu(
         case_id=case_id,
         status_label=status_label,
         question=question,
+        extra_detail=extra_detail,
     )
     default_description = _jira_context_description(
         area_label=area_label,
@@ -1826,14 +1982,46 @@ def _render_contextual_jira_action_menu(
         extra_detail=extra_detail,
     )
     result_key = f"voc_context_jira_result_{safe_key}"
-    with st.popover(
-        JIRA_ACTION_POPOVER_LABEL,
-        icon=":material/bug_report:",
-        type="secondary",
-        width="content",
-        key=f"voc_context_action_{safe_key}",
-        help="선택한 표 Row를 Jira 이슈로 등록합니다.",
-    ):
+    diagnostic = _jira_context_diagnostic_model(
+        status_label=status_label,
+        extra_detail=extra_detail,
+    )
+    default_issue_type = (
+        diagnostic.get("issue_type")
+        if diagnostic.get("issue_type") in JIRA_CONTEXT_ISSUE_TYPES
+        else JIRA_CONTEXT_ISSUE_TYPES[0]
+    )
+    default_priority = (
+        diagnostic.get("priority")
+        if diagnostic.get("priority") in JIRA_CONTEXT_PRIORITIES
+        else JIRA_CONTEXT_PRIORITIES[0]
+    )
+    if dialog_mode:
+        open_key = f"voc_context_jira_panel_open_{safe_key}"
+        is_open = bool(st.session_state.get(open_key, False))
+        if st.button(
+            JIRA_ACTION_POPOVER_LABEL if not is_open else "Jira 닫기",
+            icon=":material/bug_report:" if not is_open else ":material/close:",
+            type="secondary",
+            width="content",
+            key=f"voc_context_action_panel_{safe_key}",
+            help="선택한 표 Row를 Jira 이슈로 등록합니다.",
+        ):
+            st.session_state[open_key] = not is_open
+            st.rerun()
+        if not st.session_state.get(open_key, False):
+            return
+        action_container = st.container(border=True, width=430, gap="small")
+    else:
+        action_container = st.popover(
+            JIRA_ACTION_POPOVER_LABEL,
+            icon=":material/bug_report:",
+            type="secondary",
+            width="content",
+            key=f"voc_context_action_{safe_key}",
+            help="선택한 표 Row를 Jira 이슈로 등록합니다.",
+        )
+    with action_container:
         st.html(
             """
             <div class="voc-jira-action-head">
@@ -1897,21 +2085,20 @@ def _render_contextual_jira_action_menu(
                 max_chars=255,
                 key=f"voc_context_jira_summary_{safe_key}",
             )
-            meta_cols = st.columns([1, 1], gap="small")
-            with meta_cols[0]:
-                issue_type = st.selectbox(
-                    "유형",
-                    JIRA_CONTEXT_ISSUE_TYPES,
-                    index=0,
-                    key=f"voc_context_jira_type_{safe_key}",
-                )
-            with meta_cols[1]:
-                priority = st.selectbox(
-                    "우선순위",
-                    JIRA_CONTEXT_PRIORITIES,
-                    index=0,
-                    key=f"voc_context_jira_priority_{safe_key}",
-                )
+            issue_type = st.segmented_control(
+                "유형",
+                JIRA_CONTEXT_ISSUE_TYPES,
+                default=default_issue_type,
+                key=f"voc_context_jira_type_{safe_key}",
+                width="stretch",
+            ) or default_issue_type
+            priority = st.segmented_control(
+                "우선순위",
+                JIRA_CONTEXT_PRIORITIES,
+                default=default_priority,
+                key=f"voc_context_jira_priority_{safe_key}",
+                width="stretch",
+            ) or default_priority
             description = st.text_area(
                 "설명",
                 value=default_description,
@@ -1933,7 +2120,13 @@ def _render_contextual_jira_action_menu(
                     description=description,
                     issue_type=issue_type,
                     priority=jira_priority,
-                    labels=_jira_context_labels(area_label, target_label, run_id, case_id),
+                    labels=_jira_context_labels(
+                        area_label,
+                        target_label,
+                        run_id,
+                        case_id,
+                        *diagnostic.get("labels", []),
+                    ),
                 )
             except (JiraConfigurationError, JiraIssueCreateError) as exc:
                 st.error(str(exc), icon=":material/error:")
@@ -1945,6 +2138,7 @@ def _render_contextual_jira_action_menu(
                 "summary": summary,
                 "issue_type": issue_type,
                 "priority": jira_priority or "-",
+                "diagnostic_category": diagnostic.get("category", ""),
                 "case_id": case_id,
                 "run_id": run_id,
                 "source": area_label,
@@ -8745,15 +8939,18 @@ def _dismiss_history_detail_dialog() -> None:
     on_dismiss=_dismiss_history_detail_dialog,
 )
 def _render_history_detail_dialog(run_id: str) -> None:
-    with st.container(horizontal=True, horizontal_alignment="right"):
-        _render_contextual_jira_action_menu(
-            area_label="수행 이력 상세",
-            target_label="선택 Run",
-            run_id=run_id,
-            status_label="상세 팝업",
-            extra_detail="수행 이력 상세 팝업에서 선택한 Run 기준입니다.",
-            key=f"history_dialog_{run_id}",
-        )
+    _render_contextual_jira_action_menu(
+        area_label="수행 이력 상세",
+        target_label="선택 Run",
+        run_id=run_id,
+        status_label="상세 팝업",
+        extra_detail=(
+            "수행 이력 상세 팝업에서 선택한 Run 기준입니다.\n"
+            f"{_jira_context_run_detail_extra(run_id)}"
+        ),
+        key=f"history_dialog_{run_id}",
+        dialog_mode=True,
+    )
     _render_voc_run_detail(run_id)
 
 
@@ -13191,21 +13388,24 @@ def _render_validity_candidate_dialog(candidate: dict):
     validity = artifacts.get("validity_result", {}) if isinstance(artifacts.get("validity_result"), dict) else {}
     validity_rubric = load_improvement_validity_rubric()
 
-    with st.container(horizontal=True, horizontal_alignment="right"):
-        _render_contextual_jira_action_menu(
-            area_label="개선안 타당성 검증 상세",
-            target_label="선택 Case",
-            run_id=candidate.get("run_id", ""),
-            case_id=candidate.get("case_id", ""),
-            status_label=_voc_status_label(candidate.get("validity_status", "NOT_RUN")),
-            question=candidate.get("question", ""),
-            extra_detail=(
-                f"독립 LLM 평가: {_voc_status_label(candidate.get('judge_status', 'NOT_RUN'))}\n"
-                f"개선안 타당성 평가: {_voc_status_label(candidate.get('validity_status', 'NOT_RUN'))}\n"
-                f"승인 단계: {_voc_status_label(candidate.get('workflow_state', 'DRAFT'))}"
-            ),
-            key=f"validity_dialog_{_validity_candidate_key(candidate)}",
-        )
+    _render_contextual_jira_action_menu(
+        area_label="개선안 타당성 검증 상세",
+        target_label="선택 Case",
+        run_id=candidate.get("run_id", ""),
+        case_id=candidate.get("case_id", ""),
+        status_label=_voc_status_label(candidate.get("validity_status", "NOT_RUN")),
+        question=candidate.get("question", ""),
+        extra_detail=(
+            f"다음 조치: {((candidate.get('next_action') or {}).get('label') or candidate.get('review_action_label') or _candidate_review_readiness(candidate)['action_label'])}\n"
+            f"독립 LLM 평가: {_voc_status_label(candidate.get('judge_status', 'NOT_RUN'))}\n"
+            f"독립 LLM 점수: {judge.get('total_score', candidate.get('llm_score', '-'))}\n"
+            f"개선안 타당성 평가: {_voc_status_label(candidate.get('validity_status', 'NOT_RUN'))}\n"
+            f"개선안 타당성 점수: {validity.get('total_score', candidate.get('validity_score', '-'))}\n"
+            f"승인 단계: {_voc_status_label(candidate.get('workflow_state', 'DRAFT'))}"
+        ),
+        key=f"validity_dialog_{_validity_candidate_key(candidate)}",
+        dialog_mode=True,
+    )
 
     st.markdown(
         f"""
@@ -13944,7 +14144,9 @@ def render_improvement_validity():
             extra_detail=(
                 f"다음 조치: {((selected.get('next_action') or {}).get('label') or selected.get('review_action_label') or _candidate_review_readiness(selected)['action_label'])}\n"
                 f"독립 LLM 평가: {_voc_status_label(selected.get('judge_status', 'NOT_RUN'))}\n"
+                f"독립 LLM 점수: {selected.get('llm_score', '-')}\n"
                 f"개선안 타당성 평가: {_voc_status_label(selected.get('validity_status', 'NOT_RUN'))}\n"
+                f"개선안 타당성 점수: {selected.get('validity_score', '-')}\n"
                 f"승인 단계: {_voc_status_label(selected.get('workflow_state', 'DRAFT'))}"
             ),
             key=f"validity_{_validity_candidate_key(selected)}",
