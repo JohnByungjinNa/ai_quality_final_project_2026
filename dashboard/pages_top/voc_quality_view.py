@@ -18,6 +18,14 @@ import pandas as pd
 import streamlit as st
 
 from components.quality_report_template import build_voc_quality_report_html
+from core.paths import JIRA_REGISTERED_ISSUES_FILE
+from core.storage import load_json_file, save_json_file
+from services.jira_client import (
+    JiraConfigurationError,
+    JiraIssueCreateError,
+    create_jira_issue,
+    jira_environment_snapshot,
+)
 from services.voc_background_job_service import (
     background_job_snapshot,
     discard_background_job,
@@ -384,15 +392,58 @@ def _render_voc_section_heading(
             st.caption(_voc_display_term(right_caption), text_alignment="right")
 
 
+def _render_voc_summary_card_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .vqd-action-card-grid{display:grid;grid-template-columns:repeat(var(--vqd-action-cols,3),minmax(0,1fr));gap:8px;margin:0 0 8px;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif}
+        .vqd-action-card{border:1px solid #c8d9ee;border-left:4px solid #7b8797;border-radius:8px;background:linear-gradient(145deg,#fff,#f8fbff);box-shadow:0 3px 10px rgba(22,78,128,.05);padding:9px 10px;box-sizing:border-box;display:grid;grid-template-rows:22px 1fr 17px;gap:2px;overflow:hidden;min-width:0}
+        .vqd-action-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+        .vqd-action-label{display:flex;align-items:center;gap:5px;min-width:0;color:#40536d;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-icon{display:flex;width:16px;min-width:16px;color:#155a96;flex:0 0 auto}.vqd-action-icon svg{width:16px;height:16px}
+        .vqd-action-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 7px;border-radius:999px;background:#eef2f7;color:#64748b;border:1px solid #d8e2ee;font-size:9px;font-weight:850;white-space:nowrap}
+        .vqd-action-card strong{align-self:center;color:#073b72;font-size:21px;line-height:1.12;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-card small{color:#728095;font-size:9px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-card.blue{border-left-color:#155a96}.vqd-action-card.blue strong,.vqd-action-card.blue .vqd-action-icon{color:#155a96}.vqd-action-card.blue .vqd-action-badge{background:#eaf3fb;color:#155a96;border-color:#b9d2ec}
+        .vqd-action-card.green{border-left-color:#299049}.vqd-action-card.green strong,.vqd-action-card.green .vqd-action-icon{color:#299049}.vqd-action-card.green .vqd-action-badge{background:#eaf7ef;color:#176b35;border-color:#a9d7b8}
+        .vqd-action-card.orange{border-left-color:#b36a08}.vqd-action-card.orange strong,.vqd-action-card.orange .vqd-action-icon{color:#b36a08}.vqd-action-card.orange .vqd-action-badge{background:#fff7e6;color:#92550a;border-color:#e8c47b}
+        .vqd-action-card.red{border-left-color:#d83f36}.vqd-action-card.red strong,.vqd-action-card.red .vqd-action-icon{color:#d83f36}.vqd-action-card.red .vqd-action-badge{background:#fff0ee;color:#b42318;border-color:#efaaa4}
+        .vqd-action-card.gray{border-left-color:#9aa5b1}.vqd-action-card.gray strong,.vqd-action-card.gray .vqd-action-icon{color:#718096}.vqd-action-card.gray .vqd-action-badge{background:#f1f3f5;color:#7b8797;border-color:#d8dee5}
+        @media(max-width:1100px){.vqd-action-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:720px){.vqd-action-card-grid{grid-template-columns:repeat(2,1fr)}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_voc_summary_cards(
     cards: list[dict],
     *,
     columns: int | None = None,
     height: int = 118,
+    header_badge: bool = True,
 ) -> None:
     if not cards:
         return
     column_count = max(1, min(columns or len(cards), len(cards), 5))
+    if header_badge:
+        _render_voc_summary_card_styles()
+        for start in range(0, len(cards), column_count):
+            row_cards = cards[start:start + column_count]
+            card_html = "".join(
+                _voc_summary_card_html(card, height=height)
+                for card in row_cards
+            )
+            st.markdown(
+                (
+                    f"<div class='vqd-action-card-grid' "
+                    f"style='--vqd-action-cols:{column_count};--vqd-action-height:{int(height)}px'>"
+                    f"{card_html}</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+        return
     for start in range(0, len(cards), column_count):
         row_cards = cards[start:start + column_count]
         for column, card in zip(st.columns(len(row_cards), gap="small"), row_cards, strict=False):
@@ -406,6 +457,84 @@ def _render_voc_summary_cards(
                     st.caption(_voc_display_term(detail))
                 if badge:
                     st.markdown(_voc_ui_badge(badge, tone))
+
+
+def _voc_summary_card_svg_icon(name: object) -> str:
+    icon_name = str(name or "").strip()
+    if icon_name.startswith(":material/") and icon_name.endswith(":"):
+        icon_name = icon_name.removeprefix(":material/").removesuffix(":")
+    paths = {
+        "account_tree": "<path d='M6 5h6v5H6zM14 14h6v5h-6zM3 14h6v5H3z'/><path d='M9 10v2h8v2M6 10v4'/>",
+        "approval": "<path d='M5 4h14v16H5z'/><path d='m8 13 2.5 2.5L16 9'/><path d='M8 7h8'/>",
+        "article": "<path d='M6 3h9l4 4v14H6z'/><path d='M15 3v5h5M9 12h7m-7 4h7'/>",
+        "assignment_ind": "<path d='M6 3h12v18H6z'/><circle cx='12' cy='10' r='2.5'/><path d='M8.5 17c.7-2 2-3 3.5-3s2.8 1 3.5 3'/>",
+        "block": "<circle cx='12' cy='12' r='9'/><path d='M5.6 5.6 18.4 18.4'/>",
+        "check_circle": "<circle cx='12' cy='12' r='9'/><path d='m8 12 3 3 6-7'/>",
+        "checklist": "<path d='m4 7 1.5 1.5L8 5.5M11 7h9M4 13l1.5 1.5L8 11.5M11 13h9M4 19l1.5 1.5L8 17.5M11 19h9'/>",
+        "conversion_path": "<path d='M4 6h7a4 4 0 0 1 4 4v8'/><path d='m12 15 3 3 3-3M4 18h4'/>",
+        "dashboard": "<rect x='3' y='3' width='8' height='8' rx='1'/><rect x='13' y='3' width='8' height='5' rx='1'/><rect x='13' y='10' width='8' height='11' rx='1'/><rect x='3' y='13' width='8' height='8' rx='1'/>",
+        "draft": "<path d='M6 3h9l4 4v14H6z'/><path d='M15 3v5h5M9 15h6'/>",
+        "fact_check": "<path d='M5 4h14v16H5z'/><path d='m8 10 2 2 5-5m-7 9h8'/>",
+        "edit_note": "<path d='M4 19h8'/><path d='M14 4l6 6-8 8H6v-6z'/><path d='m15 5 4 4'/>",
+        "error": "<circle cx='12' cy='12' r='9'/><path d='M12 7v6m0 4h.01'/>",
+        "format_list_numbered": "<path d='M10 6h10M10 12h10M10 18h10M4 6h1v3M4 12h2l-2 3h2M4 18h2'/>",
+        "help": "<circle cx='12' cy='12' r='9'/><path d='M9.5 9a2.6 2.6 0 1 1 4.2 2c-.9.6-1.7 1.2-1.7 2.5M12 17h.01'/>",
+        "history": "<path d='M4 12a8 8 0 1 0 2.3-5.7L4 8.6'/><path d='M4 4v4h4M12 8v5l3 2'/>",
+        "hub": "<circle cx='12' cy='12' r='2.5'/><circle cx='5' cy='6' r='2'/><circle cx='19' cy='6' r='2'/><circle cx='19' cy='18' r='2'/><path d='M7 7l3.2 3.2M14 10.2 17.2 7M14 13.8 17.2 17'/>",
+        "inventory_2": "<path d='M4 7 12 3l8 4-8 4z'/><path d='M4 7v10l8 4 8-4V7M12 11v10'/>",
+        "low_priority": "<path d='M4 7h9M4 12h6M4 17h3M14 7h6m-3-3 3 3-3 3M12 17h8m-3-3 3 3-3 3'/>",
+        "menu_book": "<path d='M4 5.5A3.5 3.5 0 0 1 7.5 2H12v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H12v18h4.5A3.5 3.5 0 0 1 20 23z'/>",
+        "pending_actions": "<path d='M6 3h12v18H6z'/><path d='M9 7h6M9 11h3'/><circle cx='16' cy='16' r='4'/><path d='M16 14v2l1.5 1'/>",
+        "play_circle": "<circle cx='12' cy='12' r='9'/><path d='m10 8 6 4-6 4z'/>",
+        "playlist_play": "<path d='M4 6h10M4 11h10M4 16h6'/><path d='m14 15 6 4-6 4z'/>",
+        "psychology": "<path d='M9 18H7a4 4 0 0 1 0-8 5 5 0 0 1 10 1 3.5 3.5 0 0 1-1 6.8V21h-5v-3'/><path d='M10 10h.01M14 10h.01M11 14h3'/>",
+        "published_with_changes": "<path d='M12 3a9 9 0 1 1-8.2 5.3'/><path d='M3 4v4h4M8 12l3 3 6-7'/>",
+        "query_stats": "<path d='M4 19V5m0 14h16'/><path d='M7 15l3-4 3 2 4-7'/><circle cx='17' cy='6' r='2'/>",
+        "rate_review": "<path d='M4 5h16v11H8l-4 4z'/><path d='m8 10 2 2 5-5m-7 7h8'/>",
+        "replay": "<path d='M4 7v5h5'/><path d='M5.5 12a7 7 0 1 0 1.8-4.7L4 10'/>",
+        "rule": "<path d='M5 4h14v16H5z'/><path d='m8 9 2 2 4-4M8 16h8'/>",
+        "schedule": "<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
+        "score": "<path d='M4 19h16'/><path d='M6 16V9m6 7V5m6 11v-4'/>",
+        "shield": "<path d='M12 3 4 6v6c0 5 3.4 8.3 8 10 4.6-1.7 8-5 8-10V6z'/><path d='m8 12 3 3 5-6'/>",
+        "smart_toy": "<rect x='5' y='8' width='14' height='10' rx='3'/><path d='M12 4v4M8 13h.01M16 13h.01M9 18v2h6v-2'/>",
+        "summarize": "<path d='M6 3h9l4 4v14H6z'/><path d='M15 3v5h5M9 12h7M9 16h5'/>",
+        "sync_alt": "<path d='M4 7h13m-4-4 4 4-4 4M20 17H7m4-4-4 4 4 4'/>",
+        "task_alt": "<circle cx='12' cy='12' r='9'/><path d='m8 12 3 3 6-7'/>",
+        "touch_app": "<path d='M8 11V6a2 2 0 1 1 4 0v6'/><path d='M12 12v-2a2 2 0 1 1 4 0v3'/><path d='M16 13v-1a2 2 0 1 1 4 0v4a5 5 0 0 1-5 5h-3a5 5 0 0 1-4.4-2.6L5 14a1.8 1.8 0 0 1 3-2z'/>",
+        "tune": "<path d='M4 7h10M18 7h2M4 17h2M10 17h10M8 14v6M16 4v6'/>",
+        "verified": "<path d='M12 3 4 6v6c0 5 3.4 8.3 8 10 4.6-1.7 8-5 8-10V6z'/><path d='m8.5 12 2.5 2.5 5-6'/>",
+        "bug_report": "<path d='M8 7h8v10a4 4 0 0 1-8 0z'/><path d='M9 7 7 4m8 3 2-3M4 13h4m8 0h4M5 19l3-2m8 0 3 2'/>",
+        "warning": "<path d='M12 3 2.8 20h18.4L12 3Z'/><path d='M12 9v5m0 3h.01'/>",
+    }
+    path = paths.get(icon_name, "<circle cx='12' cy='12' r='8'/><path d='M8 12h8'/>")
+    return (
+        "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' "
+        "stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>"
+        + path
+        + "</svg>"
+    )
+
+
+def _voc_summary_card_html(card: dict, *, height: int) -> str:
+    tone = str(card.get("tone") or "gray").lower()
+    if tone not in {"blue", "green", "orange", "red", "gray"}:
+        tone = "gray"
+    icon = _voc_summary_card_svg_icon(card.get("icon"))
+    label = escape(_voc_display_term(card.get("label", "-")))
+    value = escape(_voc_display_term(card.get("value", "-")))
+    detail = escape(_voc_display_term(card.get("detail", "")))
+    badge = escape(_voc_display_term(card.get("badge", "")))
+    badge_html = f"<span class='vqd-action-badge'>{badge}</span>" if badge else ""
+    return (
+        f"<article class='vqd-action-card {tone}' style='height:{int(height)}px'>"
+        "<div class='vqd-action-card-head'>"
+        f"<span class='vqd-action-label'><span class='vqd-action-icon'>{icon}</span>{label}</span>"
+        f"{badge_html}"
+        "</div>"
+        f"<strong>{value}</strong>"
+        f"<small>{detail}</small>"
+        "</article>"
+    )
 
 
 def _release_scope_basis_cards(release_scope: dict, release_decision: str = "") -> list[dict]:
@@ -1571,6 +1700,261 @@ def _manual_pipeline_compact_text(value: str | None, limit: int = 78) -> str:
     if not text:
         return "-"
     return text if len(text) <= limit else f"{text[: max(0, limit - 1)]}…"
+
+
+JIRA_ACTION_POPOVER_LABEL = "Jira 등록"
+JIRA_CONTEXT_ISSUE_TYPES = ("작업", "버그", "스토리", "Task", "Bug")
+JIRA_CONTEXT_PRIORITIES = ("미지정", "Highest", "High", "Medium", "Low", "Lowest")
+
+
+def _jira_context_key(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_\-]+", "_", str(value or "context")).strip("_")[:120] or "context"
+
+
+def _jira_context_labels(*values: object) -> list[str]:
+    labels = ["voc-quality"]
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text == "-":
+            continue
+        clean = re.sub(r"[^A-Za-z0-9가-힣_\-]+", "-", text).strip("-")
+        if clean:
+            labels.append(clean[:80])
+    return list(dict.fromkeys(labels))
+
+
+def _jira_context_summary(
+    *,
+    area_label: str,
+    target_label: str,
+    run_id: str = "",
+    case_id: str = "",
+    status_label: str = "",
+    question: str = "",
+) -> str:
+    parts = ["VOC"]
+    if case_id:
+        parts.append(case_id)
+    elif run_id:
+        parts.append(run_id)
+    parts.append(target_label or area_label or "선택 항목")
+    if status_label:
+        parts.append(status_label)
+    if question:
+        parts.append(_manual_pipeline_compact_text(question, 70))
+    return " · ".join(str(part) for part in parts if str(part or "").strip())[:255]
+
+
+def _jira_context_description(
+    *,
+    area_label: str,
+    target_label: str,
+    run_id: str = "",
+    case_id: str = "",
+    status_label: str = "",
+    question: str = "",
+    extra_detail: str = "",
+) -> str:
+    lines = [
+        "VOC 품질진단 화면에서 선택한 표 Row 기준으로 등록한 Jira 이슈입니다.",
+        "",
+        f"- 화면: {area_label or '-'}",
+        f"- 대상: {target_label or '-'}",
+    ]
+    if run_id:
+        lines.append(f"- Run ID: {run_id}")
+    if case_id:
+        lines.append(f"- Case ID: {case_id}")
+    if status_label:
+        lines.append(f"- 현재 상태/다음 액션: {status_label}")
+    if question:
+        lines.extend(["", "질문/요약:", str(question).strip()])
+    if extra_detail:
+        lines.extend(["", "상세:", str(extra_detail).strip()])
+    lines.extend(
+        [
+            "",
+            "확인 요청:",
+            "- 선택한 Run/Case의 증적과 평가 결과를 확인합니다.",
+            "- 필요한 경우 보완, 재평가, 결함 처리 또는 승인 후속 조치를 진행합니다.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _ensure_contextual_jira_history() -> list[dict]:
+    if "jira_registered_issues" not in st.session_state:
+        st.session_state.jira_registered_issues = load_json_file(JIRA_REGISTERED_ISSUES_FILE, [])
+    return st.session_state.jira_registered_issues
+
+
+def _record_contextual_jira_issue(history_item: dict) -> None:
+    history = _ensure_contextual_jira_history()
+    history.insert(0, history_item)
+    save_json_file(JIRA_REGISTERED_ISSUES_FILE, history)
+
+
+def _render_contextual_jira_action_menu(
+    *,
+    area_label: str,
+    target_label: str,
+    run_id: str = "",
+    case_id: str = "",
+    status_label: str = "",
+    question: str = "",
+    extra_detail: str = "",
+    key: str,
+) -> None:
+    """Register a Jira issue from a selected table row context."""
+    safe_key = _jira_context_key(key)
+    snapshot = jira_environment_snapshot()
+    default_summary = _jira_context_summary(
+        area_label=area_label,
+        target_label=target_label,
+        run_id=run_id,
+        case_id=case_id,
+        status_label=status_label,
+        question=question,
+    )
+    default_description = _jira_context_description(
+        area_label=area_label,
+        target_label=target_label,
+        run_id=run_id,
+        case_id=case_id,
+        status_label=status_label,
+        question=question,
+        extra_detail=extra_detail,
+    )
+    result_key = f"voc_context_jira_result_{safe_key}"
+    with st.popover(
+        JIRA_ACTION_POPOVER_LABEL,
+        icon=":material/bug_report:",
+        type="secondary",
+        width="content",
+        key=f"voc_context_action_{safe_key}",
+        help="선택한 표 Row를 Jira 이슈로 등록합니다.",
+    ):
+        st.html(
+            """
+            <div class="voc-jira-action-head">
+                <span class="voc-jira-mini-logo">J</span>
+                <div class="voc-jira-action-copy">
+                    <strong>Jira 이슈 등록</strong>
+                    <small>선택한 표 Row를 Jira 작업으로 연결합니다</small>
+                </div>
+                <span class="voc-jira-action-badge">Jira</span>
+            </div>
+            <style>
+            .voc-jira-action-head{
+                display:flex;align-items:center;gap:9px;margin:8px 0 8px;
+                padding:9px 10px;border:1px solid #c7d8f7;border-radius:11px;
+                background:linear-gradient(135deg,#f4f8ff,#ffffff);
+                font-family:'Segoe UI','Malgun Gothic',sans-serif;
+            }
+            .voc-jira-mini-logo{
+                display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;
+                border-radius:7px;background:#0c66e4;color:#ffffff;
+                font-size:13px;font-weight:900;line-height:1;
+                box-shadow:0 3px 8px rgba(12,102,228,.22);
+            }
+            .voc-jira-action-copy{min-width:0;flex:1}
+            .voc-jira-action-copy strong{
+                display:block;color:#172b4d;font-size:12px;font-weight:900;line-height:1.15;
+            }
+            .voc-jira-action-copy small{
+                display:block;color:#5e6c84;font-size:10px;line-height:1.2;margin-top:2px;
+                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            }
+            .voc-jira-action-badge{
+                flex:0 0 auto;padding:3px 7px;border-radius:999px;
+                background:#deebff;color:#0747a6;border:1px solid #b3d4ff;
+                font-size:9px;font-weight:900;
+            }
+            </style>
+            """
+        )
+        if not snapshot["ready"]:
+            missing = ", ".join(snapshot.get("missing") or [])
+            st.warning(
+                f"Jira API 설정이 필요합니다. 누락: {missing or '-'}",
+                icon=":material/warning:",
+            )
+            return
+
+        latest_result = st.session_state.get(result_key)
+        if isinstance(latest_result, dict) and latest_result.get("issue_key"):
+            st.success(
+                f"최근 등록: {latest_result['issue_key']}",
+                icon=":material/check_circle:",
+            )
+            if latest_result.get("issue_url"):
+                st.link_button("Jira에서 열기", latest_result["issue_url"], icon=":material/open_in_new:")
+
+        with st.form(f"voc_context_jira_form_{safe_key}", border=False):
+            summary = st.text_input(
+                "요약",
+                value=default_summary,
+                max_chars=255,
+                key=f"voc_context_jira_summary_{safe_key}",
+            )
+            meta_cols = st.columns([1, 1], gap="small")
+            with meta_cols[0]:
+                issue_type = st.selectbox(
+                    "유형",
+                    JIRA_CONTEXT_ISSUE_TYPES,
+                    index=0,
+                    key=f"voc_context_jira_type_{safe_key}",
+                )
+            with meta_cols[1]:
+                priority = st.selectbox(
+                    "우선순위",
+                    JIRA_CONTEXT_PRIORITIES,
+                    index=0,
+                    key=f"voc_context_jira_priority_{safe_key}",
+                )
+            description = st.text_area(
+                "설명",
+                value=default_description,
+                height=170,
+                key=f"voc_context_jira_description_{safe_key}",
+            )
+            submitted = st.form_submit_button(
+                "Jira 이슈 등록",
+                icon=":material/add_task:",
+                type="primary",
+                width="stretch",
+            )
+
+        if submitted:
+            jira_priority = "" if priority == "미지정" else priority
+            try:
+                created = create_jira_issue(
+                    summary=summary,
+                    description=description,
+                    issue_type=issue_type,
+                    priority=jira_priority,
+                    labels=_jira_context_labels(area_label, target_label, run_id, case_id),
+                )
+            except (JiraConfigurationError, JiraIssueCreateError) as exc:
+                st.error(str(exc), icon=":material/error:")
+                return
+            history_item = {
+                "created_at": created.get("created_at", datetime.now().isoformat(timespec="seconds")),
+                "issue_key": created.get("key", "-"),
+                "issue_url": created.get("url", ""),
+                "summary": summary,
+                "issue_type": issue_type,
+                "priority": jira_priority or "-",
+                "case_id": case_id,
+                "run_id": run_id,
+                "source": area_label,
+            }
+            _record_contextual_jira_issue(history_item)
+            st.session_state[result_key] = history_item
+            st.toast(f"Jira 이슈 {created.get('key', '-')}를 등록했습니다.", icon=":material/check_circle:")
+            st.success(f"Jira 이슈 {created.get('key', '-')}를 등록했습니다.", icon=":material/check_circle:")
+            if created.get("url"):
+                st.link_button("Jira에서 열기", created["url"], icon=":material/open_in_new:")
 
 
 def _manual_pipeline_case_context(snapshot: dict, *, running: bool) -> dict:
@@ -3319,6 +3703,19 @@ def _render_voc_dashboard_styles() -> None:
         .vqd-status-card.good{border-top-color:#299049}.vqd-status-card.good .vqd-status-icon,.vqd-status-card.good strong{color:#299049}
         .vqd-status-card.warn{border-top-color:#b36a08}.vqd-status-card.warn .vqd-status-icon,.vqd-status-card.warn strong{color:#b36a08}
         .vqd-status-card.bad{border-top-color:#d83f36}.vqd-status-card.bad .vqd-status-icon,.vqd-status-card.bad strong{color:#d83f36}
+        .vqd-action-card-grid{display:grid;grid-template-columns:repeat(var(--vqd-action-cols,3),minmax(0,1fr));gap:8px;margin:0 0 8px;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif}
+        .vqd-action-card{border:1px solid #c8d9ee;border-left:4px solid #7b8797;border-radius:8px;background:linear-gradient(145deg,#fff,#f8fbff);box-shadow:0 3px 10px rgba(22,78,128,.05);padding:9px 10px;box-sizing:border-box;display:grid;grid-template-rows:22px 1fr 17px;gap:2px;overflow:hidden;min-width:0}
+        .vqd-action-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+        .vqd-action-label{display:flex;align-items:center;gap:5px;min-width:0;color:#40536d;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-icon{display:flex;width:16px;min-width:16px;color:#155a96;flex:0 0 auto}.vqd-action-icon svg{width:16px;height:16px}
+        .vqd-action-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 7px;border-radius:999px;background:#eef2f7;color:#64748b;border:1px solid #d8e2ee;font-size:9px;font-weight:850;white-space:nowrap}
+        .vqd-action-card strong{align-self:center;color:#073b72;font-size:21px;line-height:1.12;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-card small{color:#728095;font-size:9px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vqd-action-card.blue{border-left-color:#155a96}.vqd-action-card.blue strong,.vqd-action-card.blue .vqd-action-icon{color:#155a96}.vqd-action-card.blue .vqd-action-badge{background:#eaf3fb;color:#155a96;border-color:#b9d2ec}
+        .vqd-action-card.green{border-left-color:#299049}.vqd-action-card.green strong,.vqd-action-card.green .vqd-action-icon{color:#299049}.vqd-action-card.green .vqd-action-badge{background:#eaf7ef;color:#176b35;border-color:#a9d7b8}
+        .vqd-action-card.orange{border-left-color:#b36a08}.vqd-action-card.orange strong,.vqd-action-card.orange .vqd-action-icon{color:#b36a08}.vqd-action-card.orange .vqd-action-badge{background:#fff7e6;color:#92550a;border-color:#e8c47b}
+        .vqd-action-card.red{border-left-color:#d83f36}.vqd-action-card.red strong,.vqd-action-card.red .vqd-action-icon{color:#d83f36}.vqd-action-card.red .vqd-action-badge{background:#fff0ee;color:#b42318;border-color:#efaaa4}
+        .vqd-action-card.gray{border-left-color:#9aa5b1}.vqd-action-card.gray strong,.vqd-action-card.gray .vqd-action-icon{color:#718096}.vqd-action-card.gray .vqd-action-badge{background:#f1f3f5;color:#7b8797;border-color:#d8dee5}
         .vqd-connection-panel{display:grid;grid-template-columns:38px 135px auto 1fr;align-items:center;gap:12px;min-height:64px;margin:0 0 12px;padding:9px 12px;border:1px solid #c8d9ee;border-left:4px solid #7b8797;border-radius:8px;background:linear-gradient(90deg,#f8fbff,#fff);box-sizing:border-box;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;box-shadow:0 3px 10px rgba(22,78,128,.04)}
         .vqd-connection-panel.pass{border-left-color:#299049}.vqd-connection-panel.fail{border-left-color:#d83f36}.vqd-connection-panel.not-verified{border-left-color:#b36a08}
         .vqd-connection-icon{width:34px;color:#7b8797;display:flex}.vqd-connection-panel.pass .vqd-connection-icon{color:#299049}.vqd-connection-panel.fail .vqd-connection-icon{color:#d83f36}.vqd-connection-panel.not-verified .vqd-connection-icon{color:#b36a08}.vqd-connection-icon svg{width:100%;height:auto}
@@ -3329,8 +3726,8 @@ def _render_voc_dashboard_styles() -> None:
         .vqd-agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.vqd-agent-card{display:grid;grid-template-columns:34px 1fr auto;grid-template-rows:auto auto;gap:2px 9px;align-items:center;min-height:72px;padding:9px 10px;border:1px solid #d4e1ef;border-left:4px solid #7b8797;border-radius:7px;background:linear-gradient(145deg,#fff,#f8fbff);box-sizing:border-box}.vqd-agent-card.good{border-left-color:#299049}.vqd-agent-card.bad{border-left-color:#d83f36}.vqd-agent-icon{grid-row:1/3;width:31px;color:#7b8797;display:flex}.vqd-agent-card.good .vqd-agent-icon{color:#299049}.vqd-agent-card.bad .vqd-agent-icon{color:#d83f36}.vqd-agent-icon svg{width:100%;height:auto}.vqd-agent-card b{display:block;font-size:11px;color:#173f68}.vqd-agent-card small{display:block;font-size:9px;color:#718096}.vqd-agent-state{font-size:10px;font-weight:800;color:#7b8797}.vqd-agent-card.good .vqd-agent-state{color:#299049}.vqd-agent-card.bad .vqd-agent-state{color:#d83f36}.vqd-agent-card em{grid-column:2/4;font-size:9px;font-style:normal;color:#8795a8}
         div[data-testid="stForm"]{margin-bottom:0!important}div[data-testid="stForm"] [data-testid="stWidgetLabel"] p{font-size:10px!important;color:#40536d!important}div[data-testid="stForm"] [data-testid="stVerticalBlock"]{gap:.15rem!important}
         div[data-testid="stHeadingWithActionElements"] h1{font-size:29px!important;color:#0c3768!important;letter-spacing:-1px!important}div[data-testid="stHeadingWithActionElements"] h3{font-size:17px!important;color:#173f68!important}
-        @media(max-width:1100px){.vqd-status-row{grid-template-columns:repeat(3,1fr)}.vqd-connection-panel{grid-template-columns:38px 130px 1fr}.vqd-connection-panel p{grid-column:2/4}}
-        @media(max-width:720px){.vqd-status-row{grid-template-columns:repeat(2,1fr)}.vqd-connection-panel{grid-template-columns:34px 1fr}.vqd-connection-options,.vqd-connection-panel p{grid-column:1/3}.vqd-connection-panel p small{white-space:normal}.vqd-agent-grid{grid-template-columns:1fr}}
+        @media(max-width:1100px){.vqd-status-row{grid-template-columns:repeat(3,1fr)}.vqd-action-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.vqd-connection-panel{grid-template-columns:38px 130px 1fr}.vqd-connection-panel p{grid-column:2/4}}
+        @media(max-width:720px){.vqd-status-row,.vqd-action-card-grid{grid-template-columns:repeat(2,1fr)}.vqd-connection-panel{grid-template-columns:34px 1fr}.vqd-connection-options,.vqd-connection-panel p{grid-column:1/3}.vqd-connection-panel p small{white-space:normal}.vqd-agent-grid{grid-template-columns:1fr}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -3501,7 +3898,8 @@ def render_dashboard():
         _render_voc_summary_cards(
             _dashboard_action_summary_cards(validity_candidates, open_defects, important_defects),
             columns=3,
-            height=120,
+            height=98,
+            header_badge=True,
         )
         run_lookup = {item.get("run_id"): item for item in snapshot["runs"]}
         action_rows = _dashboard_action_detail_rows(validity_candidates, open_defects, run_lookup)
@@ -3866,85 +4264,72 @@ def _pipeline_result_message(result: dict) -> str:
 def _render_manual_pipeline_result_summary(result: dict, pipeline_snapshot: dict) -> None:
     ok = bool(result.get("ok"))
     generation = _manual_pipeline_generation_info(pipeline_snapshot)
-    cards = [
-        {
-            "icon": "✓" if ok else "!",
-            "label": "파이프라인 상태",
-            "value": "완료" if ok else "확인 필요",
-            "detail": (
-                "Agent 호출과 실행 Trace가 저장되었습니다."
-                if ok
-                else str(result.get("message") or result.get("error") or "실행 결과 확인 필요")
-            ),
-            "tone": "green" if ok else "orange",
-        },
-        {
-            "icon": "문서",
-            "label": "생성 산출물",
-            "value": "VOC 요약 · 개선안",
-            "detail": "아래 요약과 정책 개선안에서 확인합니다.",
-            "tone": "blue",
-        },
-        {
-            "icon": "LLM",
-            "label": "파이프라인 LLM",
-            "value": generation["provider"],
-            "detail": f"{generation['model']} · {generation['source']}",
-            "tone": "gray" if generation["model"] == "모델 확인 필요" else "blue",
-        },
-    ]
-    card_html = ""
-    for card in cards:
-        card_html += f"""
-        <div class="vqa-pipeline-summary-card {card['tone']}">
-            <span>{escape(card['icon'])}</span>
-            <div>
-                <small>{escape(card['label'])}</small>
-                <strong>{escape(card['value'])}</strong>
-                <p>{escape(card['detail'])}</p>
-            </div>
-        </div>
-        """
+    status_tone = "good" if ok else "warn"
+    status_label = "Agent 파이프라인 완료" if ok else "Agent 파이프라인 확인 필요"
+    detail = (
+        "VOC 요약과 정책 개선안이 아래에 표시됩니다."
+        if ok
+        else str(result.get("message") or result.get("error") or "실행 결과 확인 필요")
+    )
+    provider_label = str(generation.get("provider") or "내부 Agent 파이프라인")
+    model_label = str(generation.get("model") or "모델 확인 필요")
+    source_label = str(generation.get("source") or "설정 기준")
     st.html(
         f"""
-        <div class="vqa-pipeline-summary-row">{card_html}</div>
+        <div class="vqa-pipeline-compact-summary {status_tone}">
+            <div class="vqa-pipeline-compact-main">
+                <span>{escape(status_label)}</span>
+                <strong>{escape(detail)}</strong>
+            </div>
+            <div class="vqa-pipeline-compact-meta">
+                <small>파이프라인 LLM</small>
+                <b>{escape(provider_label)}</b>
+                <em>{escape(model_label)} · {escape(source_label)}</em>
+            </div>
+        </div>
         <style>
-        .vqa-pipeline-summary-row{{
-            display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:8px 0 12px;
+        .vqa-pipeline-compact-summary{{
+            display:flex;align-items:center;justify-content:space-between;gap:12px;
+            min-height:58px;margin:4px 0 12px;padding:10px 12px;border:1px solid #d5e2ef;
+            border-left:4px solid #1f6fb2;border-radius:12px;background:#f8fbff;
             font-family:'Segoe UI','Malgun Gothic',sans-serif;
         }}
-        .vqa-pipeline-summary-card{{
-            display:grid;grid-template-columns:34px 1fr;gap:9px;align-items:center;
-            height:86px;box-sizing:border-box;padding:10px 12px;border:1px solid #d5e2ef;
-            border-radius:13px;background:#f8fbff;color:#244b72;overflow:hidden;
+        .vqa-pipeline-compact-summary.good{{
+            border-left-color:#2f9660;background:linear-gradient(135deg,#f2fbf5,#ffffff);
         }}
-        .vqa-pipeline-summary-card span{{
-            display:grid;place-items:center;width:32px;height:32px;border-radius:10px;
-            background:#e7f1fb;color:#1f6fb2;font-size:18px;
+        .vqa-pipeline-compact-summary.warn{{
+            border-left-color:#b7791f;background:linear-gradient(135deg,#fff8e8,#ffffff);
         }}
-        .vqa-pipeline-summary-card small{{display:block;color:#6a7b8f;font-size:10px;font-weight:800}}
-        .vqa-pipeline-summary-card strong{{
-            display:block;margin-top:2px;color:#174f85;font-size:15px;line-height:1.2;
+        .vqa-pipeline-compact-main{{min-width:0;display:flex;flex-direction:column;gap:3px}}
+        .vqa-pipeline-compact-main span{{
+            width:max-content;max-width:100%;padding:4px 8px;border-radius:999px;
+            color:#17643b;background:#e0f3e7;border:1px solid #b9dfc1;
+            font-size:10px;font-weight:900;line-height:1.1;
+        }}
+        .vqa-pipeline-compact-summary.warn .vqa-pipeline-compact-main span{{
+            color:#8a540c;background:#fff0c9;border-color:#ead6a8;
+        }}
+        .vqa-pipeline-compact-main strong{{
+            color:#24435f;font-size:12px;line-height:1.3;font-weight:700;
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
         }}
-        .vqa-pipeline-summary-card p{{
-            margin:2px 0 0;color:#65788c;font-size:10px;line-height:1.25;
-            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+        .vqa-pipeline-compact-meta{{
+            flex:0 0 36%;min-width:230px;text-align:right;color:#63758b;
         }}
-        .vqa-pipeline-summary-card.blue{{background:#f4f9ff;border-color:#bdd5ec;color:#174f85}}
-        .vqa-pipeline-summary-card.blue span{{background:#e4f0fb;color:#1f6fb2}}
-        .vqa-pipeline-summary-card.blue strong{{color:#174f85}}
-        .vqa-pipeline-summary-card.green{{background:#eefaf2;border-color:#b9dfc1;color:#17643b}}
-        .vqa-pipeline-summary-card.green span{{background:#daf4e3;color:#247147}}
-        .vqa-pipeline-summary-card.green strong{{color:#17643b}}
-        .vqa-pipeline-summary-card.orange{{background:#fff8e8;border-color:#ead6a8;color:#8a540c}}
-        .vqa-pipeline-summary-card.orange span{{background:#fff0c9;color:#8a540c}}
-        .vqa-pipeline-summary-card.orange strong{{color:#8a540c}}
-        .vqa-pipeline-summary-card.gray{{background:#f4f6f8;border-color:#d8e0e9;color:#617083}}
-        .vqa-pipeline-summary-card.gray span{{background:#e8edf2;color:#687687}}
-        .vqa-pipeline-summary-card.gray strong{{color:#4f5e6f}}
+        .vqa-pipeline-compact-meta small{{
+            display:block;color:#7a889a;font-size:9px;font-weight:800;
+        }}
+        .vqa-pipeline-compact-meta b{{
+            display:block;color:#174f85;font-size:13px;line-height:1.2;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        }}
+        .vqa-pipeline-compact-meta em{{
+            display:block;margin-top:2px;color:#758498;font-style:normal;font-size:10px;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        }}
         @media(max-width:900px){{
-            .vqa-pipeline-summary-row{{grid-template-columns:1fr}}
+            .vqa-pipeline-compact-summary{{align-items:flex-start;flex-direction:column}}
+            .vqa-pipeline-compact-meta{{flex:auto;min-width:0;text-align:left;width:100%}}
         }}
         </style>
         """,
@@ -4626,8 +5011,6 @@ def _render_goal_testcase_result(selected_case_id: str):
 
     payload = test_execution.get("execution", {})
     result = payload.get("result", {})
-    pipeline_snapshot = _manual_pipeline_llm_snapshot(test_execution)
-    _render_manual_pipeline_result_summary(result, pipeline_snapshot)
     if not result.get("ok"):
         st.warning(result.get("message") or result.get("error") or "VOC 테스트 결과가 없습니다.")
     result_columns = st.columns(2, gap="medium")
@@ -5104,7 +5487,7 @@ def _render_goal_judge_step(selected_case: dict):
         pipeline_ok = pipeline_ok and bool(execution.get("result", {}).get("ok"))
 
     _render_voc_section_heading(
-        "독립 LLM 평가",
+        "2단계 · 독립 LLM 교차 평가",
         "Agent 파이프라인이 만든 동일 개선안을 재생성하지 않고, 선택한 외부 Provider가 독립적으로 평가합니다.",
         icon="fact_check",
     )
@@ -5159,7 +5542,6 @@ def render_goal_monitor():
     selected_case = _selected_goal_testcase()
     if selected_case:
         _sync_goal_testcase_recent_artifacts(selected_case)
-        _render_manual_demo_flow_overview(selected_case)
 
     _render_goal_pipeline_focus_anchor_once()
     with st.container(
@@ -8032,7 +8414,6 @@ def _render_voc_run_detail(run_id: str):
                     columns=5,
                     height=124,
                 )
-
             if artifact_names and artifact_name:
                 with st.container(border=True):
                     _render_voc_section_heading(
@@ -8364,6 +8745,15 @@ def _dismiss_history_detail_dialog() -> None:
     on_dismiss=_dismiss_history_detail_dialog,
 )
 def _render_history_detail_dialog(run_id: str) -> None:
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        _render_contextual_jira_action_menu(
+            area_label="수행 이력 상세",
+            target_label="선택 Run",
+            run_id=run_id,
+            status_label="상세 팝업",
+            extra_detail="수행 이력 상세 팝업에서 선택한 Run 기준입니다.",
+            key=f"history_dialog_{run_id}",
+        )
     _render_voc_run_detail(run_id)
 
 
@@ -9255,6 +9645,24 @@ def render_voc_history():
         if selected_items:
             _render_history_next_action_cards(selected_items[0], retest_plan=selected_retest_plan)
         with st.container(horizontal=True):
+            if selected_items:
+                selected_next_action = selected_items[0].get("next_action") or voc_run_next_action(selected_items[0])
+                _render_contextual_jira_action_menu(
+                    area_label="수행 이력",
+                    target_label="선택 Run",
+                    run_id=selected_run_id,
+                    status_label=selected_next_action.get("label", ""),
+                    extra_detail=(
+                        f"유형: {_voc_status_label(selected_items[0].get('run_type'))}\n"
+                        f"상태: {_voc_status_label(selected_items[0].get('status'))}\n"
+                        f"대상: {selected_items[0].get('selected_count', 0)}건\n"
+                        f"통과: {(selected_items[0].get('counts') or {}).get('PASS', 0)}건\n"
+                        f"검토 필요: {(selected_items[0].get('counts') or {}).get('REVIEW_REQUIRED', 0)}건\n"
+                        f"실패: {(selected_items[0].get('counts') or {}).get('FAIL', 0)}건\n"
+                        f"오류: {(selected_items[0].get('counts') or {}).get('ERROR', 0)}건"
+                    ),
+                    key=f"history_{selected_run_id}",
+                )
             if st.button(
                 "선택 Run 상세",
                 icon=":material/open_in_new:",
@@ -12783,6 +13191,22 @@ def _render_validity_candidate_dialog(candidate: dict):
     validity = artifacts.get("validity_result", {}) if isinstance(artifacts.get("validity_result"), dict) else {}
     validity_rubric = load_improvement_validity_rubric()
 
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        _render_contextual_jira_action_menu(
+            area_label="개선안 타당성 검증 상세",
+            target_label="선택 Case",
+            run_id=candidate.get("run_id", ""),
+            case_id=candidate.get("case_id", ""),
+            status_label=_voc_status_label(candidate.get("validity_status", "NOT_RUN")),
+            question=candidate.get("question", ""),
+            extra_detail=(
+                f"독립 LLM 평가: {_voc_status_label(candidate.get('judge_status', 'NOT_RUN'))}\n"
+                f"개선안 타당성 평가: {_voc_status_label(candidate.get('validity_status', 'NOT_RUN'))}\n"
+                f"승인 단계: {_voc_status_label(candidate.get('workflow_state', 'DRAFT'))}"
+            ),
+            key=f"validity_dialog_{_validity_candidate_key(candidate)}",
+        )
+
     st.markdown(
         f"""
         <div class="detail-status">
@@ -13510,6 +13934,21 @@ def render_improvement_validity():
     _render_validity_history_focus_action(selected)
     _render_validity_selection_basis(selected, artifacts, compact=True)
     with st.container(horizontal=True, horizontal_alignment="right"):
+        _render_contextual_jira_action_menu(
+            area_label="개선안 타당성 검증",
+            target_label="선택 Case",
+            run_id=selected.get("run_id", ""),
+            case_id=selected.get("case_id", ""),
+            status_label=_voc_status_label(selected.get("validity_status", "NOT_RUN")),
+            question=selected.get("question", ""),
+            extra_detail=(
+                f"다음 조치: {((selected.get('next_action') or {}).get('label') or selected.get('review_action_label') or _candidate_review_readiness(selected)['action_label'])}\n"
+                f"독립 LLM 평가: {_voc_status_label(selected.get('judge_status', 'NOT_RUN'))}\n"
+                f"개선안 타당성 평가: {_voc_status_label(selected.get('validity_status', 'NOT_RUN'))}\n"
+                f"승인 단계: {_voc_status_label(selected.get('workflow_state', 'DRAFT'))}"
+            ),
+            key=f"validity_{_validity_candidate_key(selected)}",
+        )
         if st.button(
             "선택 대상 상세 보기",
             icon=":material/open_in_new:",

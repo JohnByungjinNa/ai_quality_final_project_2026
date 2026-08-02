@@ -133,10 +133,11 @@ def test_voc_history_selected_run_detail_opens_in_dialog():
     assert not app.exception
     rendered_markdown = "\n".join(item.value for item in app.markdown)
     rendered_caption = "\n".join(item.value for item in app.caption)
+    rendered_text = f"{rendered_markdown}\n{rendered_caption}"
     assert ":material/history: 실행 상세" in rendered_markdown
     assert "Run RUN-" in rendered_caption
     for label in ("Run 상태", "대상 Case", "독립 LLM 평가", "타당성·승인"):
-        assert label in rendered_caption
+        assert label in rendered_text
     assert any(
         {"Case ID", "질문", "상태", "다음 액션", "독립 LLM", "타당성", "승인"}.issubset(
             set(frame.value.columns)
@@ -924,11 +925,6 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
     monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
     monkeypatch.setattr(voc_quality_view, "_sync_goal_testcase_recent_artifacts", lambda case: None)
-    monkeypatch.setattr(
-        voc_quality_view,
-        "_render_manual_demo_flow_overview",
-        lambda case: render_order.append(f"flow:{case['case_id']}"),
-    )
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
@@ -970,7 +966,6 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
 
     assert render_order == [
         "selector",
-        "flow:TC-01",
         "pipeline",
         "result:TC-01",
         "judge-select:TC-01",
@@ -992,11 +987,6 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
     monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
     monkeypatch.setattr(voc_quality_view, "_sync_goal_testcase_recent_artifacts", lambda case: None)
-    monkeypatch.setattr(
-        voc_quality_view,
-        "_render_manual_demo_flow_overview",
-        lambda case: render_order.append(f"flow:{case['case_id']}"),
-    )
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
@@ -1033,7 +1023,6 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
 
     assert render_order == [
         "selector",
-        "flow:TC-01",
         "pipeline",
         "result:TC-01",
         "judge-select:TC-01",

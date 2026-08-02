@@ -18,10 +18,17 @@ load_dotenv(BASE_DIR / ".env")
 
 # API Key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-JIRA_BASE_URL = os.getenv("JIRA_BASE_URL", "").rstrip("/")
-JIRA_EMAIL = os.getenv("JIRA_EMAIL", "")
-JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN", "")
-JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "")
+JIRA_BASE_URL = os.getenv("JIRA_BASE_URL", "https://byungjinna.atlassian.net").strip().rstrip("/")
+JIRA_EMAIL = os.getenv("JIRA_EMAIL", "").strip()
+_JIRA_API_TOKEN_ENV = os.getenv("JIRA_API_TOKEN", "").strip()
+JIRA_API_KEY = os.getenv("JIRA_API_KEY", "").strip()
+JIRA_API_TOKEN = _JIRA_API_TOKEN_ENV or JIRA_API_KEY
+JIRA_API_TOKEN_SOURCE = "JIRA_API_TOKEN" if _JIRA_API_TOKEN_ENV else ("JIRA_API_KEY" if JIRA_API_KEY else "")
+JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "KAN").strip()
+JIRA_DEFAULT_JQL = os.getenv(
+    "JIRA_DEFAULT_JQL",
+    f"project = {JIRA_PROJECT_KEY or 'KAN'} ORDER BY cf[10019] ASC",
+).strip()
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090").rstrip("/")
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip("/")
 GRAFANA_DASHBOARD_URL = os.getenv("GRAFANA_DASHBOARD_URL", "")
