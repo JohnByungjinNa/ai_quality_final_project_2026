@@ -261,9 +261,9 @@ VOC_EXECUTION_TYPE_LABELS = {
     "defined_only": "정의만 있음",
 }
 JUDGE_INDEPENDENCE_GRADE_LABELS = {
-    "A": "A등급 · 제공자 분리",
-    "B": "B등급 · 모델 분리",
-    "C": "C등급 · 편향 검토 필요",
+    "A": "독립성 좋음 · Provider 분리",
+    "B": "독립성 보통 · 모델 분리",
+    "C": "독립성 낮음 · 편향 검토 필요",
 }
 VALIDITY_RUN_TYPE_FILTERS = ("전체", "수동 수행", "일괄 수행", "재시험")
 VALIDITY_RUN_TYPE_FILTER_VALUES = {
@@ -336,6 +336,163 @@ def _voc_display_term(value: object) -> str:
     for source, target in replacements.items():
         text = text.replace(source, target)
     return text
+
+
+VOC_UI_DESIGN_RULES = (
+    "화면에는 지금 판단해야 하는 정보만 먼저 보여준다.",
+    "상세 로그·원본 Trace·산식은 접힘/팝업/상세 화면으로 보낸다.",
+    "Run ID보다 Case, 질문, 상태, 다음 액션을 먼저 보이게 한다.",
+    "상태는 한글 라벨, 색상 배지, Material Symbols 아이콘을 함께 사용한다.",
+    "같은 성격의 카드·리스트·팝업은 같은 높이와 같은 정보 순서를 유지한다.",
+)
+VOC_UI_BADGE_TONES = {
+    "green": "green",
+    "blue": "blue",
+    "orange": "orange",
+    "red": "red",
+    "gray": "gray",
+}
+
+
+def _voc_ui_badge(label: object, tone: str = "gray") -> str:
+    label_text = _voc_display_term(label or "확인")
+    tone_name = VOC_UI_BADGE_TONES.get(str(tone or "").lower(), "gray")
+    return f":{tone_name}-badge[{label_text}]"
+
+
+def _voc_bool_tone(value: bool, *, pending_tone: str = "orange") -> str:
+    return "green" if bool(value) else pending_tone
+
+
+def _render_voc_section_heading(
+    title: str,
+    caption: str = "",
+    *,
+    icon: str = "info",
+    badges: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
+    right_caption: str = "",
+) -> None:
+    left, right = st.columns([2.4, 1.15], gap="small", vertical_alignment="center")
+    with left:
+        st.markdown(f"#### :material/{icon}: {title}")
+        if caption:
+            st.caption(_voc_display_term(caption))
+    with right:
+        if badges:
+            st.markdown(" ".join(_voc_ui_badge(label, tone) for label, tone in badges), text_alignment="right")
+        if right_caption:
+            st.caption(_voc_display_term(right_caption), text_alignment="right")
+
+
+def _render_voc_summary_cards(
+    cards: list[dict],
+    *,
+    columns: int | None = None,
+    height: int = 118,
+) -> None:
+    if not cards:
+        return
+    column_count = max(1, min(columns or len(cards), len(cards), 5))
+    for start in range(0, len(cards), column_count):
+        row_cards = cards[start:start + column_count]
+        for column, card in zip(st.columns(len(row_cards), gap="small"), row_cards, strict=False):
+            tone = str(card.get("tone") or "gray")
+            badge = card.get("badge")
+            with column.container(border=True, height=height):
+                st.caption(f":material/{card.get('icon', 'info')}: {_voc_display_term(card.get('label', '-'))}")
+                st.markdown(f"#### {_voc_display_term(card.get('value', '-'))}")
+                detail = card.get("detail")
+                if detail:
+                    st.caption(_voc_display_term(detail))
+                if badge:
+                    st.markdown(_voc_ui_badge(badge, tone))
+
+
+def _release_scope_basis_cards(release_scope: dict, release_decision: str = "") -> list[dict]:
+    if not isinstance(release_scope, dict) or not release_scope:
+        return []
+    voc_counts = release_scope.get("voc_counts", {}) if isinstance(release_scope.get("voc_counts"), dict) else {}
+    fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
+    voc_total = int(release_scope.get("voc_count") or 0)
+    fault_total = int(release_scope.get("fault_count") or 0)
+    pending_total = int(release_scope.get("pending_count") or 0)
+    voc_pass = int(voc_counts.get("PASS") or 0)
+    fault_confirmed = int(fault_counts.get("PASS") or 0) + int(fault_counts.get("REVIEW_REQUIRED") or 0)
+    pending_approved = int(pending_counts.get("NOT_RUN") or 0)
+    linked_retest_count = int(release_scope.get("linked_retest_count") or 0)
+    decision_label = _voc_status_label(release_decision or release_scope.get("release_decision") or "NOT_APPROVED")
+    is_formal = str(release_decision or release_scope.get("release_decision") or "").upper() == "FORMAL_APPROVED"
+    return [
+        {
+            "icon": "task_alt",
+            "label": "VOC 개선 Case",
+            "value": f"{voc_pass}/{voc_total} PASS",
+            "detail": "답변 품질·독립 LLM·업무 승인 완료",
+            "tone": _voc_bool_tone(voc_total > 0 and voc_pass >= voc_total),
+            "badge": "통과",
+        },
+        {
+            "icon": "shield",
+            "label": "장애 검증 Case",
+            "value": f"{fault_confirmed}/{fault_total} 실행 확인",
+            "detail": "보호 동작 확인 대상은 REVIEW_REQUIRED로 관리",
+            "tone": _voc_bool_tone(fault_total == 0 or fault_confirmed >= fault_total),
+            "badge": "실행 확인",
+        },
+        {
+            "icon": "pending_actions",
+            "label": "후속 구현 Case",
+            "value": f"{pending_approved}/{pending_total} 승인",
+            "detail": "이번 회차 NOT_RUN이 정상 상태",
+            "tone": _voc_bool_tone(pending_total == 0 or pending_approved >= pending_total),
+            "badge": "후속 승인",
+        },
+        {
+            "icon": "sync_alt",
+            "label": "보완 RETEST",
+            "value": f"{linked_retest_count}건 연결",
+            "detail": "부족 Case의 승인 증적을 원본 Run에 반영",
+            "tone": "green" if linked_retest_count else "gray",
+            "badge": "연결",
+        },
+        {
+            "icon": "verified",
+            "label": "최종 판정",
+            "value": decision_label,
+            "detail": "품질 보고서와 최종 인수 게이트 연결",
+            "tone": "green" if is_formal else "orange",
+            "badge": "최종 상태",
+        },
+    ]
+
+
+def _render_release_scope_basis(
+    release_scope: dict,
+    *,
+    release_decision: str = "",
+    title: str = "35건 최종 인수 기준",
+    caption: str = "최종 판정은 실행 결과, 승인 증적, 후속 구현 범위를 분리해서 판단합니다.",
+) -> None:
+    cards = _release_scope_basis_cards(release_scope, release_decision)
+    if not cards:
+        return
+    badges = [
+        (_voc_status_label(release_decision), "green" if str(release_decision).upper() == "FORMAL_APPROVED" else "orange")
+    ] if release_decision else []
+    with st.container(border=True):
+        _render_voc_section_heading(
+            title,
+            caption,
+            icon="rule",
+            badges=badges,
+            right_caption=f"전체 {int(release_scope.get('selected_count') or release_scope.get('catalog_total_cases') or 0)}건",
+        )
+        _render_voc_summary_cards(cards, columns=5, height=132)
+        st.caption(
+            "시연 멘트 기준: VOC 개선 Case는 PASS, 장애 검증 Case는 실행 확인, "
+            "후속 구현 Case는 승인된 NOT_RUN, 보완 RETEST는 원본 Run 반영으로 설명합니다."
+        )
 
 VOC_PAGE_META = {
     "Dashboard": {
@@ -713,7 +870,7 @@ def _judge_config_controls(key_prefix: str, *, fault_only: bool = False) -> dict
     independence = judge_independence_preview(provider, model)
     if selected["credential_configured"]:
         st.caption(
-            f"자격 증명 설정됨 · 예상 독립성 {_judge_independence_grade_label(independence['grade'])} · {independence['reason']}"
+            f"자격 증명 설정됨 · {_judge_independence_grade_label(independence['grade'])} · {independence['reason']}"
         )
     else:
         st.error(f"{selected['label']} API 자격 증명이 설정되지 않았습니다.")
@@ -814,6 +971,29 @@ def _manual_judge_logo_data_uri(provider: str) -> str:
     return f"data:image/svg+xml;base64,{encoded}"
 
 
+def _manual_pipeline_generation_info(pipeline_snapshot: dict | None) -> dict:
+    snapshot = pipeline_snapshot if isinstance(pipeline_snapshot, dict) else {}
+    raw_provider = str(snapshot.get("provider") or "").strip().lower()
+    raw_model = str(snapshot.get("model") or "").strip()
+    recorded_provider = raw_provider and raw_provider != "internal_pipeline"
+    recorded_model = bool(raw_model and raw_model != "-")
+    if recorded_provider or recorded_model:
+        return {
+            "provider": _manual_provider_label(raw_provider) if recorded_provider else str(snapshot.get("provider_label") or "내부 Agent 파이프라인"),
+            "model": raw_model if recorded_model else "모델 확인 필요",
+            "source": "실제 수행 Trace 기준",
+        }
+    try:
+        fallback = judge_independence_preview("anthropic", "claude-haiku-4-5")
+    except Exception:
+        fallback = {}
+    return {
+        "provider": _manual_provider_label(fallback.get("generator_provider")) or "내부 Agent 파이프라인",
+        "model": str(fallback.get("generator_model") or "모델 확인 필요"),
+        "source": "현재 파이프라인 설정 기준",
+    }
+
+
 def _manual_judge_config_controls(
     key_prefix: str,
     *,
@@ -827,6 +1007,10 @@ def _manual_judge_config_controls(
     if selected_provider not in {item["provider"] for item in MANUAL_JUDGE_PROVIDERS}:
         selected_provider = "anthropic"
         st.session_state[state_key] = selected_provider
+    selected_option = options.get(selected_provider, {})
+    selected = next(item for item in MANUAL_JUDGE_PROVIDERS if item["provider"] == selected_provider)
+    selected_model = str(selected_option.get("default_model") or selected["model"])
+    selected_independence = judge_independence_preview(selected_provider, selected_model)
 
     card_classes = []
     for item in MANUAL_JUDGE_PROVIDERS:
@@ -834,7 +1018,7 @@ def _manual_judge_config_controls(
         logo_uri = _manual_judge_logo_data_uri(item["provider"])
         card_classes.append(
             f".st-key-{key_prefix}_judge_select_{item['provider']} button{{"
-            "height:178px;border-radius:14px;display:flex;flex-direction:column;"
+            "height:164px;border-radius:14px;display:flex;flex-direction:column;"
             "justify-content:flex-end;align-items:flex-start;padding:18px 20px;"
             "font-size:14px;font-weight:700;white-space:pre-line;transition:all .18s ease;"
             f"background-image:url('{logo_uri}');background-repeat:no-repeat;"
@@ -856,27 +1040,31 @@ def _manual_judge_config_controls(
     )
 
     if pipeline_snapshot:
-        pipeline_provider = escape(str(pipeline_snapshot.get("provider_label") or "-"))
-        pipeline_model = escape(str(pipeline_snapshot.get("model") or "-"))
+        generation = _manual_pipeline_generation_info(pipeline_snapshot)
+        pipeline_provider = escape(generation["provider"])
+        pipeline_model = escape(generation["model"])
+        pipeline_source = escape(generation["source"])
         selected_label = escape(_manual_provider_label(selected_provider))
+        selected_model_text = escape(selected_model)
+        selected_independence_label = escape(_judge_independence_grade_label(selected_independence.get("grade")))
         st.html(
             f"""
             <div class="vqa-cross-judge-guide">
                 <div class="vqa-cross-judge-card source">
                     <span>연결</span>
                     <div>
-                        <small>1단계 파이프라인 LLM</small>
+                        <small>Agent 파이프라인 생성 LLM</small>
                         <strong>{pipeline_provider}</strong>
-                        <p>{pipeline_model}</p>
+                        <p>{pipeline_model} · {pipeline_source}</p>
                     </div>
                 </div>
-                <div class="vqa-cross-judge-arrow">교차 평가</div>
+                <div class="vqa-cross-judge-arrow">독립 검증</div>
                 <div class="vqa-cross-judge-card judge">
                     <span>평가</span>
                     <div>
-                        <small>2단계 선택 평가 모델</small>
+                        <small>선택 평가 LLM · {selected_independence_label}</small>
                         <strong>{selected_label}</strong>
-                        <p>아래 카드에서 평가 Provider 변경 가능</p>
+                        <p>{selected_model_text}</p>
                     </div>
                 </div>
             </div>
@@ -898,6 +1086,7 @@ def _manual_judge_config_controls(
             .vqa-cross-judge-card small{{display:block;font-size:10px;color:#6a7b8f;margin-bottom:2px}}
             .vqa-cross-judge-card strong{{display:block;font-size:15px;color:#174f85}}
             .vqa-cross-judge-card p{{margin:2px 0 0;font-size:11px;color:#65788c}}
+            .vqa-cross-judge-card p{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .vqa-cross-judge-arrow{{
                 align-self:center;border-radius:999px;background:#eaf3fc;color:#1f6fb2;
                 font-size:11px;font-weight:800;padding:6px 10px;white-space:nowrap;
@@ -906,10 +1095,7 @@ def _manual_judge_config_controls(
             """,
         )
 
-    st.markdown("#### 독립 LLM 평가 Provider 선택")
-    st.caption(
-        "1단계에서 저장된 동일한 Agent 파이프라인 개선안을 다시 생성하지 않고, 선택한 외부 Provider가 독립적으로 평가합니다."
-    )
+    st.markdown("#### 독립 LLM Provider 선택")
     columns = st.columns(len(MANUAL_JUDGE_PROVIDERS), gap="medium")
     for column, item in zip(columns, MANUAL_JUDGE_PROVIDERS):
         provider = item["provider"]
@@ -928,11 +1114,9 @@ def _manual_judge_config_controls(
                 help=f"{item['label']} {display_model}을 독립 LLM 평가 Provider로 사용합니다.",
             )
             credential_text = "API 자격 증명 설정됨" if option.get("credential_configured") else "API 자격 증명 미설정"
-            st.caption(f"{credential_text} · 예상 독립성 {independence['grade']}")
+            st.caption(f"{credential_text} · {_judge_independence_grade_label(independence['grade'])}")
 
-    selected = next(item for item in MANUAL_JUDGE_PROVIDERS if item["provider"] == selected_provider)
-    selected_model = str(options.get(selected_provider, {}).get("default_model") or selected["model"])
-    credential_configured = bool(options.get(selected_provider, {}).get("credential_configured"))
+    credential_configured = bool(selected_option.get("credential_configured"))
     if fault_only:
         st.info(
             "격리 장애 Case는 개선안이 없어 선택한 Provider를 호출하지 않고 독립 LLM 평가 결과를 미실행으로 기록합니다.",
@@ -953,24 +1137,49 @@ def _manual_judge_config_controls(
     }
 
 
-def _validity_config_controls(key_prefix: str) -> dict:
+def _validity_config_controls(key_prefix: str, *, compact: bool = False) -> dict:
     options = validity_provider_options()
-    provider = st.selectbox(
-        "개선안 타당성 평가 Provider",
-        [item["provider"] for item in options],
-        format_func=lambda value: next(item["label"] for item in options if item["provider"] == value),
-        key=f"{key_prefix}_validity_provider",
-    )
-    selected = next(item for item in options if item["provider"] == provider)
-    model = st.text_input(
-        "개선안 타당성 평가 모델",
-        value=selected["default_model"],
-        key=f"{key_prefix}_validity_model_{provider}",
-    )
-    if selected["credential_configured"]:
-        st.caption("자격 증명 설정됨 · 독립 LLM 평가 결과와 별도로 개선안 실행 타당성을 평가합니다.")
+    provider_options = [item["provider"] for item in options]
+    if compact:
+        provider_col, model_col, state_col = st.columns([1.05, 1.55, 0.9], gap="small", vertical_alignment="bottom")
+        with provider_col:
+            provider = st.selectbox(
+                "Provider",
+                provider_options,
+                format_func=lambda value: next(item["label"] for item in options if item["provider"] == value),
+                key=f"{key_prefix}_validity_provider",
+            )
     else:
-        st.error(f"{selected['label']} API 자격 증명이 설정되지 않았습니다.")
+        provider = st.selectbox(
+            "개선안 타당성 평가 Provider",
+            provider_options,
+            format_func=lambda value: next(item["label"] for item in options if item["provider"] == value),
+            key=f"{key_prefix}_validity_provider",
+        )
+    selected = next(item for item in options if item["provider"] == provider)
+    if compact:
+        with model_col:
+            model = st.text_input(
+                "평가 모델",
+                value=selected["default_model"],
+                key=f"{key_prefix}_validity_model_{provider}",
+            )
+        with state_col:
+            if selected["credential_configured"]:
+                st.markdown(":green-badge[키 설정됨]", text_alignment="right")
+            else:
+                st.markdown(":red-badge[키 확인 필요]", text_alignment="right")
+                st.caption(f"{selected['label']} API 키 필요", text_alignment="right")
+    else:
+        model = st.text_input(
+            "개선안 타당성 평가 모델",
+            value=selected["default_model"],
+            key=f"{key_prefix}_validity_model_{provider}",
+        )
+        if selected["credential_configured"]:
+            st.caption("자격 증명 설정됨 · 독립 LLM 평가 결과와 별도로 개선안 실행 타당성을 평가합니다.")
+        else:
+            st.error(f"{selected['label']} API 자격 증명이 설정되지 않았습니다.")
     return {
         "provider": provider,
         "model": model,
@@ -1096,7 +1305,7 @@ def _manual_judge_comparison_rows(judge_result: dict | None) -> list[dict]:
                 "모델": model,
                 "판정": _voc_status_label(item.get("decision", "NOT_RUN")),
                 "점수": score,
-                "독립성": item.get("independence_grade", "-") or "-",
+                "독립성": _judge_independence_grade_label(item.get("independence_grade", "-")),
                 "수행 시간": duration,
                 "평가 시각": evaluated_at_text(evaluated_at),
             }
@@ -1343,6 +1552,95 @@ def _trace_display_events(events: list[dict]) -> list[dict]:
     return display_events
 
 
+def _manual_pipeline_timestamp_text(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        normalized = text.replace("T", " ")
+        return normalized[:19] if len(normalized) >= 19 else normalized
+
+
+def _manual_pipeline_compact_text(value: str | None, limit: int = 78) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "-"
+    return text if len(text) <= limit else f"{text[: max(0, limit - 1)]}…"
+
+
+def _manual_pipeline_case_context(snapshot: dict, *, running: bool) -> dict:
+    result = st.session_state.get("goal_testcase_result") or {}
+    result_case = result.get("case", {}) if isinstance(result.get("case"), dict) else {}
+    running_case_id = str(st.session_state.get("goal_testcase_running_case_id") or "").strip()
+    selected_case_id = str(st.session_state.get("goal_testcase_selected_case_id") or "").strip()
+    result_case_id = str(result_case.get("case_id") or "").strip()
+    case_id = (
+        running_case_id
+        if running and running_case_id
+        else selected_case_id
+        or result_case_id
+        or "-"
+    )
+
+    question = (
+        result_case.get("question")
+        or result_case.get("name")
+        or (st.session_state.get("goal_testcase_running_question") if running else "")
+        or ""
+    )
+    if not question:
+        selected_case = _selected_goal_testcase() or {}
+        if str(selected_case.get("case_id") or "") == case_id:
+            question = selected_case.get("question") or selected_case.get("name") or ""
+    if not question and case_id != "-":
+        catalog_case = next(
+            (
+                case
+                for case in load_unified_quality_cases().get("cases", [])
+                if str(case.get("case_id") or "") == case_id
+            ),
+            {},
+        )
+        question = catalog_case.get("question") or catalog_case.get("name") or ""
+    question = question or "-"
+    source_events = snapshot.get("events", []) if isinstance(snapshot.get("events"), list) else []
+    started_at = st.session_state.get("goal_testcase_started_at", "")
+    completed_at = st.session_state.get("goal_testcase_completed_at", "")
+    last_event_at = next(
+        (
+            str(event.get("timestamp") or "")
+            for event in reversed(source_events)
+            if isinstance(event, dict) and event.get("timestamp")
+        ),
+        "",
+    )
+    has_recent = bool(result or source_events or started_at or completed_at)
+    timestamp_source = (
+        started_at
+        if running
+        else completed_at
+        or last_event_at
+        or started_at
+    )
+    state_label = "현재 실행 중" if running else ("최근 수행" if has_recent else "선택 Case")
+    timestamp_label = "시작 일시" if running else "최근 수행 일시"
+    return {
+        "case_id": case_id,
+        "question": str(question or "-"),
+        "question_short": _manual_pipeline_compact_text(str(question or "-"), 88),
+        "state_label": state_label,
+        "state_class": "running" if running else ("recent" if has_recent else "selected"),
+        "timestamp_label": timestamp_label,
+        "timestamp": _manual_pipeline_timestamp_text(timestamp_source),
+        "has_recent": has_recent,
+    }
+
+
 def _pipeline_run_summary(snapshot: dict, *, running: bool) -> dict:
     events = _trace_display_events(snapshot.get("events", []))
     result = st.session_state.get("goal_testcase_result") or {}
@@ -1462,12 +1760,17 @@ def _render_agent_pipeline(snapshot: dict, running: bool):
             <div class="agent-meta">상태 {status_detail} · 처리시간 {float(duration or 0):,.0f} ms</div>
           </div>""")
 
-    trace_id = escape(snapshot.get("trace_id") or "아직 실행 Trace 없음")
-    status_text = "테스트 실행 중 · 2초마다 상태 확인" if running else "최근 수행 Agent 파이프라인"
+    context = _manual_pipeline_case_context(snapshot, running=running)
+    status_text = "현재 실행 중 Agent 파이프라인" if running else "최근 수행 Agent 파이프라인"
+    case_meta = escape(f"{context['case_id']} · {context['question_short']}")
+    time_meta = escape(f"{context['timestamp_label']} {context['timestamp']}")
     st.html(f"""
     <style>
       .pipeline-wrap{{border:1px solid #d8e3f0;border-radius:16px;padding:16px;background:linear-gradient(180deg,#f8fbff,#fff);margin:4px 0 18px}}
       .pipeline-title{{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;color:#17355f;font:600 13px 'Segoe UI','Malgun Gothic',sans-serif}}
+      .pipeline-title span:last-child{{display:flex;gap:8px;align-items:center;color:#6d7d91;font-size:10px;font-weight:600;min-width:0}}
+      .pipeline-title span:last-child b{{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#17355f;font-size:11px}}
+      .pipeline-title span:last-child em{{font-style:normal;color:#8593a5;font-size:9px}}
       .pipeline-grid{{display:grid;grid-template-columns:repeat(6,minmax(170px,1fr));gap:24px;overflow-x:auto;padding:4px}}
       .agent-card{{position:relative;min-width:170px;border:2px solid #d6deea;border-radius:13px;background:#fff;padding:12px;box-shadow:0 4px 12px rgba(26,56,96,.07)}}
       .agent-card:not(:last-child):after{{content:'→';position:absolute;right:-22px;top:47%;color:#4470aa;font-size:22px;font-weight:800}}
@@ -1487,7 +1790,7 @@ def _render_agent_pipeline(snapshot: dict, running: bool):
       .agent-meta{{text-align:right;color:#8794a8;font-size:9px;margin-top:7px}}
       @keyframes pulse{{50%{{transform:translateY(-2px)}}}} @media(max-width:900px){{.pipeline-grid{{grid-template-columns:repeat(6,180px)}}}}
     </style>
-    <div class="pipeline-wrap"><div class="pipeline-title"><span>{status_text}</span><span>실행 Trace · {trace_id}</span></div><div class="pipeline-grid">{''.join(cards)}</div></div>
+    <div class="pipeline-wrap"><div class="pipeline-title"><span>{status_text}</span><span><b>{case_meta}</b><em>{time_meta}</em></span></div><div class="pipeline-grid">{''.join(cards)}</div></div>
     """)
 
 
@@ -1515,9 +1818,17 @@ def _render_agent_pipeline_v2(
     agent_numbers = {name: index for index, (name, _, _) in enumerate(AGENT_PIPELINE, start=1)}
     display_statuses = _trace_event_display_statuses(events, running=running)
     run_summary = _pipeline_run_summary(snapshot, running=running)
-    selected_case_id = escape(str(st.session_state.get("goal_testcase_selected_case_id") or "-"))
-    call_title = "??? ?? ???(Agent ??)" if running else f"?? ?? ???(Agent ??) ? ?? Case {selected_case_id} ??"
-    raw_title = "??? ?? ???(?? ??)" if running else f"?? ?? ???(?? ??) ? ?? Case {selected_case_id} ??"
+    context = _manual_pipeline_case_context(snapshot, running=running)
+    case_context = escape(f"{context['case_id']} · {context['question_short']}")
+    event_title = "실시간 실행 이벤트(Agent 호출)" if running else "최근 수행 이벤트(Agent 호출)"
+    raw_event_title = "실시간 실행 이벤트(원본 로그)" if running else "최근 수행 이벤트(원본 로그)"
+    event_meta = f"Agent 호출 {len(events)}건"
+    raw_event_meta = f"원본 로그 {raw_event_count}건 · 전체 표시"
+    if context["timestamp"] != "-":
+        event_meta += f" · {context['timestamp_label']} {context['timestamp']}"
+        raw_event_meta += f" · {context['timestamp_label']} {context['timestamp']}"
+    event_meta = escape(event_meta)
+    raw_event_meta = escape(raw_event_meta)
 
     status_labels = {
         "started": "진행",
@@ -1722,7 +2033,6 @@ def _render_agent_pipeline_v2(
         </dl>
       </article>""" if has_run_context else ""
 
-    trace_id = escape(snapshot.get("trace_id") or "아직 실행 Trace 없음")
     st.html(f"""
     <style>
       .flow2-wrap{{border:1px solid #d8e3f0;border-radius:16px;padding:16px;background:#fff;margin:4px 0 18px}}
@@ -1730,6 +2040,12 @@ def _render_agent_pipeline_v2(
       .flow2-trace + .flow2-trace{{margin-top:14px;padding-top:14px;border-top:1px solid #e3e9f1}}
       .flow2-trace-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:#334d70;font-size:11px;font-weight:700}}
       .flow2-trace-head span:last-child{{color:#7a889b;font-size:9px;font-weight:500}}
+      .flow2-head-main{{display:flex;align-items:center;gap:7px;min-width:0}}
+      .flow2-head-main strong{{font-size:11px;color:#334d70;white-space:nowrap}}
+      .flow2-head-main b{{max-width:620px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#17355f;font-size:11px}}
+      .flow2-context-badge{{display:inline-grid;place-items:center;border-radius:999px;padding:3px 8px;background:#eef3f7;color:#66798c;font-size:9px;font-style:normal;white-space:nowrap}}
+      .flow2-context-badge.running{{background:#dfeeff;color:#175b9d}} .flow2-context-badge.recent{{background:#eaf8ef;color:#247147}}
+      .flow2-head-meta{{white-space:nowrap}}
       .flow2-raw-summary{{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;color:#334d70;font-size:11px;font-weight:700;cursor:pointer;list-style:none}}
       .flow2-raw-summary::-webkit-details-marker{{display:none}}
       .flow2-raw-summary span:nth-child(2){{color:#7a889b;font-size:9px;font-weight:500}}
@@ -1792,12 +2108,12 @@ def _render_agent_pipeline_v2(
     </style>
     <div class="flow2-wrap">
       <div class="flow2-trace">
-        <div class="flow2-trace-head"><span>{'실시간 실행 이벤트(Agent 호출)' if running else '최근 수행 이벤트(Agent 호출)'} · 왼쪽에서 오른쪽 시간순</span><span>실행 Trace · {trace_id} · Agent 호출 {len(events)}건</span></div>
+        <div class="flow2-trace-head"><span class="flow2-head-main"><em class="flow2-context-badge {context['state_class']}">{escape(context['state_label'])}</em><strong>{event_title}</strong><b>{case_context}</b></span><span class="flow2-head-meta">{event_meta}</span></div>
         <div class="flow2-legend"><span>분석·조회·평가</span><span class="return">결과 반환</span><span class="feedback">재검토·보완</span><span class="failure">호출 실패</span><span class="inferred">실행 Trace 사유 미기록·추정</span></div>
         <div class="flow2-trace-list"><div class="flow2-trace-track">{preparation_cards}{trace_history}{summary_card}</div></div>
       </div>
       <details class="flow2-trace flow2-raw-trace">
-        <summary class="flow2-raw-summary"><span>{'실시간 실행 이벤트(원본 로그)' if running else '최근 수행 이벤트(원본 로그)'} · 왼쪽에서 오른쪽 기록순</span><span>실행 Trace · {trace_id} · 원본 로그 {raw_event_count}건 · 전체 표시</span></summary>
+        <summary class="flow2-raw-summary"><span class="flow2-head-main"><em class="flow2-context-badge {context['state_class']}">{escape(context['state_label'])}</em><strong>{raw_event_title}</strong><b>{case_context}</b></span><span>{raw_event_meta}</span></summary>
         <div class="flow2-raw-content">
           <div class="flow2-raw-guide">실행 Trace에 저장된 started·success·failure 로그를 병합하거나 상태를 보정하지 않고 그대로 표시합니다.</div>
           <div class="flow2-trace-list"><div class="flow2-trace-track" data-event-count="{raw_event_count}">{raw_trace_history}</div></div>
@@ -1812,7 +2128,6 @@ def _render_agent_pipeline_comparison(
     running: bool,
     preparation: dict | None = None,
 ):
-    _render_agent_pipeline(snapshot, running)
     _render_agent_pipeline_v2(snapshot, running, preparation)
 
 
@@ -1915,7 +2230,7 @@ def _live_manual_judge():
     discard_background_job(job_id)
     _load_voc_history_rows.clear()
     _load_validity_candidates.clear()
-    st.session_state.goal_manual_followup_focus_once = True
+    st.session_state.goal_judge_result_focus_once = True
     st.rerun()
 
 
@@ -2636,6 +2951,7 @@ def _load_voc_dashboard_snapshot():
         "testcases": test_case_summary(),
         "runs": list_voc_run_history(),
         "defects": list_voc_defects(),
+        "validity_candidates": list_improvement_validity_candidates(),
         "a2a": a2a_trace_snapshot(),
     }
 
@@ -2854,6 +3170,145 @@ def _dashboard_svg_icon(name: str) -> str:
     )
 
 
+def _dashboard_validity_action_counts(candidates: list[dict]) -> dict:
+    counts = {
+        "evaluation": 0,
+        "rework": 0,
+        "qa": 0,
+        "business": 0,
+        "approved": 0,
+    }
+    for candidate in candidates:
+        readiness = validity_human_review_readiness(
+            validity_status=candidate.get("validity_status", "NOT_RUN"),
+            workflow_state=candidate.get("workflow_state", "DRAFT"),
+            immediate_hold_count=candidate.get("immediate_hold_count", 0) or 0,
+            formal_approval=bool(candidate.get("formal_approval")),
+        )
+        action = str(readiness.get("action") or "")
+        if action == "VALIDITY_EVALUATION_REQUIRED":
+            counts["evaluation"] += 1
+        elif action == "REWORK_REQUIRED":
+            counts["rework"] += 1
+        elif action == "QA_REVIEW":
+            counts["qa"] += 1
+        elif action == "BUSINESS_APPROVAL":
+            counts["business"] += 1
+        elif action == "FORMAL_APPROVED":
+            counts["approved"] += 1
+    return counts
+
+
+def _dashboard_action_summary_cards(
+    candidates: list[dict],
+    open_defects: list[dict],
+    important_defects: list[dict],
+) -> list[dict]:
+    counts = _dashboard_validity_action_counts(candidates)
+    open_defect_count = len(open_defects)
+    high_defect_count = len(important_defects)
+    return [
+        {
+            "icon": "fact_check",
+            "label": "평가 필요",
+            "value": f"{counts['evaluation']}건",
+            "detail": "개선안 타당성 평가 미수행",
+            "tone": "blue" if counts["evaluation"] else "gray",
+            "badge": "평가",
+        },
+        {
+            "icon": "edit_note",
+            "label": "보완·재시험 필요",
+            "value": f"{counts['rework']}건",
+            "detail": "기준 미달 또는 보완 요청",
+            "tone": "red" if counts["rework"] else "gray",
+            "badge": "보완",
+        },
+        {
+            "icon": "rate_review",
+            "label": "QA 검토 대기",
+            "value": f"{counts['qa']}건",
+            "detail": "AI_PASS · 즉시 보류 없음",
+            "tone": "green" if counts["qa"] else "gray",
+            "badge": "QA",
+        },
+        {
+            "icon": "verified",
+            "label": "업무 승인 대기",
+            "value": f"{counts['business']}건",
+            "detail": "QA 검토 완료",
+            "tone": "green" if counts["business"] else "gray",
+            "badge": "승인",
+        },
+        {
+            "icon": "bug_report",
+            "label": "미종결 결함",
+            "value": f"{open_defect_count}건",
+            "detail": f"High/Critical {high_defect_count}건",
+            "tone": "red" if high_defect_count else "orange" if open_defect_count else "gray",
+            "badge": "결함",
+        },
+    ]
+
+
+def _dashboard_action_detail_rows(
+    candidates: list[dict],
+    open_defects: list[dict],
+    run_lookup: dict,
+    *,
+    limit: int = 12,
+) -> pd.DataFrame:
+    rows: list[dict] = []
+    priority = {
+        "REWORK_REQUIRED": 0,
+        "QA_REVIEW": 1,
+        "BUSINESS_APPROVAL": 2,
+        "VALIDITY_EVALUATION_REQUIRED": 3,
+    }
+    for candidate in candidates:
+        readiness = validity_human_review_readiness(
+            validity_status=candidate.get("validity_status", "NOT_RUN"),
+            workflow_state=candidate.get("workflow_state", "DRAFT"),
+            immediate_hold_count=candidate.get("immediate_hold_count", 0) or 0,
+            formal_approval=bool(candidate.get("formal_approval")),
+        )
+        action = str(readiness.get("action") or "")
+        if action not in priority:
+            continue
+        question = str(candidate.get("question") or "-")
+        if len(question) > 48:
+            question = f"{question[:48]}..."
+        rows.append({
+            "sort": priority[action],
+            "구분": "검증 후보",
+            "대상": f"{candidate.get('case_id', '-')} · {question}",
+            "다음 조치": readiness.get("action_label") or "확인 필요",
+            "상태": (
+                f"독립 LLM {_voc_status_label(candidate.get('judge_status', 'NOT_RUN'))} · "
+                f"타당성 {_voc_status_label(candidate.get('validity_status', 'NOT_RUN'))}"
+            ),
+            "수행/등록": _dashboard_timestamp(candidate.get("started_at", "")),
+            "Run": candidate.get("run_id", "-"),
+        })
+    for item in open_defects:
+        run_id = (item.get("related_run_ids") or ["-"])[0]
+        rows.append({
+            "sort": -1 if item.get("severity") in {"HIGH", "CRITICAL"} else 4,
+            "구분": "미종결 결함",
+            "대상": item.get("title", "-"),
+            "다음 조치": "결함 조치·종결 확인",
+            "상태": f"{item.get('severity', '-')} · {_defect_status_label(item.get('status', ''))}",
+            "수행/등록": _dashboard_timestamp(
+                run_lookup.get(run_id, {}).get("started_at", "") or item.get("created_at", "")
+            ),
+            "Run": run_id,
+        })
+    if not rows:
+        return pd.DataFrame(columns=["구분", "대상", "다음 조치", "상태", "수행/등록", "Run"])
+    frame = pd.DataFrame(rows).sort_values(["sort", "수행/등록"], ascending=[True, False])
+    return frame.drop(columns=["sort"]).head(limit)
+
+
 def _render_voc_dashboard_styles() -> None:
     st.markdown(
         """
@@ -2939,6 +3394,10 @@ def render_dashboard():
         item for item in snapshot["defects"]
         if _dashboard_in_period(item.get("created_at", ""), start_date, end_date)
     ]
+    validity_candidates = [
+        item for item in snapshot.get("validity_candidates", [])
+        if _dashboard_in_period(item.get("started_at", ""), start_date, end_date)
+    ]
     a2a = snapshot["a2a"]
     latest = runs[0] if runs else {}
     latest_counts = latest.get("counts", {})
@@ -2953,6 +3412,14 @@ def render_dashboard():
     quality_reviews = int(latest_counts.get("REVIEW_REQUIRED", 0)) + int(latest_counts.get("NOT_RUN", 0))
     judge_failures = int(latest_judge_counts.get("FAIL", 0)) + int(latest_judge_counts.get("ERROR", 0))
     judge_reviews = int(latest_judge_counts.get("REVIEW_REQUIRED", 0)) + int(latest_judge_counts.get("NOT_RUN", 0))
+    action_counts = _dashboard_validity_action_counts(validity_candidates)
+    action_total = (
+        action_counts["evaluation"]
+        + action_counts["rework"]
+        + action_counts["qa"]
+        + action_counts["business"]
+        + len(open_defects)
+    )
     cards = [
         _dashboard_status_card(
             "runtime", "실행 환경", "정상" if runtime_ok else "확인 필요",
@@ -2974,9 +3441,12 @@ def render_dashboard():
             "neutral" if not latest or not latest.get("judge_enabled") else "bad" if judge_failures else "warn" if judge_reviews else "good",
         ),
         _dashboard_status_card(
-            "defect", "기간 미종결 결함", str(len(open_defects)),
-            f"High/Critical {len(important_defects)}건",
-            "bad" if important_defects else "warn" if open_defects else "good",
+            "defect", "조치 필요", f"{action_total}건",
+            (
+                f"평가 {action_counts['evaluation']} · 보완 {action_counts['rework']} · "
+                f"승인대기 {action_counts['qa'] + action_counts['business']} · 결함 {len(open_defects)}"
+            ),
+            "bad" if important_defects or action_counts["rework"] else "warn" if action_total else "good",
         ),
     ]
     st.markdown(f"<div class='vqd-status-row'>{''.join(cards)}</div>", unsafe_allow_html=True)
@@ -3022,25 +3492,40 @@ def render_dashboard():
             st.altair_chart(_build_voc_run_history_chart(runs), theme=None)
 
     with detail_columns[1].container(border=True):
-        st.markdown("#### 기간 미종결 결함·후보")
+        _render_voc_section_heading(
+            "조치 필요 현황",
+            "",
+            icon="pending_actions",
+            right_caption=f"{start_date.isoformat()} ~ {end_date.isoformat()}",
+        )
+        _render_voc_summary_cards(
+            _dashboard_action_summary_cards(validity_candidates, open_defects, important_defects),
+            columns=3,
+            height=120,
+        )
         run_lookup = {item.get("run_id"): item for item in snapshot["runs"]}
-        defect_rows = pd.DataFrame([
-            {
-                "제목": item.get("title", "-"),
-                "수행": _dashboard_timestamp(
-                    run_lookup.get((item.get("related_run_ids") or [None])[0], {}).get("started_at", "")
-                ),
-                "Run": (item.get("related_run_ids") or ["-"])[0],
-                "등록": _dashboard_timestamp(item.get("created_at", "")),
-                "심각도": item.get("severity", "-"),
-                "상태": _defect_status_label(item.get("status", "")),
-            }
-            for item in open_defects[:8]
-        ])
-        if defect_rows.empty:
-            st.success("선택 기간에 생성된 미종결 결함이 없습니다.")
+        action_rows = _dashboard_action_detail_rows(validity_candidates, open_defects, run_lookup)
+        if action_rows.empty:
+            st.success("선택 기간에 조치가 필요한 항목이 없습니다.")
         else:
-            st.dataframe(defect_rows, hide_index=True, width="stretch")
+            with st.expander(
+                f"조치 대상 상세 · {len(action_rows)}건",
+                expanded=False,
+                icon=":material/list_alt:",
+            ):
+                st.dataframe(
+                    action_rows,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "구분": st.column_config.TextColumn(width=92),
+                        "대상": st.column_config.TextColumn(width=260),
+                        "다음 조치": st.column_config.TextColumn(width=142),
+                        "상태": st.column_config.TextColumn(width=176),
+                        "수행/등록": st.column_config.TextColumn(width=118),
+                        "Run": st.column_config.TextColumn(width=160),
+                    },
+                )
 
     st.caption(
         "기간 필터는 Run 시작일과 결함 생성일에 적용되며, 실행 환경·Agent 파이프라인은 현재 상태를 표시합니다. "
@@ -3378,6 +3863,94 @@ def _pipeline_result_message(result: dict) -> str:
     return message
 
 
+def _render_manual_pipeline_result_summary(result: dict, pipeline_snapshot: dict) -> None:
+    ok = bool(result.get("ok"))
+    generation = _manual_pipeline_generation_info(pipeline_snapshot)
+    cards = [
+        {
+            "icon": "✓" if ok else "!",
+            "label": "파이프라인 상태",
+            "value": "완료" if ok else "확인 필요",
+            "detail": (
+                "Agent 호출과 실행 Trace가 저장되었습니다."
+                if ok
+                else str(result.get("message") or result.get("error") or "실행 결과 확인 필요")
+            ),
+            "tone": "green" if ok else "orange",
+        },
+        {
+            "icon": "문서",
+            "label": "생성 산출물",
+            "value": "VOC 요약 · 개선안",
+            "detail": "아래 요약과 정책 개선안에서 확인합니다.",
+            "tone": "blue",
+        },
+        {
+            "icon": "LLM",
+            "label": "파이프라인 LLM",
+            "value": generation["provider"],
+            "detail": f"{generation['model']} · {generation['source']}",
+            "tone": "gray" if generation["model"] == "모델 확인 필요" else "blue",
+        },
+    ]
+    card_html = ""
+    for card in cards:
+        card_html += f"""
+        <div class="vqa-pipeline-summary-card {card['tone']}">
+            <span>{escape(card['icon'])}</span>
+            <div>
+                <small>{escape(card['label'])}</small>
+                <strong>{escape(card['value'])}</strong>
+                <p>{escape(card['detail'])}</p>
+            </div>
+        </div>
+        """
+    st.html(
+        f"""
+        <div class="vqa-pipeline-summary-row">{card_html}</div>
+        <style>
+        .vqa-pipeline-summary-row{{
+            display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:8px 0 12px;
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }}
+        .vqa-pipeline-summary-card{{
+            display:grid;grid-template-columns:34px 1fr;gap:9px;align-items:center;
+            height:86px;box-sizing:border-box;padding:10px 12px;border:1px solid #d5e2ef;
+            border-radius:13px;background:#f8fbff;color:#244b72;overflow:hidden;
+        }}
+        .vqa-pipeline-summary-card span{{
+            display:grid;place-items:center;width:32px;height:32px;border-radius:10px;
+            background:#e7f1fb;color:#1f6fb2;font-size:18px;
+        }}
+        .vqa-pipeline-summary-card small{{display:block;color:#6a7b8f;font-size:10px;font-weight:800}}
+        .vqa-pipeline-summary-card strong{{
+            display:block;margin-top:2px;color:#174f85;font-size:15px;line-height:1.2;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        }}
+        .vqa-pipeline-summary-card p{{
+            margin:2px 0 0;color:#65788c;font-size:10px;line-height:1.25;
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+        }}
+        .vqa-pipeline-summary-card.blue{{background:#f4f9ff;border-color:#bdd5ec;color:#174f85}}
+        .vqa-pipeline-summary-card.blue span{{background:#e4f0fb;color:#1f6fb2}}
+        .vqa-pipeline-summary-card.blue strong{{color:#174f85}}
+        .vqa-pipeline-summary-card.green{{background:#eefaf2;border-color:#b9dfc1;color:#17643b}}
+        .vqa-pipeline-summary-card.green span{{background:#daf4e3;color:#247147}}
+        .vqa-pipeline-summary-card.green strong{{color:#17643b}}
+        .vqa-pipeline-summary-card.orange{{background:#fff8e8;border-color:#ead6a8;color:#8a540c}}
+        .vqa-pipeline-summary-card.orange span{{background:#fff0c9;color:#8a540c}}
+        .vqa-pipeline-summary-card.orange strong{{color:#8a540c}}
+        .vqa-pipeline-summary-card.gray{{background:#f4f6f8;border-color:#d8e0e9;color:#617083}}
+        .vqa-pipeline-summary-card.gray span{{background:#e8edf2;color:#687687}}
+        .vqa-pipeline-summary-card.gray strong{{color:#4f5e6f}}
+        @media(max-width:900px){{
+            .vqa-pipeline-summary-row{{grid-template-columns:1fr}}
+        }}
+        </style>
+        """,
+    )
+
+
 def _render_voc_question_highlight(question: str, *, case_id: str = "-") -> None:
     st.markdown(
         f"""
@@ -3502,7 +4075,7 @@ def _render_manual_judge_provider_comparison(judge_result: dict) -> None:
                     format="%d점",
                     width=104,
                 ),
-                "독립성": st.column_config.TextColumn(width=64),
+                "독립성": st.column_config.TextColumn(width=156),
                 "수행 시간": st.column_config.TextColumn(width=78),
                 "평가 시각": st.column_config.TextColumn(width=142),
             },
@@ -3520,6 +4093,7 @@ def _render_goal_judge_result(selected_case_id: str):
     if not judge_result or judge_result.get("decision") == "NOT_RUN":
         return
 
+    _render_goal_judge_result_focus_anchor_once()
     with st.container(border=True, key="goal_manual_judge_result"):
         st.markdown("#### 독립 LLM 평가 결과")
         st.caption(
@@ -3532,7 +4106,7 @@ def _render_goal_judge_result(selected_case_id: str):
             "총점",
             f"{judge_result['total_score']}점" if judge_result.get("total_score") is not None else "-",
         )
-        metrics[2].metric("독립성", judge_result.get("independence_grade", "-"))
+        metrics[2].metric("독립성", _judge_independence_grade_label(judge_result.get("independence_grade", "-")))
         metrics[3].metric(
             "수행 시간",
             f"{float(judge_result.get('duration_seconds') or 0):g}초",
@@ -3754,6 +4328,200 @@ def _manual_followup_flow_model(
     }
 
 
+def _render_manual_demo_flow_overview(selected_case: dict) -> None:
+    """Render the compact demo flow for the manual TC page."""
+    selected_case_id = str(selected_case.get("case_id") or "-")
+    selected_question = (
+        selected_case.get("question")
+        or selected_case.get("name")
+        or "-"
+    )
+    test_execution = st.session_state.get("goal_testcase_result") or {}
+    executed_case = test_execution.get("case", {}) if isinstance(test_execution.get("case"), dict) else {}
+    if str(executed_case.get("case_id") or selected_case_id) != selected_case_id:
+        test_execution = {}
+
+    execution = test_execution.get("execution", {}) if isinstance(test_execution.get("execution"), dict) else {}
+    result = execution.get("result", {}) if isinstance(execution.get("result"), dict) else {}
+    pipeline_ok = bool(execution.get("ok") or result.get("ok"))
+    if test_execution.get("mode") == "voc":
+        pipeline_ok = pipeline_ok and bool(result.get("ok"))
+    pipeline_has_result = bool(test_execution)
+    pipeline_running = bool(st.session_state.get("goal_testcase_job_id"))
+    judge_running = bool(st.session_state.get("goal_judge_job_id"))
+    is_fault_case = (
+        selected_case.get("execution_type") in {"fault_proxy", "isolated_fault"}
+        or selected_case.get("category") == "fault_condition"
+    )
+
+    judge_result = test_execution.get("judge_result", {}) if isinstance(test_execution.get("judge_result"), dict) else {}
+    judge_decision = str(judge_result.get("decision") or "NOT_RUN")
+    followup_model = _manual_followup_flow_model(test_execution, selected_case_id) if pipeline_has_result else {"visible": False}
+    action = followup_model.get("action", {}) if followup_model.get("visible") else {}
+    target = followup_model.get("target", {}) if followup_model.get("visible") else {}
+
+    case_implemented = selected_case.get("implementation_status") == "IMPLEMENTED"
+    if pipeline_running:
+        pipeline_value, pipeline_tone, pipeline_detail = "진행 중", "running", "Agent 호출 로그 갱신 중"
+        a2a_value, a2a_tone, a2a_detail = "대기", "waiting", "완료 후 산출물 표시"
+    elif pipeline_ok:
+        pipeline_value, pipeline_tone, pipeline_detail = "완료", "done", "Agent 실행 Trace 저장"
+        a2a_value, a2a_tone, a2a_detail = (
+            ("격리 시험 결과", "done", "격리 장애 Case 결과 확인")
+            if is_fault_case
+            else ("결과 생성", "done", "VOC 요약·정책 개선안 확인")
+        )
+    elif pipeline_has_result:
+        pipeline_value, pipeline_tone, pipeline_detail = "확인 필요", "warn", "오류 또는 보류 사유 확인"
+        a2a_value, a2a_tone, a2a_detail = "확인 필요", "warn", "결과 영역에서 사유 확인"
+    else:
+        pipeline_value, pipeline_tone, pipeline_detail = "대기", "waiting", "선택 카드의 실행 버튼으로 시작"
+        a2a_value, a2a_tone, a2a_detail = "대기", "waiting", "Agent 파이프라인 완료 후 표시"
+
+    if judge_running:
+        judge_value, judge_tone, judge_detail = "진행 중", "running", "선택 Provider가 평가 중"
+    elif judge_decision and judge_decision != "NOT_RUN":
+        judge_value = _voc_status_label(judge_decision)
+        judge_tone = "done" if judge_decision == "PASS" else "warn"
+        judge_detail = f"{judge_result.get('total_score', '-')}점 · 결과 아래 표시"
+    elif pipeline_ok and not is_fault_case:
+        judge_value, judge_tone, judge_detail = "실행 가능", "action", "외부 Provider 교차 평가"
+    elif is_fault_case:
+        judge_value, judge_tone, judge_detail = "대상 아님", "waiting", "개선안이 없는 격리 시험"
+    else:
+        judge_value, judge_tone, judge_detail = "대기", "waiting", "A2A 결과 생성 후 실행"
+
+    if action:
+        next_value = str(action.get("label") or target.get("button_label") or "다음 액션 확인")
+        next_detail = str(target.get("detail") or action.get("detail") or "다음 업무 단계로 이동")
+        next_tone = "action" if target.get("enabled") else "waiting"
+    elif pipeline_running:
+        next_value, next_tone, next_detail = "실행 완료 대기", "waiting", "완료 후 자동 갱신"
+    elif pipeline_has_result:
+        next_value, next_tone, next_detail = "독립 LLM 평가", "action", "아래 Provider 선택 후 실행"
+    else:
+        next_value, next_tone, next_detail = "Agent 파이프라인 실행", "action", "선택 Case로 시연 시작"
+
+    stages = [
+        {
+            "no": "1",
+            "label": "Test Case 선택",
+            "value": selected_case_id,
+            "detail": _manual_pipeline_compact_text(str(selected_question), 54),
+            "tone": "done" if case_implemented else "waiting",
+        },
+        {
+            "no": "2",
+            "label": "Agent 파이프라인",
+            "value": pipeline_value,
+            "detail": pipeline_detail,
+            "tone": pipeline_tone,
+        },
+        {
+            "no": "3",
+            "label": "A2A 결과",
+            "value": a2a_value,
+            "detail": a2a_detail,
+            "tone": a2a_tone,
+        },
+        {
+            "no": "4",
+            "label": "독립 LLM 평가",
+            "value": judge_value,
+            "detail": judge_detail,
+            "tone": judge_tone,
+        },
+        {
+            "no": "5",
+            "label": "다음 액션",
+            "value": _manual_pipeline_compact_text(next_value, 28),
+            "detail": _manual_pipeline_compact_text(next_detail, 58),
+            "tone": next_tone,
+        },
+    ]
+    stage_html = "".join(
+        f"""
+        <article class="vqa-manual-flow-card {escape(stage['tone'])}">
+            <span>{escape(stage['no'])}</span>
+            <small>{escape(stage['label'])}</small>
+            <strong>{escape(stage['value'])}</strong>
+            <p>{escape(stage['detail'])}</p>
+        </article>
+        """
+        for stage in stages
+    )
+    st.html(
+        f"""
+        <div class="vqa-manual-flow-wrap">
+            <div class="vqa-manual-flow-head">
+                <div>
+                    <strong>시연 진행 흐름</strong>
+                    <small>선택 Case 기준으로 지금 봐야 할 단계만 표시합니다.</small>
+                </div>
+                <em>{escape(selected_case_id)} 기준</em>
+            </div>
+            <div class="vqa-manual-flow-grid">{stage_html}</div>
+        </div>
+        <style>
+        .vqa-manual-flow-wrap{{
+            margin:6px 0 14px;padding:14px;border:1px solid #d5e2ef;border-radius:16px;
+            background:linear-gradient(180deg,#f8fbff,#ffffff);
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }}
+        .vqa-manual-flow-head{{
+            display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;
+        }}
+        .vqa-manual-flow-head strong{{display:block;color:#173f68;font-size:15px}}
+        .vqa-manual-flow-head small{{display:block;margin-top:2px;color:#718299;font-size:10px}}
+        .vqa-manual-flow-head em{{
+            font-style:normal;border-radius:999px;background:#e7f1fb;color:#1f6fb2;
+            padding:5px 9px;font-size:10px;font-weight:800;white-space:nowrap;
+        }}
+        .vqa-manual-flow-grid{{
+            display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;
+        }}
+        .vqa-manual-flow-card{{
+            position:relative;height:112px;box-sizing:border-box;padding:11px 12px 10px;
+            border:1px solid #d8e1ec;border-radius:13px;background:#f8fafc;color:#516274;
+            overflow:hidden;
+        }}
+        .vqa-manual-flow-card:not(:last-child):after{{
+            content:'→';position:absolute;right:-8px;top:42%;color:#86a5c5;font-weight:900;font-size:17px;
+        }}
+        .vqa-manual-flow-card span{{
+            display:grid;place-items:center;width:25px;height:25px;border-radius:9px;
+            background:#e7edf3;color:#627285;font-size:11px;font-weight:900;margin-bottom:7px;
+        }}
+        .vqa-manual-flow-card small{{display:block;color:#728095;font-size:10px;font-weight:800}}
+        .vqa-manual-flow-card strong{{
+            display:block;margin-top:3px;color:#263f5d;font-size:15px;line-height:1.2;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        }}
+        .vqa-manual-flow-card p{{
+            margin:5px 0 0;color:#6d7c90;font-size:10px;line-height:1.28;
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+        }}
+        .vqa-manual-flow-card.done{{background:#eefaf2;border-color:#b9dfc1;color:#17643b}}
+        .vqa-manual-flow-card.done span{{background:#d9f1e3;color:#247147}}
+        .vqa-manual-flow-card.done strong{{color:#17643b}}
+        .vqa-manual-flow-card.running{{background:#edf6ff;border-color:#a9cceb;color:#175b9d}}
+        .vqa-manual-flow-card.running span{{background:#d9ebff;color:#175b9d}}
+        .vqa-manual-flow-card.running strong{{color:#174f85}}
+        .vqa-manual-flow-card.warn{{background:#fff8e8;border-color:#ead6a8;color:#8a540c}}
+        .vqa-manual-flow-card.warn span{{background:#fff0c9;color:#8a540c}}
+        .vqa-manual-flow-card.warn strong{{color:#8a540c}}
+        .vqa-manual-flow-card.action{{background:#f4f9ff;border-color:#b9d2ed;color:#174f85}}
+        .vqa-manual-flow-card.action span{{background:#e0efff;color:#1f6fb2}}
+        .vqa-manual-flow-card.action strong{{color:#174f85}}
+        @media(max-width:1100px){{
+            .vqa-manual-flow-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}
+            .vqa-manual-flow-card:not(:last-child):after{{display:none}}
+        }}
+        </style>
+        """,
+    )
+
+
 def _render_goal_followup_focus_anchor_once():
     _render_goal_scroll_anchor(
         "goal-manual-followup-scroll-anchor",
@@ -3834,36 +4602,11 @@ def _render_goal_testcase_result(selected_case_id: str):
         or executed_case.get("case_id")
         or "-"
     )
-    st.markdown("### 1단계 · Agent 파이프라인 수행 결과")
-    st.html(
-        """
-        <div class="vqa-a2a-stage-guide">
-            <div>
-                <strong>1단계 산출물</strong>
-                <span>Agent 파이프라인이 VOC를 해석하고 요약·정책 개선안을 생성합니다.</span>
-            </div>
-            <div>
-                <strong>1-1 / 1-2</strong>
-                <span>VOC 요약과 정책 개선안을 분리해 확인합니다.</span>
-            </div>
-            <div>
-                <strong>1-3 근거</strong>
-                <span>필요할 때만 Agent 실행 Trace와 판정 근거를 펼쳐 확인합니다.</span>
-            </div>
-        </div>
-        <style>
-        .vqa-a2a-stage-guide{
-            display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:6px 0 12px;
-            font-family:'Segoe UI','Malgun Gothic',sans-serif;
-        }
-        .vqa-a2a-stage-guide>div{
-            border:1px solid #d5e2ef;border-radius:13px;background:linear-gradient(135deg,#f8fbff,#ffffff);
-            padding:10px 12px;min-height:68px;
-        }
-        .vqa-a2a-stage-guide strong{display:block;color:#174f85;font-size:13px;margin-bottom:4px}
-        .vqa-a2a-stage-guide span{display:block;color:#63758a;font-size:11px;line-height:1.45}
-        </style>
-        """,
+    _render_voc_section_heading(
+        "A2A 수행 결과",
+        "Agent 파이프라인이 생성한 VOC 요약과 정책 개선안입니다. 상세 Trace는 접어서 확인합니다.",
+        icon="summarize",
+        badges=((executed_case.get("case_id") or selected_case_id, "blue"),),
     )
     _render_voc_question_highlight(result_title, case_id=executed_case.get("case_id") or selected_case_id)
     if test_execution.get("run_id"):
@@ -3883,22 +4626,10 @@ def _render_goal_testcase_result(selected_case_id: str):
 
     payload = test_execution.get("execution", {})
     result = payload.get("result", {})
-    if result.get("ok"):
-        st.success(_pipeline_result_message(result))
-    else:
-        st.warning(result.get("message") or result.get("error") or "VOC 테스트 결과가 없습니다.")
     pipeline_snapshot = _manual_pipeline_llm_snapshot(test_execution)
-    with st.container(horizontal=True):
-        st.metric("파이프라인 상태", "완료" if result.get("ok") else "확인 필요", border=True)
-        st.metric("생성 산출물", "VOC 요약·정책 개선안", border=True)
-        st.metric(
-            "파이프라인 LLM",
-            pipeline_snapshot["provider_label"],
-            pipeline_snapshot["model"],
-            border=True,
-        )
-        st.metric("다음 단계", "독립 LLM 평가", border=True)
-    _render_manual_followup_flow(selected_case_id)
+    _render_manual_pipeline_result_summary(result, pipeline_snapshot)
+    if not result.get("ok"):
+        st.warning(result.get("message") or result.get("error") or "VOC 테스트 결과가 없습니다.")
     result_columns = st.columns(2, gap="medium")
     with result_columns[0].container(border=True):
         st.markdown("**1-1. VOC 요약**")
@@ -4034,10 +4765,6 @@ def _render_goal_testcase_result(selected_case_id: str):
                 st.write(f"- {completed_steps.get(flag, flag)}")
         if result.get("error"):
             st.error(f"실행 오류: {result['error']}")
-    st.caption(
-        "기존 Reports/VOC와 Run 단위 증적에 함께 저장됩니다. "
-        "실행 Trace는 판정 근거이며 최종 판정은 독립 LLM 평가·품질 규칙·사람 검토와 함께 확인합니다."
-    )
 
 
 @st.fragment
@@ -4245,14 +4972,22 @@ def _ensure_goal_testcase_selection() -> dict | None:
 
 def _start_goal_testcase_pipeline(selected_case_id: str):
     preparation = _new_manual_preparation_progress()
+    selected_case = _selected_goal_testcase() or {}
     st.session_state.goal_testcase_started_at = datetime.now().astimezone().isoformat()
     st.session_state.goal_testcase_running_case_id = selected_case_id
+    st.session_state.goal_testcase_running_question = (
+        selected_case.get("question")
+        or selected_case.get("name")
+        or ""
+    )
     st.session_state.pop("goal_testcase_agent_snapshot", None)
     st.session_state.pop("goal_testcase_result", None)
     st.session_state.pop("goal_testcase_completed_at", None)
     st.session_state.goal_testcase_preparation = preparation
     st.session_state.pop("goal_testcase_trace_id", None)
     st.session_state.pop("goal_testcase_focus_result", None)
+    st.session_state.pop("goal_judge_result_focus_once", None)
+    st.session_state.pop("goal_manual_followup_focus_once", None)
     st.session_state.goal_testcase_focus_pipeline_once = True
     st.session_state.pop("goal_judge_error", None)
     _load_goal_monitor_snapshot.clear()
@@ -4329,6 +5064,14 @@ def _render_goal_judge_focus_anchor_once():
     )
 
 
+def _render_goal_judge_result_focus_anchor_once():
+    _render_goal_scroll_anchor(
+        "goal-judge-result-scroll-anchor",
+        scroll_flag_key="goal_judge_result_focus_once",
+        block="center",
+    )
+
+
 def _render_goal_execution_step(selected_case: dict):
     selected_case_id = selected_case["case_id"]
     test_running = bool(st.session_state.get("goal_testcase_job_id"))
@@ -4360,46 +5103,10 @@ def _render_goal_judge_step(selected_case: dict):
     if test_execution.get("mode") == "voc":
         pipeline_ok = pipeline_ok and bool(execution.get("result", {}).get("ok"))
 
-    st.markdown("### 2단계 · 독립 LLM 교차 평가 (선택)")
-    st.html(
-        """
-        <div class="vqa-judge-depth-guide">
-            <div class="vqa-judge-depth-row parent">
-                <span>2단계</span>
-                <strong>독립 LLM 교차 평가</strong>
-                <small>1단계 Agent 파이프라인 산출물을 외부 Provider가 다시 채점합니다.</small>
-            </div>
-            <div class="vqa-judge-depth-row child">
-                <span>대상</span>
-                <strong>저장된 Agent 파이프라인 개선안</strong>
-                <small>개선안을 다시 생성하지 않고 같은 Run 증적을 사용합니다.</small>
-            </div>
-            <div class="vqa-judge-depth-row child">
-                <span>비교</span>
-                <strong>OpenAI · Anthropic · Google Gemini</strong>
-                <small>Provider를 바꿔 재평가하면 점수 비교표에 누적됩니다.</small>
-            </div>
-        </div>
-        <style>
-        .vqa-judge-depth-guide{
-            border:1px solid #d5e2ef;border-radius:14px;background:#fbfdff;margin:6px 0 12px;
-            overflow:hidden;font-family:'Segoe UI','Malgun Gothic',sans-serif;
-        }
-        .vqa-judge-depth-row{
-            display:grid;grid-template-columns:74px 1fr 2.2fr;gap:12px;align-items:center;
-            padding:9px 12px;border-top:1px solid #edf3f9;
-        }
-        .vqa-judge-depth-row:first-child{border-top:0}
-        .vqa-judge-depth-row.parent{background:#f2f7fd}
-        .vqa-judge-depth-row span{
-            border-radius:999px;background:#e3effb;color:#1f6fb2;font-size:11px;font-weight:800;
-            text-align:center;padding:4px 7px;
-        }
-        .vqa-judge-depth-row.child span{background:#eef3f7;color:#66798c}
-        .vqa-judge-depth-row strong{font-size:13px;color:#1c3f63}
-        .vqa-judge-depth-row small{font-size:11px;color:#65788c}
-        </style>
-        """,
+    _render_voc_section_heading(
+        "독립 LLM 평가",
+        "Agent 파이프라인이 만든 동일 개선안을 재생성하지 않고, 선택한 외부 Provider가 독립적으로 평가합니다.",
+        icon="fact_check",
     )
     if is_fault_case:
         st.info("격리 장애 Test Case는 개선안이 없어 독립 LLM 평가 대상이 아닙니다.", icon=":material/info:")
@@ -4415,8 +5122,7 @@ def _render_goal_judge_step(selected_case: dict):
     )
     judge_running = bool(st.session_state.get("goal_judge_job_id"))
     with st.container(border=True):
-        st.markdown("#### 선택한 Provider로 독립 LLM 추가 평가")
-        st.caption("필요한 경우에만 실행하세요. 실행하지 않아도 1단계 파이프라인 수행 결과는 그대로 보존됩니다.")
+        st.markdown("#### 평가 실행")
         if st.button(
             "독립 LLM 평가 실행",
             icon=":material/fact_check:",
@@ -4426,6 +5132,8 @@ def _render_goal_judge_step(selected_case: dict):
             key=f"goal_judge_execute_{selected_case_id}",
         ):
             st.session_state.pop("goal_judge_error", None)
+            st.session_state.pop("goal_judge_result_focus_once", None)
+            st.session_state.pop("goal_manual_followup_focus_once", None)
             st.session_state.goal_judge_running_case_id = selected_case_id
             st.session_state.goal_judge_focus_running_once = True
             st.session_state.goal_judge_job_id = start_background_job(
@@ -4451,6 +5159,7 @@ def render_goal_monitor():
     selected_case = _selected_goal_testcase()
     if selected_case:
         _sync_goal_testcase_recent_artifacts(selected_case)
+        _render_manual_demo_flow_overview(selected_case)
 
     _render_goal_pipeline_focus_anchor_once()
     with st.container(
@@ -4472,6 +5181,7 @@ def render_goal_monitor():
         _render_goal_testcase_result(selected_case_id)
         _render_goal_judge_step(selected_case)
         _render_goal_judge_result(selected_case_id)
+        _render_manual_followup_flow(selected_case_id)
 
 
 @st.cache_data(ttl=5, max_entries=20, show_spinner=False)
@@ -4537,6 +5247,7 @@ BATCH_FUTURE_KEY = "voc_batch_future"
 BATCH_PROGRESS_RUN_TYPES = {"BATCH", "RETEST"}
 BATCH_SELECTED_CASE_IDS_KEY = "voc_batch_selected_case_ids"
 BATCH_ACTIVE_GROUP_KEY = "voc_batch_active_group"
+BATCH_GROUP_TABLE_KEY = "voc_batch_group_table"
 BATCH_GROUP_TABLE_NONCE_KEY = "voc_batch_group_table_nonce"
 BATCH_GROUP_TOGGLE_KEY = "voc_batch_group_toggle"
 BATCH_COMBINED_EDITOR_NONCE_KEY = "voc_batch_combined_editor_nonce"
@@ -4697,13 +5408,122 @@ def _batch_group_table_rows(
             if item.get("case_id")
         )
         state = _batch_group_selection_state(group_case_ids, selected_set)
+        implemented_count = sum(
+            str(item.get("implementation_status") or "").upper() == "IMPLEMENTED"
+            for item in cases_by_group.get(group_key, [])
+        )
         rows.append({
-            "상태": state["state"],
             "그룹": groups.get(group_key, {}).get("label", group_key),
+            "상태": state["state"],
             "현황": f"{state['count']} / {len(group_case_ids)}건",
+            "실행 가능": f"{implemented_count}건",
             "_group": group_key,
         })
     return pd.DataFrame(rows)
+
+
+def _render_batch_selector_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .vqa-batch-group-info{
+            min-height:44px;display:flex;flex-direction:column;justify-content:center;
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }
+        .vqa-batch-group-info strong{
+            color:#173f68;font-size:13px;line-height:1.2;font-weight:800;
+            white-space:normal;word-break:keep-all;
+        }
+        .vqa-batch-group-info small{
+            margin-top:3px;color:#6d7c8e;font-size:10px;line-height:1.25;
+            white-space:normal;word-break:keep-all;
+        }
+        .vqa-batch-group-info.active strong{color:#0f5f9f}
+        .vqa-batch-case-hint{
+            display:flex;align-items:center;justify-content:space-between;gap:8px;
+            margin:0 0 8px;padding:8px 10px;border:1px solid #d8e4f1;border-radius:11px;
+            background:#f8fbff;font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }
+        .vqa-batch-case-hint strong{color:#173f68;font-size:13px}
+        .vqa-batch-case-hint span{color:#6e7d8f;font-size:11px}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_batch_selection_mini_summary(
+    *,
+    selected_count: int,
+    implemented_count: int,
+    pending_count: int,
+    selected_group_count: int,
+    total_group_count: int,
+) -> None:
+    total_count = max(selected_count, 1)
+    implemented_ratio = min(100, max(0, round(implemented_count / total_count * 100)))
+    pending_ratio = min(100, max(0, round(pending_count / total_count * 100)))
+    group_text = (
+        f"{selected_group_count}/{total_group_count}개"
+        if total_group_count
+        else "-"
+    )
+    cards = [
+        ("선택", f"{selected_count}건", "이번 일괄 Run 대상", 100 if selected_count else 0, "blue"),
+        ("실행 가능", f"{implemented_count}건", "Agent 파이프라인 수행", implemented_ratio, "green"),
+        ("후속 구현", f"{pending_count}건", "NOT_RUN 관리 대상", pending_ratio, "orange" if pending_count else "gray"),
+        ("선택 그룹", group_text, "그룹 기준 선택 범위", 0, "gray"),
+    ]
+    card_html = "".join(
+        f"""
+        <article class="vqa-batch-mini-card {escape(tone)}">
+            <small>{escape(label)}</small>
+            <strong>{escape(value)}</strong>
+            <p>{escape(detail)}</p>
+            <i style="--value:{percent}%"></i>
+        </article>
+        """
+        for label, value, detail, percent, tone in cards
+    )
+    st.markdown(
+        f"""
+        <div class="vqa-batch-mini-summary">
+            {card_html}
+        </div>
+        <style>
+        .vqa-batch-mini-summary{{
+            display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:6px 0 10px;
+            font-family:'Segoe UI','Malgun Gothic',sans-serif;
+        }}
+        .vqa-batch-mini-card{{
+            position:relative;min-height:82px;padding:9px 10px;border:1px solid #d8e2ee;
+            border-radius:12px;background:#f8fafc;overflow:hidden;box-sizing:border-box;
+        }}
+        .vqa-batch-mini-card small{{display:block;color:#748196;font-size:10px;font-weight:800}}
+        .vqa-batch-mini-card strong{{display:block;margin-top:3px;color:#173f68;font-size:19px;line-height:1.1}}
+        .vqa-batch-mini-card p{{
+            margin:4px 0 0;color:#6e7d8f;font-size:9px;line-height:1.25;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        }}
+        .vqa-batch-mini-card i{{
+            position:absolute;left:0;right:0;bottom:0;height:4px;background:#d8e2ee;
+        }}
+        .vqa-batch-mini-card i:after{{
+            content:'';display:block;height:100%;width:var(--value);border-radius:999px;background:#1f6fb2;
+        }}
+        .vqa-batch-mini-card.green{{background:#eefaf2;border-color:#b9dfc1}}
+        .vqa-batch-mini-card.green strong{{color:#17643b}}
+        .vqa-batch-mini-card.green i:after{{background:#2f9660}}
+        .vqa-batch-mini-card.orange{{background:#fff8e8;border-color:#ead6a8}}
+        .vqa-batch-mini-card.orange strong{{color:#8a540c}}
+        .vqa-batch-mini-card.orange i:after{{background:#b7791f}}
+        .vqa-batch-mini-card.gray{{background:#f4f6f8;border-color:#d8e0e9}}
+        .vqa-batch-mini-card.gray strong{{color:#4f5e6f}}
+        .vqa-batch-mini-card.gray i:after{{background:#8a98aa}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _set_batch_selected_ids(selected_ids: set[str], all_case_ids: tuple[str, ...]) -> list[str]:
@@ -4839,10 +5659,11 @@ def _batch_combined_selection_rows(
         group_label = groups.get(group_key, {}).get("label", group_key)
         rows.append({
             "체크": bool(state["all_selected"]),
-            "대상": f"▾ {group_label}",
-            "이름": "그룹 전체 선택/해제",
+            "구분": "그룹",
+            "대상": group_label,
+            "이름": "그룹 전체 선택",
             "구현 상태": state["state"],
-            "현황": f"{state['count']} / {len(group_case_ids)}건",
+            "선택 현황": f"{state['count']} / {len(group_case_ids)}건",
             "_kind": "group",
             "_group": group_key,
             "_case_id": "",
@@ -4853,13 +5674,14 @@ def _batch_combined_selection_rows(
                 continue
             rows.append({
                 "체크": case_id in selected_set,
-                "대상": f"   {case_id}",
+                "구분": "Case",
+                "대상": case_id,
                 "이름": item.get("name") or item.get("question", "-"),
                 "구현 상태": _voc_status_label(
                     str(item.get("implementation_status")).upper()
                     if item.get("implementation_status") else None
                 ),
-                "현황": group_label,
+                "선택 현황": group_label,
                 "_kind": "case",
                 "_group": group_key,
                 "_case_id": case_id,
@@ -4914,127 +5736,219 @@ def _render_batch_case_selector(cases: list[dict], groups: dict) -> dict:
     group_keys = state["group_keys"]
     cases_by_group = state["cases_by_group"]
     selected_ids = state["selected_ids"]
-    active_group = state["active_group"]
     group_table_nonce = int(st.session_state.get(BATCH_GROUP_TABLE_NONCE_KEY, 0) or 0)
     case_editor_nonce = int(st.session_state.get(BATCH_CASE_EDITOR_NONCE_KEY, 0) or 0)
+    _render_batch_selector_styles()
 
-    selector_columns = st.columns([3.05, 0.95], gap="medium")
+    implemented_ids = {
+        str(item.get("case_id"))
+        for item in cases
+        if item.get("case_id") and str(item.get("implementation_status") or "").upper() == "IMPLEMENTED"
+    }
+    selector_columns = st.columns([1.18, 1.88, 0.94], gap="medium")
+    judge_config: dict = {"enabled": False, "provider": "", "model": ""}
+    preflight: dict = {
+        "ok": False,
+        "selected_count": 0,
+        "implemented_count": 0,
+        "pending_count": 0,
+        "agents": {"running": 0},
+        "warnings": [],
+        "blockers": ["선택된 테스트케이스가 없습니다."],
+    }
+    active_run_id = ""
+    active = False
 
-    with selector_columns[0].container(border=True, height=350):
-        group_rows = _batch_group_table_rows(
-            group_keys,
-            cases_by_group,
-            groups,
-            selected_ids,
-        )
-        if group_rows.empty:
+    with selector_columns[0].container(border=True, height=410):
+        if not group_keys:
             st.info("표시할 테스트케이스가 없습니다.")
         else:
-            if active_group not in group_keys:
-                active_group = group_keys[0]
-                st.session_state[BATCH_ACTIVE_GROUP_KEY] = active_group
-            active_group_index = group_keys.index(active_group)
-            group_column, case_column = st.columns([0.95, 2.05], gap="small")
-            with group_column:
-                group_event = st.dataframe(
-                    group_rows,
-                    hide_index=True,
+            selected_set = set(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids))
+            active_group = str(st.session_state.get(BATCH_ACTIVE_GROUP_KEY) or state["active_group"])
+            active_group = active_group if active_group in group_keys else group_keys[0]
+            _render_voc_section_heading(
+                "검증 그룹",
+                "",
+                icon="folder",
+                badges=((f"{len(group_keys)}개", "blue"),),
+            )
+            action_columns = st.columns(3, gap="small")
+            with action_columns[0]:
+                if st.button(
+                    "전체선택",
+                    icon=":material/done_all:",
+                    disabled=len(selected_set) == len(all_case_ids),
+                    key="voc_batch_select_all_cases",
                     width="stretch",
-                    height=294,
-                    row_height=34,
-                    key=f"voc_batch_group_table_{group_table_nonce}",
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    selection_default={"selection": {"rows": [active_group_index]}},
-                    column_order=["그룹", "상태", "현황"],
-                    column_config={
-                        "그룹": st.column_config.TextColumn("그룹", width=122, pinned=True),
-                        "상태": st.column_config.TextColumn("상태", width=86),
-                        "현황": st.column_config.TextColumn("현황", width=82),
-                        "_group": None,
-                    },
-                )
-                selected_group_rows = list(group_event.selection.rows)
-                if selected_group_rows:
-                    selected_index = min(max(selected_group_rows[0], 0), len(group_keys) - 1)
-                    active_group = group_keys[selected_index]
-                    st.session_state[BATCH_ACTIVE_GROUP_KEY] = active_group
+                ):
+                    selected_ids = _set_batch_selected_ids(set(all_case_ids), all_case_ids)
+                    st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
+                    st.session_state[BATCH_GROUP_TABLE_NONCE_KEY] = group_table_nonce + 1
+                    case_editor_nonce = int(st.session_state.get(BATCH_CASE_EDITOR_NONCE_KEY, case_editor_nonce) or 0)
+                    group_table_nonce = int(st.session_state.get(BATCH_GROUP_TABLE_NONCE_KEY, group_table_nonce) or 0)
+                    selected_set = set(selected_ids)
+            with action_columns[1]:
+                if st.button(
+                    "실행가능",
+                    icon=":material/rule:",
+                    disabled=selected_set == implemented_ids,
+                    key="voc_batch_select_implemented_cases",
+                    width="stretch",
+                ):
+                    selected_ids = _set_batch_selected_ids(implemented_ids, all_case_ids)
+                    st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
+                    st.session_state[BATCH_GROUP_TABLE_NONCE_KEY] = group_table_nonce + 1
+                    case_editor_nonce = int(st.session_state.get(BATCH_CASE_EDITOR_NONCE_KEY, case_editor_nonce) or 0)
+                    group_table_nonce = int(st.session_state.get(BATCH_GROUP_TABLE_NONCE_KEY, group_table_nonce) or 0)
+                    selected_set = set(selected_ids)
+            with action_columns[2]:
+                if st.button(
+                    "선택해제",
+                    icon=":material/remove_done:",
+                    disabled=not selected_set,
+                    key="voc_batch_clear_all_cases",
+                    width="stretch",
+                ):
+                    selected_ids = _set_batch_selected_ids(set(), all_case_ids)
+                    st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
+                    st.session_state[BATCH_GROUP_TABLE_NONCE_KEY] = group_table_nonce + 1
+                    case_editor_nonce = int(st.session_state.get(BATCH_CASE_EDITOR_NONCE_KEY, case_editor_nonce) or 0)
+                    group_table_nonce = int(st.session_state.get(BATCH_GROUP_TABLE_NONCE_KEY, group_table_nonce) or 0)
+                    selected_set = set(selected_ids)
 
-            with case_column:
-                group_label = groups.get(active_group, {}).get("label", active_group)
-                group_cases = cases_by_group.get(active_group, [])
+            group_list = st.container(height=286)
+            for group_key in group_keys:
+                group_cases = cases_by_group.get(group_key, [])
                 group_case_ids = tuple(
                     str(item.get("case_id"))
                     for item in group_cases
                     if item.get("case_id")
                 )
-                selected_set = set(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids))
                 group_state = _batch_group_selection_state(group_case_ids, selected_set)
-                with st.container(
-                    horizontal=True,
-                    horizontal_alignment="distribute",
-                    vertical_alignment="center",
-                    gap="small",
-                ):
-                    st.caption(f"{group_label} · {group_state['count']} / {len(group_case_ids)}건")
-                    with st.container(horizontal=True, horizontal_alignment="right", gap="small"):
+                implemented_count = sum(
+                    str(item.get("implementation_status") or "").upper() == "IMPLEMENTED"
+                    for item in group_cases
+                )
+                group_label = groups.get(group_key, {}).get("label", group_key)
+                is_active_group = group_key == active_group
+                tone = "green" if group_state["all_selected"] else "orange" if group_state["count"] else "gray"
+                with group_list.container(border=True):
+                    row_columns = st.columns([0.13, 0.58, 0.29], gap="small", vertical_alignment="center")
+                    checked = row_columns[0].checkbox(
+                        f"{group_label} 전체 선택",
+                        value=group_state["all_selected"],
+                        key=f"voc_batch_group_check_{group_key}_{group_table_nonce}",
+                        label_visibility="collapsed",
+                    )
+                    if checked != group_state["all_selected"]:
+                        next_selected = set(selected_set)
+                        if checked:
+                            next_selected |= set(group_case_ids)
+                        else:
+                            next_selected -= set(group_case_ids)
+                        selected_ids = _set_batch_selected_ids(next_selected, all_case_ids)
+                        selected_set = set(selected_ids)
+                        st.session_state[BATCH_ACTIVE_GROUP_KEY] = group_key
+                        st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
+                        st.session_state[BATCH_GROUP_TABLE_NONCE_KEY] = group_table_nonce + 1
+                        case_editor_nonce = int(st.session_state.get(BATCH_CASE_EDITOR_NONCE_KEY, case_editor_nonce) or 0)
+                        group_table_nonce = int(st.session_state.get(BATCH_GROUP_TABLE_NONCE_KEY, group_table_nonce) or 0)
+                        active_group = group_key
+                        group_state = _batch_group_selection_state(group_case_ids, selected_set)
+                        tone = "green" if group_state["all_selected"] else "orange" if group_state["count"] else "gray"
+                        is_active_group = True
+                    row_columns[1].markdown(
+                        f"""
+                        <div class="vqa-batch-group-info {'active' if is_active_group else ''}">
+                            <strong>{escape(group_label)}</strong>
+                            <small>{escape(group_state['state'])} · {group_state['count']} / {len(group_case_ids)}건 선택 · 실행 가능 {implemented_count}건</small>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    with row_columns[2]:
                         if st.button(
-                            "그룹 전체 선택",
-                            icon=":material/done_all:",
-                            disabled=not group_case_ids or group_state["all_selected"],
-                            key=f"voc_batch_select_group_{active_group}",
+                            "보기",
+                            key=f"voc_batch_group_view_{group_key}",
+                            type="primary" if is_active_group else "secondary",
+                            width="stretch",
+                            help="오른쪽 Case 목록에 이 그룹을 표시합니다.",
                         ):
-                            selected_ids = _set_batch_selected_ids(
-                                set(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids)) | set(group_case_ids),
-                                all_case_ids,
-                            )
-                            st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
-                            st.rerun()
-                        if st.button(
-                            "그룹 선택 해제",
-                            icon=":material/remove_done:",
-                            disabled=not group_case_ids or group_state["count"] == 0,
-                            key=f"voc_batch_clear_group_{active_group}",
-                        ):
-                            selected_ids = _set_batch_selected_ids(
-                                set(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids)) - set(group_case_ids),
-                                all_case_ids,
-                            )
-                            st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
-                            st.rerun()
-                case_rows = _batch_case_selection_rows(
-                    group_cases,
-                    list(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids)),
-                )
-                edited_case_rows = st.data_editor(
-                    case_rows,
-                    hide_index=True,
-                    width="stretch",
-                    height=252,
-                    row_height=34,
-                    key=f"voc_batch_case_editor_{active_group}_{case_editor_nonce}",
-                    disabled=["케이스 ID", "상태", "이름", "_case_id"],
-                    column_order=["체크", "케이스 ID", "상태", "이름"],
-                    column_config={
-                        "체크": st.column_config.CheckboxColumn("✓", width=50),
-                        "케이스 ID": st.column_config.TextColumn("케이스 ID", width=86, pinned=True),
-                        "상태": st.column_config.TextColumn("상태", width=96),
-                        "이름": st.column_config.TextColumn("이름", width="large"),
-                        "_case_id": None,
-                    },
-                )
-                selected_ids, changed = _apply_batch_case_editor_selection(
-                    case_rows,
-                    edited_case_rows,
-                    all_case_ids,
-                )
-                if changed:
-                    st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
-                    st.rerun()
+                            st.session_state[BATCH_ACTIVE_GROUP_KEY] = group_key
+                            active_group = group_key
+                            is_active_group = True
+                    row_columns[2].markdown(_voc_ui_badge(group_state["state"], tone))
 
-    with selector_columns[1].container(border=True, height=350):
+    with selector_columns[1].container(border=True, height=410):
+        if not group_keys:
+            st.info("선택할 Case가 없습니다.")
+        else:
+            active_group = str(st.session_state.get(BATCH_ACTIVE_GROUP_KEY) or state["active_group"])
+            active_group = active_group if active_group in group_keys else group_keys[0]
+            group_label = groups.get(active_group, {}).get("label", active_group)
+            selected_ids = list(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids))
+            selected_set = set(selected_ids)
+            group_cases = cases_by_group.get(active_group, [])
+            group_case_ids = tuple(
+                str(item.get("case_id"))
+                for item in group_cases
+                if item.get("case_id")
+            )
+            group_state = _batch_group_selection_state(group_case_ids, selected_set)
+            group_tone = "green" if group_state["all_selected"] else "orange" if group_state["count"] else "gray"
+            _render_voc_section_heading(
+                "Case 선택",
+                "",
+                icon="checklist",
+                badges=((group_label, "blue"), (group_state["state"], group_tone)),
+            )
+            st.markdown(
+                f"""
+                <div class="vqa-batch-case-hint">
+                    <strong>{escape(group_label)}</strong>
+                    <span>{group_state['count']} / {len(group_case_ids)}건 선택</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            case_rows = _batch_case_selection_rows(
+                group_cases,
+                selected_ids,
+            )
+            case_table_height = max(142, min(276, 54 + (len(case_rows) * 31)))
+            edited_rows = st.data_editor(
+                case_rows,
+                hide_index=True,
+                width="stretch",
+                height=case_table_height,
+                row_height=30,
+                key=f"voc_batch_case_editor_{active_group}_{case_editor_nonce}",
+                disabled=["케이스 ID", "상태", "이름", "_case_id"],
+                column_order=["체크", "케이스 ID", "상태", "이름"],
+                column_config={
+                    "체크": st.column_config.CheckboxColumn("체크", width=58),
+                    "케이스 ID": st.column_config.TextColumn("Case ID", width=82, pinned=True),
+                    "상태": st.column_config.TextColumn("구현 상태", width=132),
+                    "이름": st.column_config.TextColumn("이름 / 질문", width="large"),
+                    "_case_id": None,
+                },
+            )
+            selected_ids, changed = _apply_batch_case_editor_selection(
+                case_rows,
+                edited_rows,
+                all_case_ids,
+            )
+            if changed:
+                st.session_state[BATCH_CASE_EDITOR_NONCE_KEY] = case_editor_nonce + 1
+
+    with selector_columns[2].container(border=True, height=410):
         selected_ids = list(st.session_state.get(BATCH_SELECTED_CASE_IDS_KEY, selected_ids))
         selected_set = set(selected_ids)
+        selected_cases = [
+            item
+            for item in cases
+            if str(item.get("case_id") or "") in selected_set
+        ]
         selected_group_count = sum(
             any(
                 str(item.get("case_id")) in selected_set
@@ -5043,9 +5957,24 @@ def _render_batch_case_selector(cases: list[dict], groups: dict) -> dict:
             )
             for group_key in group_keys
         )
-        st.markdown("#### 선택 대상")
-        st.metric("선택 건수", f"{len(selected_ids)}건")
-        st.caption(f"선택 그룹 {selected_group_count} / {len(group_keys)}개")
+        implemented_count = sum(
+            str(item.get("implementation_status") or "").upper() == "IMPLEMENTED"
+            for item in selected_cases
+        )
+        pending_count = len(selected_ids) - implemented_count
+        _render_voc_section_heading(
+            "선택 요약",
+            "",
+            icon="target",
+            badges=((f"{len(selected_ids)}건", "blue"),),
+        )
+        _render_batch_selection_mini_summary(
+            selected_count=len(selected_ids),
+            implemented_count=implemented_count,
+            pending_count=pending_count,
+            selected_group_count=selected_group_count,
+            total_group_count=len(group_keys),
+        )
         with st.popover(
             "독립 LLM 평가 옵션",
             icon=":material/fact_check:",
@@ -5639,30 +6568,45 @@ def _render_history_verification_scope(manifest: dict, summary: dict):
     pending_count = model["pending_count"]
     catalog_total = model["catalog_total_cases"]
     with st.container(border=True):
-        title_col, badge_col = st.columns([2.2, 1.4], vertical_alignment="center")
-        with title_col:
-            st.markdown("#### 검증 회차 범위")
-        with badge_col:
-            scope_badge = "35건 전체 회차" if model["is_full_suite"] else "부분 회차"
-            retest_badge = "재시험" if model["is_retest"] else _voc_status_label(model["run_type"], model["run_type"] or "-")
-            st.markdown(
-                f":blue-badge[{scope_badge}] :gray-badge[{retest_badge}]",
-                text_alignment="right",
-            )
+        scope_badge = "35건 전체 회차" if model["is_full_suite"] else "부분 회차"
+        retest_badge = "재시험" if model["is_retest"] else _voc_status_label(model["run_type"], model["run_type"] or "-")
+        _render_voc_section_heading(
+            "검증 회차 범위",
+            "이번 Run이 어느 범위의 Case를 대표하는지 확인합니다.",
+            icon="fact_check",
+            badges=((scope_badge, "blue"), (retest_badge, "gray")),
+        )
 
-        with st.container(horizontal=True):
-            st.metric("카탈로그 전체", f"{catalog_total if catalog_total is not None else '-'}건", border=True)
-            st.metric("선택 Case", f"{selected_count}건", border=True)
-            st.metric(
-                "실행 가능",
-                "-" if executable_count is None else f"{executable_count}건",
-                border=True,
-            )
-            st.metric(
-                "후속 구현",
-                "-" if pending_count is None else f"{pending_count}건",
-                border=True,
-            )
+        _render_voc_summary_cards(
+            [
+                {
+                    "icon": "inventory_2",
+                    "label": "카탈로그 전체",
+                    "value": f"{catalog_total if catalog_total is not None else '-'}건",
+                    "detail": "관리 기준 전체 Case",
+                },
+                {
+                    "icon": "checklist",
+                    "label": "선택 Case",
+                    "value": f"{selected_count}건",
+                    "detail": "이번 Run 대상",
+                },
+                {
+                    "icon": "play_circle",
+                    "label": "실행 가능",
+                    "value": "-" if executable_count is None else f"{executable_count}건",
+                    "detail": "현재 자동 수행 가능",
+                },
+                {
+                    "icon": "pending_actions",
+                    "label": "후속 구현",
+                    "value": "-" if pending_count is None else f"{pending_count}건",
+                    "detail": "승인 대상 후속 구현",
+                },
+            ],
+            columns=4,
+            height=112,
+        )
 
         if selected_count and executable_count is not None:
             pending_value = pending_count or 0
@@ -5711,7 +6655,8 @@ def _render_history_verification_scope(manifest: dict, summary: dict):
                     .properties(height=max(110, 36 + len(rows) * 28))
                     .configure_view(strokeWidth=0)
                 )
-                st.altair_chart(chart, theme=None)
+                with st.expander("검증 영역별 Case 구성", icon=":material/bar_chart:"):
+                    st.altair_chart(chart, theme=None)
 
 
 HISTORY_ARTIFACT_LABELS = {
@@ -5934,6 +6879,155 @@ def _history_score_rows(scores: dict | None) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+HISTORY_REVIEW_ROLE_LABELS = {
+    "QA": "QA 검토",
+    "QA_REVIEW": "QA 검토",
+    "QA_REVIEWED": "QA 검토",
+    "BUSINESS": "업무 승인",
+    "BUSINESS_APPROVAL": "업무 승인",
+    "BUSINESS_APPROVED": "업무 승인",
+}
+HISTORY_REVIEW_DECISION_LABELS = {
+    "APPROVE": "승인",
+    "APPROVED": "승인",
+    "REVISION_REQUIRED": "보완 요청",
+    "REJECTED": "반려",
+    "REJECT": "반려",
+}
+
+
+def _history_looks_broken_text(value: object) -> bool:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return True
+    if "�" in text:
+        return True
+    question_count = text.count("?") + text.count("？")
+    has_korean = bool(re.search(r"[가-힣]", text))
+    if question_count >= 3 and not has_korean:
+        return True
+    if re.search(r"[?？]{2,}", text) and question_count >= max(3, len(text) // 5):
+        return True
+    return bool(re.fullmatch(r"[\s?？�·.,:;_\-\\/()]+", text))
+
+
+def _history_safe_display_text(value: object, *, fallback: str = "-") -> str:
+    text = _voc_display_term("" if value is None else str(value).strip())
+    if _history_looks_broken_text(text):
+        return fallback
+    return text
+
+
+def _history_review_role_label(value: object, *, index: int) -> str:
+    code = str(value or "").strip().upper()
+    label = HISTORY_REVIEW_ROLE_LABELS.get(code) or _voc_status_label(value, "")
+    return _history_safe_display_text(label, fallback=f"검토 {index}")
+
+
+def _history_review_decision_label(value: object) -> str:
+    code = str(value or "").strip().upper()
+    label = HISTORY_REVIEW_DECISION_LABELS.get(code) or _voc_status_label(value, "")
+    return _history_safe_display_text(label, fallback="결정 미확인")
+
+
+def _history_review_decision_tone(decision_label: str) -> str:
+    if "반려" in decision_label:
+        return "red"
+    if "보완" in decision_label or "검토" in decision_label:
+        return "orange"
+    if "승인" in decision_label:
+        return "green"
+    return "blue"
+
+
+def _history_review_state_transition(review: dict) -> str:
+    before = _history_safe_display_text(_voc_status_label(review.get("from_state"), ""), fallback="")
+    after = _history_safe_display_text(_voc_status_label(review.get("to_state"), ""), fallback="")
+    if before and after:
+        return f"{before} → {after}"
+    if after:
+        return f"→ {after}"
+    if before:
+        return before
+    return "-"
+
+
+def _history_review_comment_fallback(review: dict, *, index: int) -> str:
+    role = _history_review_role_label(review.get("reviewer_role"), index=index)
+    decision = _history_review_decision_label(review.get("decision"))
+    transition = _history_review_state_transition(review)
+    if transition and transition != "-":
+        return f"{role} 단계에서 {decision} 처리되었습니다. ({transition})"
+    return f"{role} 단계에서 {decision} 처리되었습니다."
+
+
+def _history_validity_review_rows(reviews: list | tuple | None) -> pd.DataFrame:
+    rows = []
+    for index, review in enumerate(reviews or [], start=1):
+        if not isinstance(review, dict):
+            continue
+        rows.append(
+            {
+                "단계": _history_review_role_label(review.get("reviewer_role"), index=index),
+                "결정": _history_review_decision_label(review.get("decision")),
+                "검토자": _history_safe_display_text(
+                    review.get("reviewer_name_or_id"),
+                    fallback="검토자 미확인",
+                ),
+                "상태 변화": _history_review_state_transition(review),
+                "검토 의견": _history_safe_display_text(
+                    review.get("comment"),
+                    fallback=_history_review_comment_fallback(review, index=index),
+                ),
+                "검토 시각": _history_table_timestamp(review.get("reviewed_at")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _history_action_tone(label: object) -> str:
+    text = str(label or "")
+    if any(token in text for token in ("승인", "통과", "완료", "보고서", "시연")):
+        return "green"
+    if any(token in text for token in ("오류", "실패", "반려", "보완", "재시험")):
+        return "red"
+    if any(token in text for token in ("평가", "검토", "확인", "재평가")):
+        return "orange"
+    return "blue"
+
+
+def _render_history_validity_review_timeline(reviews: list | tuple | None) -> None:
+    rows = _history_validity_review_rows(reviews)
+    if rows.empty:
+        return
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "QA·업무 승인 이력",
+            "QA 검토와 업무 승인 단계에서 남긴 결정 이력입니다.",
+            icon="approval",
+            badges=((f"{len(rows)}건", "blue"),),
+        )
+        for row in rows.to_dict("records"):
+            with st.container(border=True):
+                cols = st.columns([0.9, 0.85, 1.45, 2.8], gap="small", vertical_alignment="center")
+                with cols[0]:
+                    st.markdown(f"**{row['단계']}**")
+                    st.caption(row["검토 시각"] or "-")
+                with cols[1]:
+                    st.markdown(
+                        _voc_ui_badge(
+                            row["결정"],
+                            _history_review_decision_tone(row["결정"]),
+                        )
+                    )
+                with cols[2]:
+                    st.caption("상태 변화")
+                    st.write(row["상태 변화"])
+                with cols[3]:
+                    st.caption("검토 의견")
+                    st.write(row["검토 의견"])
 
 
 def _history_float_value(value) -> float | None:
@@ -6352,7 +7446,7 @@ def _render_history_judge_artifact(judge: dict) -> None:
             f"{judge.get('total_score')}점" if judge.get("total_score") is not None else "-",
             border=True,
         )
-        st.metric("독립성", judge.get("independence_grade", "-"), border=True)
+        st.metric("독립성", _judge_independence_grade_label(judge.get("independence_grade", "-")), border=True)
         st.metric("수행 시간", f"{float(judge.get('duration_seconds') or 0):g}초", border=True)
     st.caption(
         f"{judge.get('provider', '-')} · {judge.get('model', '-')} · "
@@ -6413,23 +7507,7 @@ def _render_history_validity_artifact(validity: dict) -> None:
             st.markdown("#### :material/edit_note: 보완 권고")
             for recommendation in recommendations:
                 st.write(f"- {recommendation}")
-    reviews = validity.get("human_reviews", [])
-    if reviews:
-        review_frame = pd.DataFrame(reviews).rename(
-            columns={
-                "reviewer_role": "역할",
-                "reviewer_name_or_id": "검토자",
-                "decision": "결정",
-                "comment": "검토 의견",
-                "reviewed_at": "검토 시각",
-            }
-        )
-        visible = [
-            column for column in ("역할", "검토자", "결정", "검토 의견", "검토 시각")
-            if column in review_frame.columns
-        ]
-        st.markdown("#### :material/approval: QA·업무 승인 이력")
-        st.dataframe(review_frame[visible], hide_index=True, width="stretch")
+    _render_history_validity_review_timeline(validity.get("human_reviews", []))
 
 
 def _history_judge_reevaluation_context_model(
@@ -6610,89 +7688,298 @@ def _render_history_case_artifact(
         st.json(artifact)
 
 
+def _history_run_detail_summary_cards(manifest: dict, summary: dict) -> list[dict]:
+    total_cases = summary.get("total")
+    if total_cases in (None, ""):
+        total_cases = len(manifest.get("selected_case_ids", []) or [])
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    judge_counts = summary.get("judge_counts", {}) if isinstance(summary.get("judge_counts"), dict) else {}
+    case_results = summary.get("case_results", []) if isinstance(summary.get("case_results"), list) else []
+    approved_cases = sum(1 for item in case_results if isinstance(item, dict) and item.get("formal_approval"))
+    issue_cases = int(counts.get("ERROR") or 0) + int(counts.get("FAIL") or 0)
+    review_cases = int(counts.get("REVIEW_REQUIRED") or 0)
+    pass_cases = int(counts.get("PASS") or 0)
+    judge_pass_cases = int(judge_counts.get("PASS") or 0)
+    judge_review_cases = int(judge_counts.get("REVIEW_REQUIRED") or 0)
+    judge_error_cases = int(judge_counts.get("ERROR") or 0)
+    run_type = _voc_status_label(manifest.get("run_type", "-"))
+    try:
+        action = voc_run_next_action(
+            {
+                **manifest,
+                "counts": counts,
+                "judge_counts": judge_counts,
+                "selected_count": total_cases,
+                "validity_state": summary.get("validity_state", "DRAFT"),
+                "deployment_decision": summary.get("deployment_decision", "NOT_EVALUATED"),
+            }
+        )
+    except Exception:
+        action = {
+            "label": "상세 확인",
+            "detail": "선택 Run의 저장 증적을 확인합니다.",
+        }
+    return [
+        {
+            "icon": "task_alt",
+            "label": "Run 상태",
+            "value": _voc_status_label(manifest.get("status", "-")),
+            "detail": f"유형: {run_type}",
+            "tone": "green" if str(manifest.get("status", "")).upper() == "COMPLETED" else "orange",
+        },
+        {
+            "icon": "format_list_numbered",
+            "label": "대상 Case",
+            "value": f"{total_cases}건",
+            "detail": f"통과 {pass_cases} · 검토 {review_cases} · 실패/오류 {issue_cases}",
+            "tone": "green" if total_cases and issue_cases == 0 else "orange",
+        },
+        {
+            "icon": "psychology",
+            "label": "독립 LLM 평가",
+            "value": "사용" if manifest.get("judge_enabled") else "미사용",
+            "detail": f"PASS {judge_pass_cases} · 검토 {judge_review_cases} · 오류 {judge_error_cases}",
+            "tone": "green" if manifest.get("judge_enabled") and judge_error_cases == 0 else "gray",
+        },
+        {
+            "icon": "approval",
+            "label": "타당성·승인",
+            "value": _voc_status_label(summary.get("validity_state", "DRAFT")),
+            "detail": f"정식 승인 {approved_cases}건 · 개선안 타당성",
+            "tone": "green" if approved_cases else "gray",
+        },
+        {
+            "icon": "conversion_path",
+            "label": "다음 액션",
+            "value": action.get("label", "상세 확인"),
+            "detail": action.get("detail", "선택 Run의 다음 처리 단계를 확인합니다."),
+            "tone": _history_action_tone(action.get("label")),
+        },
+    ]
+
+
+def _history_case_question_lookup() -> dict[str, str]:
+    try:
+        return {
+            str(case.get("case_id") or ""): str(case.get("question") or case.get("name") or "")
+            for case in load_unified_quality_cases().get("cases", [])
+            if case.get("case_id")
+        }
+    except Exception:
+        return {}
+
+
+def _history_case_result_item(case_results: list, case_id: str) -> dict:
+    return next(
+        (
+            item for item in case_results
+            if isinstance(item, dict) and str(item.get("case_id") or "") == str(case_id)
+        ),
+        {},
+    )
+
+
+def _history_case_evidence_summary_cards(
+    case_id: str,
+    case_item: dict,
+    artifacts: dict,
+) -> list[dict]:
+    pipeline = artifacts.get("pipeline_result", {}) if isinstance(artifacts.get("pipeline_result"), dict) else {}
+    execution = pipeline.get("execution", {}) if isinstance(pipeline.get("execution"), dict) else {}
+    pipeline_result = execution.get("result", {}) if isinstance(execution.get("result"), dict) else {}
+    judge = artifacts.get("judge_result", {}) if isinstance(artifacts.get("judge_result"), dict) else {}
+    validity = artifacts.get("validity_result", {}) if isinstance(artifacts.get("validity_result"), dict) else {}
+    try:
+        action = voc_case_next_action({**case_item, "case_id": case_id})
+    except Exception:
+        action = {
+            "label": "Case 증적 확인",
+            "detail": "저장된 Agent 결과와 평가 증적을 확인합니다.",
+        }
+    question_lookup = _history_case_question_lookup()
+    question = (
+        question_lookup.get(str(case_id))
+        or execution.get("question")
+        or case_item.get("message")
+        or "-"
+    )
+    pipeline_ok = bool(pipeline) and execution.get("ok") is not False and pipeline_result.get("ok") is not False
+    return [
+        {
+            "icon": "help",
+            "label": "Case",
+            "value": case_id,
+            "detail": _manual_pipeline_compact_text(question, 68),
+            "tone": "blue",
+        },
+        {
+            "icon": "account_tree",
+            "label": "Agent 파이프라인",
+            "value": "완료" if pipeline_ok else "확인 필요",
+            "detail": f"Trace {_history_safe_display_text(pipeline_result.get('trace'), fallback='미연결')}",
+            "tone": "green" if pipeline_ok else "orange",
+        },
+        {
+            "icon": "psychology",
+            "label": "독립 LLM 평가",
+            "value": _voc_status_label(judge.get("decision", case_item.get("judge_status", "NOT_RUN"))),
+            "detail": f"{judge.get('total_score', case_item.get('judge_score', '-'))}점",
+            "tone": "green" if str(judge.get("decision") or case_item.get("judge_status") or "").upper() == "PASS" else "orange",
+        },
+        {
+            "icon": "approval",
+            "label": "개선안 타당성",
+            "value": _voc_status_label(validity.get("decision", case_item.get("validity_status", "NOT_RUN"))),
+            "detail": f"{validity.get('total_score', case_item.get('validity_score', '-'))}점",
+            "tone": "green" if str(validity.get("decision") or case_item.get("validity_status") or "").upper() == "AI_PASS" else "orange",
+        },
+        {
+            "icon": "conversion_path",
+            "label": "다음 액션",
+            "value": action.get("label", "상세 확인"),
+            "detail": action.get("detail", "Case 증적을 확인합니다."),
+            "tone": _history_action_tone(action.get("label")),
+        },
+    ]
+
+
+def _render_history_integrity_status(integrity: dict) -> None:
+    errors = [str(error) for error in integrity.get("errors", []) if str(error or "").strip()]
+    warnings = [str(warning) for warning in integrity.get("warnings", []) if str(warning or "").strip()]
+    if integrity.get("ok"):
+        st.caption(":material/check_circle: 증적 무결성 정상 · Run 폴더, index, Case 증적이 일치합니다.")
+    else:
+        st.error("증적 무결성 확인이 필요합니다.", icon=":material/error:")
+        for error in errors:
+            st.caption(f"- {error}")
+    if warnings:
+        with st.expander("무결성 경고 보기", icon=":material/warning:"):
+            for warning in warnings:
+                st.write(f"- {warning}")
+
+
 def _render_voc_run_detail(run_id: str):
     detail = load_voc_run_history_detail(run_id)
     manifest = detail.get("manifest", {})
     summary = detail.get("summary", {})
     integrity = detail.get("integrity", {})
-    st.markdown(f"### 실행 상세 · {run_id}")
-    with st.container(horizontal=True):
-        st.metric("유형", _voc_status_label(manifest.get("run_type", "-")), border=True)
-        st.metric("상태", _voc_status_label(manifest.get("status", "-")), border=True)
-        st.metric("대상", summary.get("total", 0), border=True)
-        st.metric("독립 LLM 평가", "사용" if manifest.get("judge_enabled") else "미사용", border=True)
-        st.metric("개선안 타당성", _voc_status_label(summary.get("validity_state", "DRAFT")), border=True)
+    with st.container(border=True):
+        status_label = _voc_status_label(manifest.get("status", "-"))
+        status_tone = "green" if str(manifest.get("status", "")).upper() == "COMPLETED" else "orange"
+        _render_voc_section_heading(
+            "실행 상세 · Run 요약",
+            "상태, 대상 범위, 다음 액션만 먼저 확인합니다.",
+            icon="history",
+            badges=((status_label, status_tone), (_voc_status_label(manifest.get("run_type", "-")), "gray")),
+            right_caption=(
+                f"Run {run_id} · "
+                f"{_history_table_timestamp(manifest.get('finished_at') or manifest.get('started_at'))}"
+            ),
+        )
+        _render_voc_summary_cards(
+            _history_run_detail_summary_cards(manifest, summary),
+            columns=5,
+            height=124,
+        )
+        _render_history_integrity_status(integrity)
 
-    if integrity.get("ok"):
-        st.success("Run 폴더·index·Case 증적의 무결성이 일치합니다.")
-    else:
-        for error in integrity.get("errors", []):
-            st.error(error)
-    for warning in integrity.get("warnings", []):
-        st.warning(warning)
-
-    _render_history_verification_scope(manifest, summary)
+    with st.expander("검증 회차 범위 보기", expanded=False, icon=":material/fact_check:"):
+        _render_history_verification_scope(manifest, summary)
 
     view = st.segmented_control(
         "상세 구분",
-        ["Case 결과", "실행 정보", "Case 증적"],
+        ["Case 결과", "Case 증적", "실행 정보"],
         default="Case 결과",
         key=f"voc_history_detail_view_{run_id}",
     )
     case_results = summary.get("case_results", [])
     if view == "Case 결과":
+        question_lookup = _history_case_question_lookup()
         display_rows = []
+        detailed_rows = []
         for item in case_results:
             action = voc_case_next_action(item)
-            display_rows.append(
+            case_id = str(item.get("case_id") or "-")
+            question = question_lookup.get(case_id, "")
+            row = {
+                "Case ID": case_id,
+                "질문": _manual_pipeline_compact_text(question or item.get("message") or "-", 58),
+                "상태": _voc_status_label(item.get("status", "NOT_RUN")),
+                "다음 액션": action["label"],
+                "독립 LLM": _voc_status_label(item.get("judge_status", "NOT_RUN")),
+                "LLM 점수": item.get("judge_score"),
+                "타당성": _voc_status_label(item.get("validity_status", "NOT_RUN")),
+                "타당성 점수": item.get("validity_score"),
+                "승인": "승인" if item.get("formal_approval") else _voc_status_label(item.get("approval_state", "DRAFT")),
+                "종료": _history_table_timestamp(item.get("finished_at")),
+            }
+            display_rows.append(row)
+            detailed_rows.append(
                 {
-                    "Case ID": item.get("case_id", "-"),
-                    "상태": _voc_status_label(item.get("status", "NOT_RUN")),
+                    **row,
                     "수행 모드": item.get("mode", "-") or "-",
                     "시도": item.get("attempt_count", 0),
-                    "독립 LLM 평가": _voc_status_label(item.get("judge_status", "NOT_RUN")),
-                    "독립 LLM 점수": item.get("judge_score"),
-                    "독립성": item.get("judge_independence_grade", "-") or "-",
-                    "개선안 타당성": _voc_status_label(item.get("validity_status", "NOT_RUN")),
-                    "타당성 점수": item.get("validity_score"),
-                    "승인 단계": _voc_status_label(item.get("approval_state", "DRAFT")),
-                    "정식 승인": "승인" if item.get("formal_approval") else "미승인",
-                    "다음 액션": action["label"],
+                    "독립성": _judge_independence_grade_label(item.get("judge_independence_grade", "-")),
                     "메시지": item.get("message", "-") or "-",
                     "시작": _history_table_timestamp(item.get("started_at")),
-                    "종료": _history_table_timestamp(item.get("finished_at")),
                 }
             )
         rows = pd.DataFrame(display_rows)
         if rows.empty:
             st.info("아직 저장된 Case 결과가 없습니다.")
         else:
+            _render_voc_section_heading(
+                "Case 결과",
+                "Case, 질문, 현재 상태와 다음 액션만 먼저 표시합니다.",
+                icon="table_chart",
+                badges=((f"{len(rows)}건", "blue"),),
+            )
             st.dataframe(
                 rows,
                 hide_index=True,
                 width="stretch",
+                column_order=(
+                    "Case ID",
+                    "질문",
+                    "상태",
+                    "다음 액션",
+                    "독립 LLM",
+                    "LLM 점수",
+                    "타당성",
+                    "타당성 점수",
+                    "승인",
+                    "종료",
+                ),
                 column_config={
                     "Case ID": st.column_config.TextColumn(width="small", pinned=True),
+                    "질문": st.column_config.TextColumn(width="large"),
                     "상태": st.column_config.TextColumn(width="small"),
-                    "수행 모드": st.column_config.TextColumn(width="small"),
-                    "시도": st.column_config.NumberColumn(format="%d", width="small"),
-                    "독립 LLM 평가": st.column_config.TextColumn(width="small"),
-                    "독립 LLM 점수": st.column_config.ProgressColumn(
+                    "다음 액션": st.column_config.TextColumn(width="medium"),
+                    "독립 LLM": st.column_config.TextColumn(width="small"),
+                    "LLM 점수": st.column_config.ProgressColumn(
                         min_value=0, max_value=100, format="%g점", width="small"
                     ),
-                    "독립성": st.column_config.TextColumn(width="small"),
-                    "개선안 타당성": st.column_config.TextColumn(width="small"),
+                    "타당성": st.column_config.TextColumn(width="small"),
                     "타당성 점수": st.column_config.ProgressColumn(
                         min_value=0, max_value=100, format="%g점", width="small"
                     ),
-                    "승인 단계": st.column_config.TextColumn(width="small"),
-                    "정식 승인": st.column_config.TextColumn(width="small"),
-                    "다음 액션": st.column_config.TextColumn(width="medium"),
-                    "메시지": st.column_config.TextColumn(width="large"),
-                    "시작": st.column_config.TextColumn(width="small"),
+                    "승인": st.column_config.TextColumn(width="small"),
                     "종료": st.column_config.TextColumn(width="small"),
                 },
             )
+            with st.expander("Case 결과 상세 컬럼 보기", icon=":material/view_column:"):
+                st.dataframe(
+                    pd.DataFrame(detailed_rows),
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "Case ID": st.column_config.TextColumn(width="small", pinned=True),
+                        "질문": st.column_config.TextColumn(width="large"),
+                        "시도": st.column_config.NumberColumn(format="%d", width="small"),
+                        "독립성": st.column_config.TextColumn(width=156),
+                        "메시지": st.column_config.TextColumn(width="large"),
+                    },
+                )
     elif view == "실행 정보":
         _render_history_execution_info(manifest, summary)
     else:
@@ -6700,38 +7987,66 @@ def _render_voc_run_detail(run_id: str):
         if not completed_case_ids:
             st.info("조회할 Case 증적이 없습니다.")
         else:
-            selected_case_id = st.selectbox(
-                "Case ID",
-                completed_case_ids,
-                key=f"voc_history_case_{run_id}",
-            )
-            reevaluation_result_key = _history_judge_reevaluation_result_key(run_id, selected_case_id)
-            artifacts = load_voc_case_history_detail(run_id, selected_case_id)
-            artifact_names = [
-                name for name in
-                ("pipeline_result", "trace", "rule_result", "judge_result", "validity_result")
-                if name in artifacts
-            ]
-            if artifact_names:
-                artifact_key = f"voc_history_artifact_{run_id}"
-                preferred_artifact_key = f"voc_history_artifact_pending_{run_id}"
-                preferred_artifact = st.session_state.pop(preferred_artifact_key, None)
-                if preferred_artifact in artifact_names:
-                    st.session_state[artifact_key] = preferred_artifact
-                if st.session_state.get(artifact_key) not in artifact_names:
-                    st.session_state[artifact_key] = artifact_names[0]
-                artifact_name = st.selectbox(
-                    "증적 파일",
-                    artifact_names,
-                    key=artifact_key,
-                    format_func=lambda value: HISTORY_ARTIFACT_LABELS.get(value, value),
+            with st.container(border=True):
+                _render_voc_section_heading(
+                    "Case 증적",
+                    "",
+                    icon="folder_open",
+                    badges=((f"{len(completed_case_ids)}건", "blue"),),
                 )
-                _render_history_case_artifact(
-                    artifact_name,
-                    artifacts,
-                    run_id=run_id,
-                    case_id=selected_case_id,
+                control_cols = st.columns([0.85, 1.15], gap="small", vertical_alignment="bottom")
+                with control_cols[0]:
+                    selected_case_id = st.selectbox(
+                        "Case",
+                        completed_case_ids,
+                        key=f"voc_history_case_{run_id}",
+                    )
+                reevaluation_result_key = _history_judge_reevaluation_result_key(run_id, selected_case_id)
+                artifacts = load_voc_case_history_detail(run_id, selected_case_id)
+                artifact_names = [
+                    name for name in
+                    ("pipeline_result", "trace", "rule_result", "judge_result", "validity_result")
+                    if name in artifacts
+                ]
+                with control_cols[1]:
+                    artifact_name = None
+                    if artifact_names:
+                        artifact_key = f"voc_history_artifact_{run_id}"
+                        preferred_artifact_key = f"voc_history_artifact_pending_{run_id}"
+                        preferred_artifact = st.session_state.pop(preferred_artifact_key, None)
+                        if preferred_artifact in artifact_names:
+                            st.session_state[artifact_key] = preferred_artifact
+                        if st.session_state.get(artifact_key) not in artifact_names:
+                            st.session_state[artifact_key] = artifact_names[0]
+                        artifact_name = st.selectbox(
+                            "증적",
+                            artifact_names,
+                            key=artifact_key,
+                            format_func=lambda value: HISTORY_ARTIFACT_LABELS.get(value, value),
+                        )
+                    else:
+                        st.caption("증적 파일 없음")
+                case_item = _history_case_result_item(case_results, selected_case_id)
+                _render_voc_summary_cards(
+                    _history_case_evidence_summary_cards(selected_case_id, case_item, artifacts),
+                    columns=5,
+                    height=124,
                 )
+
+            if artifact_names and artifact_name:
+                with st.container(border=True):
+                    _render_voc_section_heading(
+                        HISTORY_ARTIFACT_LABELS.get(artifact_name, artifact_name),
+                        "",
+                        icon="description",
+                        badges=((selected_case_id, "blue"),),
+                    )
+                    _render_history_case_artifact(
+                        artifact_name,
+                        artifacts,
+                        run_id=run_id,
+                        case_id=selected_case_id,
+                    )
             else:
                 st.warning("Case 증적 JSON을 읽을 수 없습니다.")
             pipeline = artifacts.get("pipeline_result", {})
@@ -6746,51 +8061,58 @@ def _render_voc_run_detail(run_id: str):
                 )
                 if reevaluation_error:
                     st.error(reevaluation_error)
-                _live_history_judge_reevaluation(run_id, selected_case_id)
-                _render_history_judge_reevaluation_result(
-                    run_id,
-                    selected_case_id,
-                    st.session_state.get(reevaluation_result_key),
-                )
-                _render_history_judge_reevaluation_context(
-                    run_id,
-                    selected_case_id,
-                    artifacts,
-                    detail,
-                )
-                reevaluation_config = _judge_config_controls(
-                    f"history_{run_id}_{selected_case_id}"
-                )
-                if st.button(
-                    "독립 LLM 재평가 진행 중" if reevaluation_running else "저장된 동일 결과 독립 LLM 재평가",
+                reevaluation_result = st.session_state.get(reevaluation_result_key)
+                with st.expander(
+                    "독립 LLM 재평가",
+                    expanded=reevaluation_running or bool(reevaluation_result),
                     icon=":material/replay:",
-                    disabled=reevaluation_running or not reevaluation_config.get("enabled"),
-                    key=f"reevaluate_{run_id}_{selected_case_id}",
                 ):
-                    st.session_state[reevaluation_job_key] = start_background_job(
-                        "history-judge-reevaluation",
-                        f"{run_id}::{selected_case_id}",
-                        _execute_history_judge_reevaluation,
+                    _live_history_judge_reevaluation(run_id, selected_case_id)
+                    _render_history_judge_reevaluation_result(
                         run_id,
                         selected_case_id,
-                        reevaluation_config,
-                        progress={
-                            "percent": 6,
-                            "stage": "재평가 대기열 등록",
-                            "detail": "독립 LLM 재평가 작업을 백그라운드로 시작했습니다.",
-                        },
+                        reevaluation_result,
                     )
-                    st.rerun()
+                    _render_history_judge_reevaluation_context(
+                        run_id,
+                        selected_case_id,
+                        artifacts,
+                        detail,
+                    )
+                    reevaluation_config = _judge_config_controls(
+                        f"history_{run_id}_{selected_case_id}"
+                    )
+                    if st.button(
+                        "재평가 진행 중" if reevaluation_running else "독립 LLM 재평가",
+                        icon=":material/replay:",
+                        disabled=reevaluation_running or not reevaluation_config.get("enabled"),
+                        key=f"reevaluate_{run_id}_{selected_case_id}",
+                    ):
+                        st.session_state[reevaluation_job_key] = start_background_job(
+                            "history-judge-reevaluation",
+                            f"{run_id}::{selected_case_id}",
+                            _execute_history_judge_reevaluation,
+                            run_id,
+                            selected_case_id,
+                            reevaluation_config,
+                            progress={
+                                "percent": 6,
+                                "stage": "재평가 대기열 등록",
+                                "detail": "독립 LLM 재평가 작업을 백그라운드로 시작했습니다.",
+                            },
+                        )
+                        st.rerun()
 
     evidence = download_voc_run_evidence(run_id)
-    st.download_button(
-        "Run 전체 증적 ZIP 다운로드",
-        data=evidence,
-        file_name=f"{run_id}.zip",
-        mime="application/zip",
-        icon=":material/download:",
-        key=f"download_{run_id}",
-    )
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        st.download_button(
+            "Run 전체 증적 ZIP 다운로드",
+            data=evidence,
+            file_name=f"{run_id}.zip",
+            mime="application/zip",
+            icon=":material/download:",
+            key=f"download_{run_id}",
+        )
 
 
 def _history_retest_sort_key(item: dict) -> tuple[str, str]:
@@ -6992,9 +8314,13 @@ def _render_retest_comparison(history: list[dict], plan: dict | None = None):
 
 HISTORY_SELECTED_RUN_ID_KEY = "voc_history_selected_run_id"
 HISTORY_TABLE_KEY = "voc_history_table"
+HISTORY_TABLE_NONCE_KEY = "voc_history_table_nonce"
 HISTORY_TABLE_SIGNATURE_KEY = "voc_history_table_signature"
 HISTORY_DETAIL_DIALOG_RUN_ID_KEY = "voc_history_detail_dialog_run_id"
 HISTORY_RETEST_COMPARE_TARGET_KEY = "voc_history_retest_compare_target"
+VALIDITY_CANDIDATE_TABLE_KEY = "voc_validity_candidate_table"
+VALIDITY_CANDIDATE_TABLE_NONCE_KEY = "voc_validity_candidate_table_nonce"
+VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY = "voc_validity_detail_dialog_candidate_key"
 VOC_QUALITY_MENU_NAME = "VOC 품질진단"
 VOC_VALIDITY_PAGE_NAME = "개선안 타당성 검증"
 VOC_HISTORY_PAGE_NAME = "수행 이력"
@@ -7015,8 +8341,20 @@ def _open_history_detail_dialog(run_id: str) -> None:
         st.session_state[HISTORY_DETAIL_DIALOG_RUN_ID_KEY] = run_id
 
 
+def _history_table_widget_key() -> str:
+    nonce = int(st.session_state.get(HISTORY_TABLE_NONCE_KEY, 0) or 0)
+    return f"{HISTORY_TABLE_KEY}_{nonce}"
+
+
+def _reset_history_table_selection() -> None:
+    st.session_state[HISTORY_TABLE_NONCE_KEY] = int(
+        st.session_state.get(HISTORY_TABLE_NONCE_KEY, 0) or 0
+    ) + 1
+
+
 def _dismiss_history_detail_dialog() -> None:
     st.session_state.pop(HISTORY_DETAIL_DIALOG_RUN_ID_KEY, None)
+    _reset_history_table_selection()
 
 
 @st.dialog(
@@ -7097,7 +8435,7 @@ def _history_summary_cards(history: list[dict]) -> list[dict]:
             "icon": "conversion_path",
             "label": "후속 조치 Run",
             "value": f"{followup_runs}건",
-            "detail": f"배포 미판정 {undecided_runs} · 재시험 {retest_runs} · 재평가 {rubric_drift_runs}",
+            "detail": f"미판정 {undecided_runs} · 재시험 {retest_runs} · 재평가 {rubric_drift_runs}",
         },
     ]
 
@@ -7106,7 +8444,7 @@ def _render_history_summary_cards(history: list[dict]) -> None:
     cards = _history_summary_cards(history)
     columns = st.columns(len(cards), gap="small")
     for column, card in zip(columns, cards, strict=False):
-        with column.container(border=True, height=112):
+        with column.container(border=True, height=136):
             st.caption(f":material/{card['icon']}: {card['label']}")
             st.markdown(f"#### {card['value']}")
             st.caption(card["detail"])
@@ -7502,7 +8840,8 @@ def _apply_history_next_action_target(target: dict) -> None:
         )
         if action_code == "RUN_VALIDITY":
             st.session_state.voc_validity_evaluation_focus_once = True
-        st.session_state.pop("voc_validity_candidate_table", None)
+        _reset_validity_candidate_table_selection()
+        st.session_state.pop(VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY, None)
         st.session_state.pop("voc_validity_dialog_opened_key", None)
         return
     if page == VOC_BATCH_PAGE_NAME:
@@ -7799,11 +9138,11 @@ def render_voc_history():
         if selected_run_id not in run_ids:
             selected_run_id = run_ids[0]
             st.session_state[HISTORY_SELECTED_RUN_ID_KEY] = selected_run_id
-        selected_row_index = run_ids.index(selected_run_id)
         table_signature = json.dumps(run_ids, ensure_ascii=False)
         if st.session_state.get(HISTORY_TABLE_SIGNATURE_KEY) != table_signature:
-            st.session_state.pop(HISTORY_TABLE_KEY, None)
+            _reset_history_table_selection()
             st.session_state[HISTORY_TABLE_SIGNATURE_KEY] = table_signature
+        table_key = _history_table_widget_key()
 
         table_payloads = []
         for item in filtered:
@@ -7847,10 +9186,9 @@ def render_voc_history():
             table_rows,
             hide_index=True,
             width="stretch",
-            on_select=partial(_remember_history_run_selection, HISTORY_TABLE_KEY, run_ids),
-            selection_mode=["single-row-required", "single-cell"],
-            selection_default={"selection": {"rows": [selected_row_index]}},
-            key=HISTORY_TABLE_KEY,
+            on_select=partial(_remember_history_run_selection, table_key, run_ids),
+            selection_mode=["single-row", "single-cell"],
+            key=table_key,
             row_height=32,
             column_order=[
                 "Run ID",
@@ -7946,7 +9284,7 @@ def render_voc_history():
     if not selected_items:
         st.caption("상세 조회할 Run 행을 선택하세요.")
     else:
-        st.caption("Run 행의 아무 곳이나 선택하면 실행 상세 팝업이 열립니다.")
+        st.caption("Run 행을 선택하면 상세 팝업이 열리고, 다음 액션 대상도 함께 바뀝니다.")
 
     dialog_run_id = st.session_state.get(HISTORY_DETAIL_DIALOG_RUN_ID_KEY)
     if dialog_run_id:
@@ -7970,6 +9308,42 @@ def _load_validity_candidates():
 
 def _validity_candidate_key(candidate: dict) -> str:
     return f"{candidate.get('run_id', '')}::{candidate.get('case_id', '')}"
+
+
+def _validity_candidate_table_widget_key() -> str:
+    nonce = int(st.session_state.get(VALIDITY_CANDIDATE_TABLE_NONCE_KEY, 0) or 0)
+    return f"{VALIDITY_CANDIDATE_TABLE_KEY}_{nonce}"
+
+
+def _reset_validity_candidate_table_selection() -> None:
+    st.session_state[VALIDITY_CANDIDATE_TABLE_NONCE_KEY] = int(
+        st.session_state.get(VALIDITY_CANDIDATE_TABLE_NONCE_KEY, 0) or 0
+    ) + 1
+
+
+def _open_validity_candidate_dialog(candidate: dict | str) -> None:
+    candidate_key = _validity_candidate_key(candidate) if isinstance(candidate, dict) else str(candidate or "")
+    if candidate_key:
+        st.session_state.voc_validity_selected_key = candidate_key
+        st.session_state[VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY] = candidate_key
+
+
+def _dismiss_validity_candidate_dialog() -> None:
+    st.session_state.pop(VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY, None)
+    st.session_state.pop("voc_validity_dialog_opened_key", None)
+    _reset_validity_candidate_table_selection()
+
+
+def _remember_validity_candidate_selection(table_key: str, candidate_keys: tuple[str, ...]) -> None:
+    selected_row = _promote_table_cell_to_row_selection(table_key, len(candidate_keys))
+    if selected_row is None:
+        return
+    try:
+        selected_key = candidate_keys[selected_row]
+    except IndexError:
+        return
+    st.session_state.voc_validity_selected_key = selected_key
+    st.session_state[VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY] = selected_key
 
 
 def _apply_pending_validity_candidate_filters() -> None:
@@ -8510,21 +9884,17 @@ def _render_acceptance_formal_connection(snapshot: dict) -> None:
     readiness_tone = "green" if ready_for_uat else "orange"
 
     with st.container(border=True):
-        title_col, status_col = st.columns([2.4, 1.4], gap="small", vertical_alignment="center")
-        with title_col:
-            st.markdown("#### 정식 승인 결과 연결")
-            st.caption(
-                "품질 보고서의 최종 판정이 최종 인수·시연 게이트에 연결된 상태입니다. "
-                "Run ID보다 인수 범위와 보완 RETEST 반영 여부를 먼저 확인합니다."
-            )
-        with status_col:
-            st.markdown(
-                f":{badge_tone}-badge[{_voc_status_label(release_decision)}] "
-                f":blue-badge[{_voc_status_label(report_state)}] "
-                f":{readiness_tone}-badge[{_voc_status_label(readiness)}]",
-                text_alignment="right",
-            )
-            st.caption(f"Run {snapshot.get('run_id', '-')}", text_alignment="right")
+        _render_voc_section_heading(
+            "정식 승인 결과 연결",
+            "품질 보고서의 최종 판정이 최종 인수·시연 게이트에 연결된 상태입니다. Run ID보다 인수 범위와 보완 RETEST 반영 여부를 먼저 확인합니다.",
+            icon="verified",
+            badges=(
+                (_voc_status_label(release_decision), badge_tone),
+                (_voc_status_label(report_state), "blue"),
+                (_voc_status_label(readiness), readiness_tone),
+            ),
+            right_caption=f"Run {snapshot.get('run_id', '-')}",
+        )
 
         cards = [
             {
@@ -8554,20 +9924,20 @@ def _render_acceptance_formal_connection(snapshot: dict) -> None:
                 "value": f"{int(scope.get('linked_retest_count') or 0)}건",
                 "detail": "부족 Case 보완 결과를 원본 회차에 반영",
                 "tone": "green" if int(scope.get("linked_retest_count") or 0) else "gray",
+                "badge": "연결",
             },
         ]
-        for column, card in zip(st.columns(4, gap="small"), cards, strict=False):
-            badge = {
-                "green": ":green-badge[충족]",
-                "blue": ":blue-badge[확인]",
-                "orange": ":orange-badge[확인 필요]",
-                "gray": ":gray-badge[없음]",
-            }.get(card["tone"], ":gray-badge[확인]")
-            with column.container(border=True, height=122):
-                st.caption(f":material/{card['icon']}: {card['label']}")
-                st.markdown(f"### {card['value']}")
-                st.caption(card["detail"])
-                st.markdown(badge)
+        for card in cards:
+            card.setdefault(
+                "badge",
+                {
+                    "green": "충족",
+                    "blue": "확인",
+                    "orange": "확인 필요",
+                    "gray": "없음",
+                }.get(card["tone"], "확인"),
+            )
+        _render_voc_summary_cards(cards, columns=4, height=124)
 
 
 def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> pd.DataFrame:
@@ -8591,18 +9961,18 @@ def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> 
             )
         rows.append(
             {
-                "수행 일시": _dashboard_timestamp(candidate.get("started_at", "")),
-                "Run ID": candidate.get("run_id", "-"),
                 "Case ID": candidate.get("case_id", "-"),
-                "수행 유형": _voc_status_label(candidate.get("run_type", "-")),
                 "질문": candidate.get("question", "-") or "-",
-                "독립 LLM 평가": _voc_status_label(candidate.get("judge_status", "NOT_RUN")),
-                "독립 LLM 점수": candidate.get("judge_score"),
+                "다음 조치": next_action_label,
                 "개선안 타당성": _voc_status_label(validity_status),
                 "타당성 점수": candidate.get("validity_score"),
                 "승인 단계": _voc_status_label(candidate.get("workflow_state", "DRAFT")),
-                "다음 조치": next_action_label,
+                "독립 LLM 평가": _voc_status_label(candidate.get("judge_status", "NOT_RUN")),
+                "독립 LLM 점수": candidate.get("judge_score"),
+                "수행 유형": _voc_status_label(candidate.get("run_type", "-")),
+                "수행 일시": _dashboard_timestamp(candidate.get("started_at", "")),
                 "정식 승인": "승인" if candidate.get("formal_approval") else "미승인",
+                "Run ID": candidate.get("run_id", "-"),
             }
         )
     return pd.DataFrame(rows)
@@ -8679,29 +10049,49 @@ def _validity_focus_cards(candidates: list[dict]) -> list[dict]:
     approved_percent = round(approved_count / total * 100)
     return [
         {
+            "icon": "fact_check",
             "label": "개선안 타당성 평가 필요",
             "value": f"{action_counts.get('VALIDITY_EVALUATION_REQUIRED', 0)}건",
             "delta": "개선안 타당성 평가 미수행",
+            "detail": "개선안 타당성 평가 미수행",
+            "tone": "blue",
+            "badge": "평가",
         },
         {
+            "icon": "edit_note",
             "label": "보완·재시험 필요",
             "value": f"{action_counts.get('REWORK_REQUIRED', 0)}건",
             "delta": f"즉시 보류 {hold_count}건 포함",
+            "detail": f"즉시 보류 {hold_count}건 포함",
+            "tone": "red" if action_counts.get("REWORK_REQUIRED", 0) else "gray",
+            "badge": "보완",
         },
         {
+            "icon": "rate_review",
             "label": "QA 검토 가능",
             "value": f"{action_counts.get('QA_REVIEW', 0)}건",
             "delta": "AI 통과 · 보류 없음",
+            "detail": "AI 통과 · 보류 없음",
+            "tone": "green" if action_counts.get("QA_REVIEW", 0) else "gray",
+            "badge": "QA",
         },
         {
+            "icon": "verified",
             "label": "업무 승인 가능",
             "value": f"{action_counts.get('BUSINESS_APPROVAL', 0)}건",
             "delta": "QA 검토 완료",
+            "detail": "QA 검토 완료",
+            "tone": "green" if action_counts.get("BUSINESS_APPROVAL", 0) else "gray",
+            "badge": "승인",
         },
         {
+            "icon": "approval",
             "label": "정식 승인 완료",
             "value": f"{approved_count}건",
             "delta": f"전체 대비 {approved_percent}%",
+            "detail": f"전체 대비 {approved_percent}%",
+            "tone": "green" if approved_count else "gray",
+            "badge": "완료",
         },
     ]
 
@@ -8721,45 +10111,80 @@ def _validity_review_queue_rows(candidates: list[dict]) -> pd.DataFrame:
     )
 
 
+def _validity_status_badge_tone(status: str) -> str:
+    status = str(status or "NOT_RUN").upper()
+    if status in {"AI_PASS", "BUSINESS_APPROVED", "QA_REVIEWED", "FORMAL_APPROVED"}:
+        return "green"
+    if status in {"REVISION_REQUIRED", "REJECTED", "FAIL", "ERROR"}:
+        return "red"
+    if status in {"NOT_RUN", "NOT_EVALUATED", "DRAFT"}:
+        return "gray"
+    return "orange"
+
+
+def _validity_status_count_badges(candidates: list[dict]) -> tuple[tuple[str, str], ...]:
+    order = ("NOT_RUN", "REVISION_REQUIRED", "AI_PASS", "QA_REVIEWED", "BUSINESS_APPROVED")
+    counts = pd.Series(
+        [str(item.get("validity_status") or "NOT_RUN").upper() for item in candidates]
+    ).value_counts().to_dict()
+    ordered_statuses = [status for status in order if counts.get(status)]
+    ordered_statuses.extend(
+        status for status in counts if status not in set(ordered_statuses)
+    )
+    badges: list[tuple[str, str]] = [(f"전체 {len(candidates)}건", "blue")]
+    badges.extend(
+        (
+            f"{_voc_status_label(status)} {int(counts.get(status) or 0)}건",
+            _validity_status_badge_tone(status),
+        )
+        for status in ordered_statuses
+    )
+    return tuple(badges)
+
+
+def _validity_review_queue_preview_items(candidates: list[dict], limit: int = 3) -> list[str]:
+    preview: list[str] = []
+    for candidate in candidates[:limit]:
+        case_id = candidate.get("case_id") or "-"
+        score = candidate.get("validity_score")
+        score_text = f"{score:g}점" if isinstance(score, (int, float)) else "점수 없음"
+        question = str(candidate.get("question") or "-")
+        if len(question) > 42:
+            question = f"{question[:42]}..."
+        action_label = candidate.get("review_action_label") or _candidate_review_readiness(candidate)["action_label"]
+        preview.append(f"- **{case_id}** · {action_label} · {score_text}  \n  :gray[{question}]")
+    return preview
+
+
 def _render_validity_review_queue(candidates: list[dict]):
     qa_ready = [item for item in candidates if _candidate_qa_review_ready(item)]
     business_ready = [item for item in candidates if _candidate_business_approval_ready(item)]
-    with st.container(border=True):
-        heading, guide = st.columns([1.6, 2.2], vertical_alignment="center")
-        with heading:
-            st.markdown("#### QA 검토/승인 대기 대상")
-        with guide:
-            st.caption("로그인·권한 기능은 없으므로 현재 사용자가 QA 검토와 업무 승인을 순차로 처리합니다.")
-        columns = st.columns(2, gap="medium")
+    if not qa_ready and not business_ready:
+        return
+
+    with st.expander(
+        f"QA/승인 대기 빠른 확인 · QA {len(qa_ready)}건 · 업무 승인 {len(business_ready)}건",
+        expanded=False,
+        icon=":material/rate_review:",
+    ):
+        st.caption("상세 처리와 저장은 아래 선택 Case 작업 영역에서 진행합니다. 전체 대상은 목록의 상태 필터로 좁혀 확인하세요.")
+        columns = st.columns(2, gap="small", vertical_alignment="top")
         queues = [
-            ("QA 검토 가능", qa_ready, ":material/rate_review:"),
-            ("업무 승인 가능", business_ready, ":material/verified:"),
+            ("QA 검토 가능", qa_ready, ":material/rate_review:", "QA 검토 의견 저장 대상"),
+            ("업무 승인 가능", business_ready, ":material/verified:", "QA 검토 완료 후 업무 승인 대상"),
         ]
-        for column, (title, items, icon) in zip(columns, queues, strict=False):
+        for column, (title, items, icon, detail) in zip(columns, queues, strict=False):
             with column.container(border=True, height="stretch"):
                 st.markdown(f"{icon} **{title}**")
-                st.metric("대기 건수", f"{len(items)}건", border=True)
-                if not items:
+                st.markdown(f":{'green' if items else 'gray'}-badge[{len(items)}건]")
+                st.caption(detail)
+                preview_items = _validity_review_queue_preview_items(items)
+                if preview_items:
+                    st.markdown("\n".join(preview_items))
+                    if len(items) > len(preview_items):
+                        st.caption(f"외 {len(items) - len(preview_items)}건은 목록 필터에서 확인하세요.")
+                else:
                     st.caption("현재 대기 대상이 없습니다.")
-                    continue
-                rows = _validity_review_queue_rows(items[:5])
-                st.dataframe(
-                    rows,
-                    hide_index=True,
-                    width="stretch",
-                    height=min(230, 72 + len(rows) * 38),
-                    column_config={
-                        "Case ID": st.column_config.TextColumn(width="small", pinned=True),
-                        "Run ID": st.column_config.TextColumn(width="large"),
-                        "점수": st.column_config.ProgressColumn(
-                            width="small", min_value=0, max_value=100, format="%g점"
-                        ),
-                        "다음 조치": st.column_config.TextColumn(width="medium"),
-                        "질문": st.column_config.TextColumn(width="large"),
-                    },
-                )
-                if len(items) > 5:
-                    st.caption(f"상위 5건만 표시합니다. 전체 {len(items)}건은 상태 필터에서 확인하세요.")
 
 
 def _validity_selection_basis(candidate: dict, artifacts: dict | None = None) -> dict:
@@ -8855,45 +10280,126 @@ def _validity_qa_gate_model(candidate: dict, result: dict | None) -> dict:
     }
 
 
-def _render_validity_selection_basis(candidate: dict, artifacts: dict | None = None):
+def _render_validity_selection_basis(
+    candidate: dict,
+    artifacts: dict | None = None,
+    *,
+    compact: bool = False,
+):
     basis = _validity_selection_basis(candidate, artifacts)
     with st.container(border=True):
-        heading, status = st.columns([2.6, 1], vertical_alignment="center")
-        with heading:
-            st.markdown(f"#### 선택 기준 · {basis['case_id']}")
-        st.caption("목록은 완료된 VOC 파이프라인 성공 Case만 표시하며, 회차와 Case를 한 묶음으로 검증합니다.")
-        with status:
-            st.markdown(
-                f":blue-badge[독립 LLM 평가 {basis['judge_label']}] "
-                f":blue-badge[개선안 타당성 {basis['validity_label']}]",
-                text_alignment="right",
+        readiness = _candidate_review_readiness(candidate)
+        action_tone = {
+            "FORMAL_APPROVED": "green",
+            "BUSINESS_APPROVAL": "green",
+            "QA_REVIEW": "green",
+            "REWORK_REQUIRED": "red",
+            "VALIDITY_EVALUATION_REQUIRED": "blue",
+        }.get(readiness["action"], "gray")
+        _render_voc_section_heading(
+            f"선택 Case 판단 · {basis['case_id']}",
+            "",
+            icon="ads_click",
+            badges=((basis["next_action_label"], action_tone),),
+            right_caption=basis["started_at"],
+        )
+        if compact:
+            _render_voc_summary_cards(
+                [
+                    {
+                        "icon": "fact_check",
+                        "label": "Case",
+                        "value": basis["case_id"],
+                        "detail": _manual_pipeline_compact_text(basis["question"], 64),
+                        "tone": "blue",
+                        "badge": basis["run_type_label"],
+                    },
+                    {
+                        "icon": "conversion_path",
+                        "label": "다음 액션",
+                        "value": basis["next_action_label"],
+                        "detail": _manual_pipeline_compact_text(basis["next_action_detail"], 58),
+                        "tone": action_tone,
+                        "badge": "지금 할 일",
+                    },
+                    {
+                        "icon": "approval",
+                        "label": "타당성·승인",
+                        "value": basis["validity_label"],
+                        "detail": (
+                            f"타당성 {basis['validity_score'] if basis['validity_score'] is not None else '-'}점 · "
+                            f"승인 {_voc_status_label(candidate.get('workflow_state', 'DRAFT'))}"
+                        ),
+                        "tone": "green" if str(candidate.get("validity_status") or "") == "AI_PASS" else "orange",
+                        "badge": "평가",
+                    },
+                    {
+                        "icon": "psychology",
+                        "label": "독립 LLM",
+                        "value": basis["judge_label"],
+                        "detail": f"{basis['judge_score'] if basis['judge_score'] is not None else '-'}점",
+                        "tone": "green" if str(candidate.get("judge_status") or "") == "PASS" else "orange",
+                        "badge": "선행",
+                    },
+                ],
+                columns=4,
+                height=112,
             )
-        cards = st.columns(5, gap="small")
-        card_payloads = [
-            (":material/event:", "회차", basis["run_type_label"], basis["run_id"]),
-            (":material/fact_check:", "Case", basis["case_id"], basis["question"]),
-            (":material/account_tree:", "파이프라인", basis["pipeline_label"], basis["pipeline_detail"]),
-            (
-                ":material/rule:",
-                "독립 LLM·개선안 타당성",
-                f"{basis['judge_label']} / {basis['validity_label']}",
-                f"독립 LLM {basis['judge_score'] if basis['judge_score'] is not None else '-'}점 · "
-                f"개선안 타당성 {basis['validity_score'] if basis['validity_score'] is not None else '-'}점",
-            ),
-            (
-                ":material/conversion_path:",
-                "다음 액션",
-                basis["next_action_label"],
-                basis["next_action_detail"],
-            ),
-        ]
-        for column, (icon, label, value, detail) in zip(cards, card_payloads, strict=False):
-            with column.container(border=True, height="stretch"):
-                st.markdown(f"{icon} **{label}**")
-                st.markdown(f"##### {value}")
-                st.caption(detail)
+            if basis["parent_run_id"]:
+                st.caption(f"재시험 회차 · 원본 Run {basis['parent_run_id']}")
+            else:
+                st.caption(f"Run ID: {basis['run_id']}")
+            return
+        _render_voc_summary_cards(
+            [
+                {
+                    "icon": "fact_check",
+                    "label": "Case",
+                    "value": basis["case_id"],
+                    "detail": basis["question"],
+                    "tone": "blue",
+                    "badge": basis["run_type_label"],
+                },
+                {
+                    "icon": "conversion_path",
+                    "label": "다음 액션",
+                    "value": basis["next_action_label"],
+                    "detail": basis["next_action_detail"],
+                    "tone": action_tone,
+                    "badge": "지금 할 일",
+                },
+                {
+                    "icon": "approval",
+                    "label": "개선안 타당성",
+                    "value": basis["validity_label"],
+                    "detail": f"{basis['validity_score'] if basis['validity_score'] is not None else '-'}점",
+                    "tone": "green" if str(candidate.get("validity_status") or "") == "AI_PASS" else "orange",
+                    "badge": "평가",
+                },
+                {
+                    "icon": "psychology",
+                    "label": "독립 LLM 평가",
+                    "value": basis["judge_label"],
+                    "detail": f"{basis['judge_score'] if basis['judge_score'] is not None else '-'}점",
+                    "tone": "green" if str(candidate.get("judge_status") or "") == "PASS" else "orange",
+                    "badge": "선행",
+                },
+                {
+                    "icon": "account_tree",
+                    "label": "파이프라인",
+                    "value": basis["pipeline_label"],
+                    "detail": basis["pipeline_detail"],
+                    "tone": "green" if basis["pipeline_success"] else "orange",
+                    "badge": "증적",
+                },
+            ],
+            columns=5,
+            height=132,
+        )
         if basis["parent_run_id"]:
             st.caption(f"재시험 회차입니다. 원본 Run: {basis['parent_run_id']}")
+        else:
+            st.caption(f"Run ID: {basis['run_id']}")
 
 
 def _render_validity_history_focus_action(candidate: dict) -> None:
@@ -9231,7 +10737,7 @@ def _validity_workflow_status_model(
         current = "개선안 타당성 평가 전"
         tone = "gray"
         next_title = "개선안 타당성 평가 실행"
-        next_detail = "아래 평가 설정에서 Provider를 확인한 뒤 `선택 대상 개선안 타당성 평가 실행`을 누르세요."
+        next_detail = "아래 평가 실행 영역에서 Provider와 모델을 확인한 뒤 `타당성 평가 실행`을 누르세요."
         active_step = "evaluate"
     elif reeval_needed:
         current = "재평가 필요"
@@ -9339,6 +10845,9 @@ def _render_validity_workflow_status(
     artifacts: dict,
     result: dict | None,
     rubric: dict,
+    *,
+    key_scope: str = "main",
+    compact: bool = False,
 ) -> None:
     model = _validity_workflow_status_model(candidate, artifacts, result, rubric)
     badge_color = {
@@ -9351,8 +10860,9 @@ def _render_validity_workflow_status(
     with st.container(border=True):
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
-            st.markdown("#### 독립 LLM 평가 → 타당성 평가 → QA 검토 흐름")
-            st.caption("선택한 Run·Case가 지금 어느 단계인지와 다음에 눌러야 할 버튼을 고정해서 보여줍니다.")
+            st.markdown("#### 선택 대상 작업 흐름" if compact else "#### 독립 LLM 평가 → 타당성 평가 → QA 검토 흐름")
+            if not compact:
+                st.caption("선택한 Run·Case가 지금 어느 단계인지와 다음에 눌러야 할 버튼을 고정해서 보여줍니다.")
         with state:
             st.markdown(f":{badge_color}-badge[{model['current']}]", text_alignment="right")
 
@@ -9365,10 +10875,26 @@ def _render_validity_workflow_status(
                 "red": "red",
                 "gray": "gray",
             }.get(stage["tone"], "gray")
-            with column.container(border=True, height="stretch"):
-                st.markdown(f":material/{stage['icon']}: **{stage['label']}**")
+            with column.container(border=True, height=78 if compact else "stretch"):
+                if compact:
+                    st.caption(f":material/{stage['icon']}: {stage['label']}")
+                else:
+                    st.markdown(f":material/{stage['icon']}: **{stage['label']}**")
                 st.markdown(f":{stage_color}-badge[{stage['status']}]")
-                st.caption(stage["detail"])
+                if not compact:
+                    st.caption(stage["detail"])
+
+        if compact:
+            st.caption(f"다음 액션 · {model['next_title']} — {model['next_detail']}")
+            st.markdown(
+                " ".join(
+                    (
+                        _voc_ui_badge(f"점수 기준 {model['score_text']}", model["tone"]),
+                        _voc_ui_badge(f"QA Gate {model['gate_summary']}", model["tone"]),
+                    )
+                )
+            )
+            return
 
         next_col, score_col, gate_col = st.columns([2.5, 0.9, 0.9], gap="small", vertical_alignment="center")
         with next_col:
@@ -9379,7 +10905,7 @@ def _render_validity_workflow_status(
                 key_base = _validity_key_base(
                     str(candidate.get("run_id") or ""),
                     str(candidate.get("case_id") or ""),
-                    f"workflow_{action_model['action_code']}",
+                    f"{key_scope}_workflow_{action_model['action_code']}",
                 )
                 if action_model.get("target") == "approval":
                     if st.button(
@@ -9432,7 +10958,7 @@ def _render_validity_workflow_status(
                 key_base = _validity_key_base(
                     str(candidate.get("run_id") or ""),
                     str(candidate.get("case_id") or ""),
-                    "workflow_evaluate",
+                    f"{key_scope}_workflow_evaluate",
                 )
                 if st.button(
                     "타당성 평가 설정으로 이동",
@@ -9830,6 +11356,7 @@ def _render_validity_supplement_form_body(
     rubric: dict,
     *,
     key_scope: str = "",
+    compact: bool = False,
 ) -> dict | None:
     run_id = candidate["run_id"]
     case_id = candidate["case_id"]
@@ -9874,7 +11401,7 @@ def _render_validity_supplement_form_body(
                         field_label,
                         placeholder=placeholder,
                         key=_validity_supplement_key(run_id, case_id, field, key_scope),
-                        height=104 if field in {"note", "execution_plan"} else 88,
+                        height=(92 if field in {"note", "execution_plan"} else 76) if compact else (104 if field in {"note", "execution_plan"} else 88),
                     )
         submitted = st.form_submit_button(
             context.get("save_label", "보완 입력 저장"),
@@ -9900,6 +11427,8 @@ def _render_validity_supplement_editor(
     rubric: dict | None = None,
     *,
     key_scope: str = "",
+    read_only: bool = False,
+    compact: bool = False,
 ) -> dict:
     current = artifacts.get("validity_supplement", {})
     if not isinstance(current, dict):
@@ -9922,7 +11451,17 @@ def _render_validity_supplement_editor(
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
             st.markdown(f"#### {context['title']}")
-            st.caption(context["caption"])
+            if compact:
+                field_labels = [
+                    _validity_supplement_field_spec(field)[1]
+                    for field in context.get("field_keys", [])
+                ]
+                if field_labels:
+                    st.caption("입력 대상: " + " · ".join(field_labels[:4]) + (" 외" if len(field_labels) > 4 else ""))
+                else:
+                    st.caption(context["caption"])
+            else:
+                st.caption(context["caption"])
         with state:
             filled_count = len(filled_rows)
             count_text = f" · 저장 {filled_count}건" if filled_count else ""
@@ -9931,10 +11470,15 @@ def _render_validity_supplement_editor(
                 text_alignment="right",
             )
 
-        _render_validity_rework_need_cards(context)
-        _render_validity_pass_basis_cards(context)
+        if not compact:
+            _render_validity_rework_need_cards(context)
+            _render_validity_pass_basis_cards(context)
 
-        if context["phase"] == "pre_evaluation":
+        if read_only:
+            payload = None
+            if filled_rows:
+                st.caption("저장된 보완 입력과 확인 메모를 조회합니다.")
+        elif context["phase"] == "pre_evaluation":
             with st.expander(
                 "입력 열기",
                 expanded=context["expanded"],
@@ -9947,6 +11491,7 @@ def _render_validity_supplement_editor(
                     context,
                     rubric,
                     key_scope=key_scope,
+                    compact=compact,
                 )
         else:
             payload = _render_validity_supplement_form_body(
@@ -9956,6 +11501,7 @@ def _render_validity_supplement_editor(
                 context,
                 rubric,
                 key_scope=key_scope,
+                compact=compact,
             )
 
         if payload is not None:
@@ -9986,6 +11532,23 @@ def _render_validity_supplement_editor(
                     st.error(f"보완 입력 저장 실패: {type(exc).__name__}: {exc}")
 
         if filled_rows:
+            if compact:
+                with st.expander(
+                    f"저장된 입력 {len(filled_rows)}건 보기",
+                    expanded=False,
+                    icon=":material/list_alt:",
+                ):
+                    st.dataframe(
+                        pd.DataFrame(filled_rows),
+                        hide_index=True,
+                        width="stretch",
+                        height=min(178, 72 + len(filled_rows) * 34),
+                        column_config={
+                            "보완 항목": st.column_config.TextColumn(width="medium", pinned=True),
+                            "입력 내용": st.column_config.TextColumn(width="large"),
+                        },
+                    )
+                return artifacts
             st.dataframe(
                 pd.DataFrame(filled_rows),
                 hide_index=True,
@@ -10780,6 +12343,8 @@ def _render_validity_rework_guide(
     rubric: dict,
     *,
     key_scope: str = "",
+    show_actions: bool = True,
+    compact: bool = False,
 ):
     if not result:
         return
@@ -10800,6 +12365,90 @@ def _render_validity_rework_guide(
         st.session_state[retest_default_key] = default_retest_instruction
         st.session_state[retest_instruction_key] = default_retest_instruction
 
+    required_count = int(rows["_필수보완"].sum()) if not rows.empty and "_필수보완" in rows else 0
+    recommended_count = max(len(rows) - required_count, 0)
+
+    if compact:
+        if gate["ready"] and required_count == 0 and recommended_count == 0 and not holds:
+            return
+
+        with st.container(border=True):
+            heading, state = st.columns([2.6, 1], vertical_alignment="center")
+            with heading:
+                st.markdown("#### 보완 재시험 실행")
+                st.caption("상세 점수와 평가 근거는 선택 대상 상세 팝업에서 확인하고, 여기서는 재시험 실행 지시문만 관리합니다.")
+            with state:
+                badge = ":green-badge[QA 검토 가능]" if gate["ready"] else f":red-badge[필수 보완 {required_count}건]"
+                st.markdown(badge, text_alignment="right")
+
+            if rows.empty:
+                st.caption("통과 기준 미달 항목은 없습니다. 필요한 경우에만 재시험 지시문을 보완해 실행하세요.")
+            else:
+                required_rows = rows[rows["_필수보완"]] if "_필수보완" in rows else rows
+                focus_labels = [
+                    str(label)
+                    for label in required_rows.get("평가 항목", pd.Series(dtype="string")).tolist()
+                    if str(label).strip()
+                ]
+                if not focus_labels:
+                    focus_labels = [
+                        str(label)
+                        for label in rows.get("평가 항목", pd.Series(dtype="string")).head(3).tolist()
+                        if str(label).strip()
+                    ]
+                st.caption(
+                    "우선 보완 항목: "
+                    + (", ".join(focus_labels[:3]) if focus_labels else "상세 팝업에서 확인")
+                )
+
+            if show_actions:
+                with st.expander(
+                    "재시험 지시문 편집·실행",
+                    expanded=False,
+                    icon=":material/replay:",
+                ):
+                    retest_instruction = st.text_area(
+                        "재시험 전달 지시문",
+                        key=retest_instruction_key,
+                        height=132,
+                        disabled=False,
+                        help="재시험 Agent 파이프라인에 실제 전달되는 압축 지시문입니다. 상세 평가 결과는 중복 전달하지 않습니다.",
+                    )
+                    left, right = st.columns([2, 1], vertical_alignment="bottom")
+                    active_state = _active_batch_run_state()
+                    active_run_id = active_state["run_id"]
+                    active = active_state["active"]
+                    judge = artifacts.get("judge_result", {}) if isinstance(artifacts.get("judge_result"), dict) else {}
+                    judge_config = {
+                        "enabled": True,
+                        "provider": judge.get("provider", "anthropic"),
+                        "model": judge.get("model", "claude-haiku-4-5"),
+                    }
+                    with left:
+                        st.caption("재시험은 원본 Run과 연결되어 수행 이력과 A/B 비교에서 전후 관계로 표시됩니다.")
+                    with right:
+                        if st.button(
+                            "재시험 실행",
+                            type="primary",
+                            icon=":material/replay:",
+                            disabled=active or not retest_instruction.strip(),
+                            width="stretch",
+                            key=f"validity_rework_retest_{key_base}",
+                        ):
+                            _launch_batch(
+                                [candidate["case_id"]],
+                                parent_run_id=candidate["run_id"],
+                                judge_config=judge_config,
+                                rework_instruction=retest_instruction,
+                            )
+                            st.toast("보완 지시 기반 재시험을 시작했습니다.", icon=":material/replay:")
+                            st.rerun()
+                    if active_run_id:
+                        _live_batch_progress()
+            else:
+                st.caption("팝업에서는 보완 가이드와 재시험 지시문을 조회만 합니다.")
+        return
+
     with st.container(border=True):
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
@@ -10809,8 +12458,6 @@ def _render_validity_rework_guide(
             badge = ":green-badge[QA 검토 가능]" if gate["ready"] else ":red-badge[보완 후 재시험]"
             st.markdown(badge, text_alignment="right")
 
-        required_count = int(rows["_필수보완"].sum()) if not rows.empty and "_필수보완" in rows else 0
-        recommended_count = max(len(rows) - required_count, 0)
         card_payloads = [
             (":material/rule:", "현재 판정", _voc_status_label(result.get("decision", "NOT_RUN"))),
             (":material/score:", "개선안 타당성 점수", f"{result.get('total_score', '-')} / 100점"),
@@ -10869,6 +12516,7 @@ def _render_validity_rework_guide(
                 "사용자 확인용 상세 가이드",
                 key=instruction_key,
                 height=220,
+                disabled=not show_actions,
                 help="사람이 확인하기 위한 상세 가이드입니다. 기존 요약과 평가 근거를 함께 보여주며 재시험에는 그대로 전달하지 않습니다.",
             )
 
@@ -10876,11 +12524,15 @@ def _render_validity_rework_guide(
             "재시험 전달 지시문",
             key=retest_instruction_key,
             height=168,
+            disabled=not show_actions,
             help="재시험 Agent 파이프라인에 실제 전달되는 압축 지시문입니다. 통과 기준 미달 항목 중심으로 자동 구성됩니다.",
         )
-        st.caption(
-            "재시험에는 위 압축 지시문만 전달합니다. 상세 평가 결과·기존 개선안 전문은 화면 확인용으로 분리해 중복 전달을 줄입니다."
-        )
+        if show_actions:
+            st.caption(
+                "재시험에는 위 압축 지시문만 전달합니다. 상세 평가 결과·기존 개선안 전문은 화면 확인용으로 분리해 중복 전달을 줄입니다."
+            )
+        else:
+            st.caption("팝업에서는 보완 가이드와 재시험 지시문을 조회만 합니다.")
         instruction = retest_instruction
         active_state = _active_batch_run_state()
         active_run_id = active_state["run_id"]
@@ -10891,27 +12543,28 @@ def _render_validity_rework_guide(
             "provider": judge.get("provider", "anthropic"),
             "model": judge.get("model", "claude-haiku-4-5"),
         }
-        left, right = st.columns([2, 1], vertical_alignment="bottom")
-        with left:
-            st.caption("재시험은 원본 Run과 연결되어 수행 이력과 A/B 비교에서 전후 관계로 표시됩니다.")
-        with right:
-            if st.button(
-                "보완 지시 기반 재시험 실행",
-                type="primary",
-                icon=":material/replay:",
-                disabled=active or not instruction.strip(),
-                width="stretch",
-                key=f"validity_rework_retest_{key_base}",
-            ):
-                _launch_batch(
-                    [candidate["case_id"]],
-                    parent_run_id=candidate["run_id"],
-                    judge_config=judge_config,
-                    rework_instruction=instruction,
-                )
-                st.toast("보완 지시 기반 재시험을 시작했습니다.", icon=":material/replay:")
-                st.rerun()
-        if active_run_id:
+        if show_actions:
+            left, right = st.columns([2, 1], vertical_alignment="bottom")
+            with left:
+                st.caption("재시험은 원본 Run과 연결되어 수행 이력과 A/B 비교에서 전후 관계로 표시됩니다.")
+            with right:
+                if st.button(
+                    "보완 지시 기반 재시험 실행",
+                    type="primary",
+                    icon=":material/replay:",
+                    disabled=active or not instruction.strip(),
+                    width="stretch",
+                    key=f"validity_rework_retest_{key_base}",
+                ):
+                    _launch_batch(
+                        [candidate["case_id"]],
+                        parent_run_id=candidate["run_id"],
+                        judge_config=judge_config,
+                        rework_instruction=instruction,
+                    )
+                    st.toast("보완 지시 기반 재시험을 시작했습니다.", icon=":material/replay:")
+                    st.rerun()
+        if show_actions and active_run_id:
             _live_batch_progress()
 
 
@@ -10922,6 +12575,7 @@ def _render_validity_auto_evaluation_controls(
     validity_rubric: dict,
     *,
     key_scope: str = "",
+    compact: bool = False,
 ) -> dict:
     run_id = candidate["run_id"]
     case_id = candidate["case_id"]
@@ -10930,7 +12584,9 @@ def _render_validity_auto_evaluation_controls(
     with st.container(border=True):
         heading, supplement_state = st.columns([2.4, 1], vertical_alignment="center")
         with heading:
-            st.markdown("#### 개선안 타당성 평가 설정")
+            st.markdown("#### 평가 실행")
+            if not compact:
+                st.caption("선택 대상의 Agent 파이프라인 결과와 보완 입력을 기준으로 개선안 타당성을 평가합니다.")
         with supplement_state:
             supplement_rows = _validity_supplement_fields(artifacts.get("validity_supplement", {}))
             badge = (
@@ -10940,14 +12596,14 @@ def _render_validity_auto_evaluation_controls(
             )
             st.markdown(badge, text_alignment="right")
         judge_gate = _validity_judge_gate_model(candidate, artifacts)
-        config = _validity_config_controls(f"{key_base}_validity_auto")
+        config = _validity_config_controls(f"{key_base}_validity_auto", compact=compact)
         if judge_gate["blocked"]:
             st.caption(
                 f"독립 LLM 평가 상태: {judge_gate['summary']} · "
                 "PASS 후 개선안 타당성 평가를 실행할 수 있습니다."
             )
         if st.button(
-            "선택 대상 개선안 타당성 평가 실행" if not judge_gate["blocked"] else "독립 LLM PASS 후 타당성 평가 가능",
+            "타당성 평가 실행" if not judge_gate["blocked"] else "독립 LLM PASS 후 실행 가능",
             type="primary",
             icon=":material/fact_check:",
             disabled=not config["credential_configured"] or judge_gate["blocked"],
@@ -11037,10 +12693,6 @@ def _render_validity_auto_evaluation_controls(
     return validity
 
 
-def _select_validity_candidate(candidate: dict):
-    st.session_state.voc_validity_selected_key = _validity_candidate_key(candidate)
-
-
 def _render_validity_trace_evidence(artifacts: dict):
     trace = artifacts.get("trace", {}) if isinstance(artifacts.get("trace"), dict) else {}
     trace_events = trace.get("events", []) if isinstance(trace.get("events"), list) else []
@@ -11088,7 +12740,7 @@ def _render_validity_judge_panel(candidate: dict, judge: dict):
             border=True,
         )
         st.metric("독립 LLM 평가 점수", f"{judge.get('total_score', '-')}점", border=True)
-        st.metric("독립성", judge.get("independence_grade", "-"), border=True)
+        st.metric("독립성", _judge_independence_grade_label(judge.get("independence_grade", "-")), border=True)
         st.metric("Provider", judge.get("provider", "-"), border=True)
     with st.container(border=True):
         st.markdown("#### :material/fact_check: 독립 LLM 평가 근거")
@@ -11121,6 +12773,7 @@ def _render_validity_judge_panel(candidate: dict, judge: dict):
     "개선안 타당성 검증 대상 상세",
     width="large",
     icon=":material/fact_check:",
+    on_dismiss=_dismiss_validity_candidate_dialog,
 )
 def _render_validity_candidate_dialog(candidate: dict):
     artifacts = load_voc_case_history_detail(candidate["run_id"], candidate["case_id"])
@@ -11186,20 +12839,20 @@ def _render_validity_candidate_dialog(candidate: dict):
 
     with tab_validity:
         st.markdown("### 개선안 타당성 평가 및 보완")
-        _render_validity_workflow_status(candidate, artifacts, validity, validity_rubric)
+        _render_validity_workflow_status(
+            candidate,
+            artifacts,
+            validity,
+            validity_rubric,
+            key_scope="dialog",
+        )
         artifacts = _render_validity_supplement_editor(
             candidate,
             artifacts,
             result=validity,
             rubric=validity_rubric,
             key_scope="dialog",
-        )
-        validity = _render_validity_auto_evaluation_controls(
-            candidate,
-            artifacts,
-            validity,
-            validity_rubric,
-            key_scope="dialog",
+            read_only=True,
         )
         _render_validity_result(validity, validity_rubric, artifacts)
         _render_validity_execution_steps(candidate, artifacts, validity, validity_rubric)
@@ -11209,6 +12862,7 @@ def _render_validity_candidate_dialog(candidate: dict):
             validity,
             validity_rubric,
             key_scope="dialog",
+            show_actions=False,
         )
 
     with tab_approval:
@@ -11263,7 +12917,21 @@ def _render_validity_result(
     reviews = result.get("human_reviews", [])
     if reviews:
         st.markdown("#### 사람 검토 감사 이력")
-        st.dataframe(pd.DataFrame(reviews), hide_index=True, width="stretch")
+        review_rows = _history_validity_review_rows(reviews)
+        if not review_rows.empty:
+            st.dataframe(
+                review_rows,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "단계": st.column_config.TextColumn(width=92),
+                    "결정": st.column_config.TextColumn(width=86),
+                    "검토자": st.column_config.TextColumn(width=120),
+                    "상태 변화": st.column_config.TextColumn(width=190),
+                    "검토 의견": st.column_config.TextColumn(width="large"),
+                    "검토 시각": st.column_config.TextColumn(width=150),
+                },
+            )
 
 
 DEPLOYMENT_DECISION_LABELS = {
@@ -11461,13 +13129,14 @@ def _validity_approval_workflow_model(result: dict | None) -> dict:
     }
 
 
-def _render_validity_approval_workflow(result: dict | None):
+def _render_validity_approval_workflow(result: dict | None, *, compact: bool = False):
     model = _validity_approval_workflow_model(result)
     with st.container(border=True):
         heading, state = st.columns([2.3, 1], vertical_alignment="center")
         with heading:
             st.markdown("#### QA 검토·업무 승인 흐름")
-            st.caption("권한 구분은 없으며 현재 사용자가 QA 검토와 업무 승인을 순차로 수행합니다.")
+            if not compact:
+                st.caption("권한 구분은 없으며 현재 사용자가 QA 검토와 업무 승인을 순차로 수행합니다.")
         with state:
             readiness = model["readiness"]
             badge = {
@@ -11490,14 +13159,16 @@ def _render_validity_approval_workflow(result: dict | None):
             with column.container(border=True, height="stretch"):
                 st.markdown(f"**{stage['label']}**")
                 st.markdown(badge)
-                st.caption(stage["detail"])
-        audit_columns = st.columns(4, gap="small")
-        for column, audit in zip(audit_columns, model["audit_cards"], strict=False):
-            with column.container(border=True, height=112):
-                st.markdown(f":material/{audit['icon']}: **{audit['label']}**")
-                st.markdown(f"##### {audit['value']}")
-                st.caption(audit["detail"])
-        if model["holds"]:
+                if not compact:
+                    st.caption(stage["detail"])
+        if not compact:
+            audit_columns = st.columns(4, gap="small")
+            for column, audit in zip(audit_columns, model["audit_cards"], strict=False):
+                with column.container(border=True, height=112):
+                    st.markdown(f":material/{audit['icon']}: **{audit['label']}**")
+                    st.markdown(f"##### {audit['value']}")
+                    st.caption(audit["detail"])
+        if model["holds"] and not compact:
             st.caption("즉시 보류 규칙: " + ", ".join(_validity_hold_rule_label(rule) for rule in model["holds"]))
 
 
@@ -11507,9 +13178,10 @@ def _render_human_validity_review(
     result: dict,
     *,
     key_scope: str = "",
+    compact: bool = False,
 ):
     _render_validity_approval_focus_anchor_once()
-    _render_validity_approval_workflow(result)
+    _render_validity_approval_workflow(result, compact=compact)
     state = result.get("workflow_state", "DRAFT")
     if result.get("decision") != "AI_PASS" or result.get("immediate_hold_rules_triggered"):
         st.warning("AI 평가 통과 상태이고 즉시 보류 규칙이 없어야 QA 검토를 시작할 수 있습니다.")
@@ -11526,7 +13198,8 @@ def _render_human_validity_review(
         return
 
     st.markdown(f"### {heading}")
-    st.caption("현재 사용자가 이 단계의 검토자입니다. 저장 시 역할·시각·의견이 감사 이력에 추가됩니다.")
+    if not compact:
+        st.caption("현재 사용자가 이 단계의 검토자입니다. 저장 시 역할·시각·의견이 감사 이력에 추가됩니다.")
     with st.form(f"validity_review_{_validity_key_base(run_id, case_id, key_scope)}_{role}"):
         reviewer_col, comment_col = st.columns([0.8, 2.2], gap="small", vertical_alignment="top")
         with reviewer_col:
@@ -11542,7 +13215,7 @@ def _render_human_validity_review(
         submitted_decision = None
         action_columns = st.columns(3, gap="small")
         for column, card in zip(action_columns, VALIDITY_REVIEW_DECISION_CARDS[role], strict=False):
-            with column.container(border=True, height=154):
+            with column.container(border=True, height=128 if compact else 154):
                 st.markdown(f":material/{card['icon']}: **{card['title']}**")
                 st.caption(card["detail"])
                 if st.form_submit_button(
@@ -11717,15 +13390,11 @@ def render_improvement_validity():
         st.info("타당성을 검증할 수 있는 완료 VOC Case가 없습니다.")
         return
 
-    with st.container(horizontal=True):
-        for card in _validity_focus_cards(candidates):
-            st.metric(
-                card["label"],
-                card["value"],
-                delta=card["delta"],
-                delta_color="off",
-                border=True,
-            )
+    _render_voc_summary_cards(
+        _validity_focus_cards(candidates),
+        columns=5,
+        height=118,
+    )
 
     st.session_state.setdefault("voc_validity_run_type", "전체")
     st.session_state.setdefault("voc_validity_candidate_status", "전체")
@@ -11773,129 +13442,140 @@ def render_improvement_validity():
         selected_key = _validity_candidate_key(filtered[0])
         st.session_state.voc_validity_selected_key = selected_key
 
-    status_counts = pd.DataFrame(
-        [
-            {"평가 상태": _voc_status_label(status), "대상 수": count}
-            for status, count in pd.Series(
-                [item.get("validity_status", "NOT_RUN") for item in filtered]
-            ).value_counts().items()
-        ]
-    )
-    list_column, chart_column = st.columns([4.2, 1.15], gap="medium", vertical_alignment="top")
-    with list_column:
-        st.markdown("#### 검증 대상 목록")
-        st.caption("체크하면 Run·Case·개선안·독립 LLM 평가·개선안 타당성 증적을 팝업으로 확인합니다.")
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "검증 대상 목록",
+            "",
+            icon="fact_check",
+            badges=_validity_status_count_badges(filtered),
+        )
         candidate_frame = _validity_candidate_rows(filtered, selected_key)
-        event = st.dataframe(
+        candidate_keys = tuple(_validity_candidate_key(item) for item in filtered)
+        table_key = _validity_candidate_table_widget_key()
+        st.dataframe(
             candidate_frame,
             hide_index=True,
             width="stretch",
             height=min(465, 76 + len(candidate_frame) * 38),
-            on_select="rerun",
-            selection_mode="single-row",
-            key="voc_validity_candidate_table",
+            on_select=partial(_remember_validity_candidate_selection, table_key, candidate_keys),
+            selection_mode=["single-row", "single-cell"],
+            key=table_key,
             column_order=[
-                "수행 일시",
-                "Run ID",
                 "Case ID",
-                "수행 유형",
                 "질문",
-                "독립 LLM 평가",
-                "독립 LLM 점수",
+                "다음 조치",
                 "개선안 타당성",
                 "타당성 점수",
                 "승인 단계",
-                "다음 조치",
+                "독립 LLM 평가",
+                "독립 LLM 점수",
+                "수행 유형",
+                "수행 일시",
                 "정식 승인",
+                "Run ID",
             ],
             column_config={
-                "수행 일시": st.column_config.TextColumn(width=118),
-                "Run ID": st.column_config.TextColumn(width=220, pinned=True),
-                "Case ID": st.column_config.TextColumn(width=76),
-                "수행 유형": st.column_config.TextColumn(width=86),
-                "질문": st.column_config.TextColumn(width=230),
-                "독립 LLM 평가": st.column_config.TextColumn(width=96),
-                "독립 LLM 점수": st.column_config.ProgressColumn(
-                    width=84, min_value=0, max_value=100, format="%g점"
-                ),
+                "Case ID": st.column_config.TextColumn(width=78, pinned=True),
+                "질문": st.column_config.TextColumn(width=320),
+                "다음 조치": st.column_config.TextColumn(width=138),
                 "개선안 타당성": st.column_config.TextColumn(width=106),
                 "타당성 점수": st.column_config.ProgressColumn(
                     width=84, min_value=0, max_value=100, format="%g점"
                 ),
                 "승인 단계": st.column_config.TextColumn(width=112),
-                "다음 조치": st.column_config.TextColumn(width=122),
+                "독립 LLM 평가": st.column_config.TextColumn(width=96),
+                "독립 LLM 점수": st.column_config.ProgressColumn(
+                    width=84, min_value=0, max_value=100, format="%g점"
+                ),
+                "수행 유형": st.column_config.TextColumn(width=86),
+                "수행 일시": st.column_config.TextColumn(width=118),
                 "정식 승인": st.column_config.TextColumn(width=78),
+                "Run ID": st.column_config.TextColumn(width=196),
             },
         )
-    with chart_column.container(border=True):
-        st.markdown("#### 상태 분포")
-        st.bar_chart(
-            status_counts,
-            x="평가 상태",
-            y="대상 수",
-            horizontal=True,
-            color="#2F75B5",
-            height=max(190, 55 + len(status_counts) * 42),
-        )
-
     _render_validity_review_queue(filtered)
 
-    selected_rows = event.selection.rows
-    if selected_rows:
-        selected_index = selected_rows[0]
-        if 0 <= selected_index < len(filtered):
-            clicked = filtered[selected_index]
-            clicked_key = _validity_candidate_key(clicked)
-            _select_validity_candidate(clicked)
-            if st.session_state.get("voc_validity_dialog_opened_key") != clicked_key:
-                st.session_state.voc_validity_dialog_opened_key = clicked_key
-                _render_validity_candidate_dialog(clicked)
-
     selected = next(
-        item for item in candidates
-        if _validity_candidate_key(item) == st.session_state.voc_validity_selected_key
+        (
+            item for item in candidates
+            if _validity_candidate_key(item) == st.session_state.voc_validity_selected_key
+        ),
+        filtered[0],
     )
+    st.session_state.voc_validity_selected_key = _validity_candidate_key(selected)
     artifacts = load_voc_case_history_detail(selected["run_id"], selected["case_id"])
     selected = _sync_validity_candidate_from_artifacts(selected, artifacts)
     validity = artifacts.get("validity_result", {})
     validity_rubric = load_improvement_validity_rubric()
     _render_validity_history_focus_action(selected)
-    _render_validity_selection_basis(selected, artifacts)
-    _render_validity_workflow_status(selected, artifacts, validity, validity_rubric)
-    judge_gate = _validity_judge_gate_model(selected, artifacts)
+    _render_validity_selection_basis(selected, artifacts, compact=True)
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        if st.button(
+            "선택 대상 상세 보기",
+            icon=":material/open_in_new:",
+            key=f"validity_selected_detail_{_validity_candidate_key(selected)}",
+        ):
+            _open_validity_candidate_dialog(selected)
+            st.rerun()
+    _render_validity_workflow_status(selected, artifacts, validity, validity_rubric, compact=True)
+    workflow_model = _validity_workflow_status_model(selected, artifacts, validity, validity_rubric)
+    action_tone = {
+        "green": "green",
+        "blue": "blue",
+        "orange": "orange",
+        "red": "red",
+        "gray": "gray",
+    }.get(workflow_model.get("tone", "gray"), "gray")
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "선택 대상 실행/입력",
+            "필요한 입력과 실행 버튼만 표시합니다. 평가 결과·증적·상세 로그는 상세 팝업에서 확인하세요.",
+            icon="edit_note",
+            badges=((workflow_model["next_title"], action_tone),),
+        )
+
+    judge_gate = workflow_model["judge_gate"]
     if judge_gate["blocked"]:
         _render_validity_judge_prerequisite_notice(selected, artifacts)
     else:
-        artifacts = _render_validity_supplement_editor(
-            selected,
-            artifacts,
-            result=validity,
-            rubric=validity_rubric,
-        )
-    if not validity:
-        _render_validity_dimension_scorecard(validity_rubric, validity)
+        active_step = workflow_model.get("active_step")
+        if active_step in {"supplement", "evaluate"} or workflow_model.get("reeval_needed"):
+            artifacts = _render_validity_supplement_editor(
+                selected,
+                artifacts,
+                result=validity,
+                rubric=validity_rubric,
+                compact=True,
+            )
 
-    validity = _render_validity_auto_evaluation_controls(
-        selected,
-        artifacts,
-        validity,
-        validity_rubric,
-    )
+            validity = _render_validity_auto_evaluation_controls(
+                selected,
+                artifacts,
+                validity,
+                validity_rubric,
+                compact=True,
+            )
 
-    st.markdown("## 개선안 타당성 평가 및 승인")
-    _render_validity_result(validity, validity_rubric, artifacts)
-    _render_validity_execution_steps(selected, artifacts, validity, validity_rubric)
-    _render_validity_qa_gate_cards(selected, validity)
-    _render_validity_rework_guide(selected, artifacts, validity, validity_rubric)
-    if validity.get("recommendations"):
-        st.caption(
-            "보완 권고는 AI가 제시한 검토 후보이며 확정 결함이나 업무 지시가 아닙니다. "
-            "현재는 사용자 분석이 끝날 때까지 미확정으로 유지합니다."
+    latest_workflow = _validity_workflow_status_model(selected, artifacts, validity, validity_rubric)
+    if latest_workflow.get("action_code") == "REWORK_REQUIRED":
+        _render_validity_rework_guide(selected, artifacts, validity, validity_rubric, compact=True)
+    if latest_workflow.get("action_code") in {"QA_REVIEW", "BUSINESS_APPROVAL", "FORMAL_APPROVED"} and validity:
+        _render_human_validity_review(selected["run_id"], selected["case_id"], validity, compact=True)
+    with st.expander("추가 분석 · 동일 조건 A/B 비교", expanded=False, icon=":material/compare_arrows:"):
+        st.caption("재시험 전후 비교가 필요할 때만 펼쳐서 확인합니다.")
+        if st.toggle("동일 조건 A/B 비교 보기", key="validity_show_ab"):
+            _render_improvement_ab(candidates, selected, artifacts)
+
+    dialog_candidate_key = st.session_state.get(VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY)
+    if dialog_candidate_key:
+        dialog_candidate = next(
+            (item for item in candidates if _validity_candidate_key(item) == dialog_candidate_key),
+            None,
         )
-    if validity:
-        _render_human_validity_review(selected["run_id"], selected["case_id"], validity)
-    if st.toggle("동일 조건 A/B 비교 보기", key="validity_show_ab"):
-        _render_improvement_ab(candidates, selected, artifacts)
+        if dialog_candidate:
+            _render_validity_candidate_dialog(dialog_candidate)
+        else:
+            _dismiss_validity_candidate_dialog()
 
 def _build_testcase_group_chart(group_rows: pd.DataFrame) -> alt.Chart:
     return (
@@ -14620,6 +16300,7 @@ def _render_quality_report_preview(model: dict):
     report_state = _voc_status_label(model.get("report_state", "-"))
     release_decision = _voc_status_label(model.get("release_decision", "-"))
     run = model.get("run", {}) if isinstance(model.get("run"), dict) else {}
+    release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
     if model["release_decision"] == "FORMAL_APPROVED":
         st.success("모든 정식 품질 승인 조건을 충족했습니다.", icon=":material/verified:")
     else:
@@ -14655,6 +16336,13 @@ def _render_quality_report_preview(model: dict):
                 key=f"open_voc_quality_report_dialog_{model.get('report_id', '-')}_{run.get('run_id', '-')}",
             ):
                 _render_quality_report_dialog(model)
+
+    _render_release_scope_basis(
+        release_scope,
+        release_decision=str(model.get("release_decision") or ""),
+        title="품질 보고서 판정 기준",
+        caption="보고서는 35건 전체를 단순 PASS 수가 아니라 인수 범위별 승인 기준으로 판단합니다.",
+    )
 
     with st.expander("판정 산식 원문", icon=":material/calculate:"):
         st.json(model["formula"], expanded=False)
@@ -14743,18 +16431,41 @@ def _render_report_scope_cards(
     approved_case_count = sum(int(item.get("approved_count", 0) or 0) for item in candidate_summary.values())
     judge_missing_count = sum(int(item.get("judge_missing_count", 0) or 0) for item in candidate_summary.values())
     validity_missing_count = sum(int(item.get("validity_missing_count", 0) or 0) for item in candidate_summary.values())
-    columns = st.columns(4, gap="small")
     cards = [
-        ("verified", "최종 보고서 대상", f"{len(final_rows)}건", "실행 가능 Case 승인 + 후속 구현 승인"),
-        ("draft", "증적 초안", f"{len(draft_rows)}건", "평가·승인 진행 중 Run"),
-        ("approval", "업무 승인 Case", f"{approved_case_count}건", "보고서/시연 연결 가능"),
-        ("pending_actions", "남은 평가", f"{judge_missing_count + validity_missing_count}건", f"독립 LLM {judge_missing_count} · 개선안 타당성 {validity_missing_count}"),
+        {
+            "icon": "verified",
+            "label": "최종 보고서 대상",
+            "value": f"{len(final_rows)}건",
+            "detail": "실행 가능 Case 승인 + 후속 구현 승인",
+            "tone": "green" if final_rows else "gray",
+            "badge": "최종",
+        },
+        {
+            "icon": "draft",
+            "label": "증적 초안",
+            "value": f"{len(draft_rows)}건",
+            "detail": "평가·승인 진행 중 Run",
+            "tone": "blue" if draft_rows else "gray",
+            "badge": "진행",
+        },
+        {
+            "icon": "approval",
+            "label": "업무 승인 Case",
+            "value": f"{approved_case_count}건",
+            "detail": "보고서/시연 연결 가능",
+            "tone": "green" if approved_case_count else "gray",
+            "badge": "승인",
+        },
+        {
+            "icon": "pending_actions",
+            "label": "남은 평가",
+            "value": f"{judge_missing_count + validity_missing_count}건",
+            "detail": f"독립 LLM {judge_missing_count} · 개선안 타당성 {validity_missing_count}",
+            "tone": "orange" if judge_missing_count + validity_missing_count else "green",
+            "badge": "확인 필요" if judge_missing_count + validity_missing_count else "없음",
+        },
     ]
-    for column, (icon, label, value, detail) in zip(columns, cards, strict=False):
-        with column.container(border=True, height=112):
-            st.caption(f":material/{icon}: {label}")
-            st.markdown(f"#### {value}")
-            st.caption(detail)
+    _render_voc_summary_cards(cards, columns=4, height=118)
 
 
 def _render_voc_quality_report(report_mode: str):
@@ -14838,10 +16549,11 @@ def _render_voc_quality_report(report_mode: str):
         key="voc_report_baseline_run_id",
         help="동일한 35개 케이스·목록·테스트케이스 해시·평가 기준과 결함 연결이 확인되는 실행만 유효합니다.",
     )
-    st.info(
-        "사용자 제공 최종 보고서 양식은 아직 전달되지 않아 기본 증적 템플릿을 사용합니다. 양식을 받으면 같은 보고서 데이터 모델에 적용할 수 있습니다.",
-        icon=":material/article:",
-    )
+    with st.expander("보고서 템플릿 안내", expanded=False, icon=":material/article:"):
+        st.caption(
+            "사용자 제공 최종 보고서 양식은 아직 전달되지 않아 기본 증적 템플릿을 사용합니다. "
+            "양식을 받으면 같은 보고서 데이터 모델에 적용할 수 있습니다."
+        )
     model = _load_voc_quality_report_model(selected_run_id, baseline_run_id)
     _render_quality_report_preview(model)
     _render_retest_formal_approval_flow(
@@ -14962,12 +16674,12 @@ def render_acceptance():
     with st.spinner("Run·Case·독립 LLM 평가·개선안 타당성 평가·결함·회귀 증적을 대조하고 있습니다..."):
         snapshot = build_voc_acceptance_snapshot(run_id, baseline_run_id)
 
+    quantitative = snapshot["quantitative"]
+    release_scope = quantitative.get("release_scope", {}) if isinstance(quantitative.get("release_scope"), dict) else {}
     _render_acceptance_formal_connection(snapshot)
     _render_retest_formal_approval_flow(
         run_id=str(run_id),
-        release_scope=snapshot.get("quantitative", {}).get("release_scope", {})
-        if isinstance(snapshot.get("quantitative"), dict)
-        else {},
+        release_scope=release_scope,
         location="acceptance",
     )
     if snapshot.get("release_report_decision") == "FORMAL_APPROVED" and snapshot["decision"] == "READY_FOR_UAT":
@@ -14979,34 +16691,57 @@ def render_acceptance():
     else:
         st.error("현재 최종 판정은 HOLD입니다. 미충족 게이트를 보완하기 전 정식 배포할 수 없습니다.")
 
+    _render_release_scope_basis(
+        release_scope,
+        release_decision=str(snapshot.get("release_report_decision") or ""),
+        title="35건 최종 인수 기준",
+        caption="시연 중 가장 먼저 설명할 기준입니다. PASS, 실행 확인, 후속 승인, RETEST 연결을 분리해서 봅니다.",
+    )
+
     scope_summary = snapshot.get("release_scope_summary", {}) if isinstance(snapshot.get("release_scope_summary"), dict) else {}
-    with st.container(horizontal=True):
-        st.metric("인수 판정", _voc_status_label(snapshot["decision"]), border=True)
-        st.metric("정식 승인", _voc_status_label(snapshot.get("release_report_decision")), border=True)
-        st.metric("품질 게이트", f"{snapshot['gate_summary']['pass']}/{snapshot['gate_summary']['total']}", border=True)
-        st.metric("HOLD", snapshot["gate_summary"]["hold"], border=True)
-        st.metric("연결 RETEST", f"{int(scope_summary.get('linked_retest_count') or 0)}건", border=True)
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "최종 판정 요약",
+            "최종 인수·시연에서 바로 확인해야 하는 자동 게이트 결과입니다.",
+            icon="analytics",
+            badges=((_voc_status_label(snapshot["decision"]), "green" if snapshot["decision"] == "READY_FOR_UAT" else "orange"),),
+        )
+        with st.container(horizontal=True):
+            st.metric("인수 판정", _voc_status_label(snapshot["decision"]), border=True)
+            st.metric("정식 승인", _voc_status_label(snapshot.get("release_report_decision")), border=True)
+            st.metric("품질 게이트", f"{snapshot['gate_summary']['pass']}/{snapshot['gate_summary']['total']}", border=True)
+            st.metric("HOLD", snapshot["gate_summary"]["hold"], border=True)
+            st.metric("연결 RETEST", f"{int(scope_summary.get('linked_retest_count') or 0)}건", border=True)
 
-    st.markdown("### 최종 품질 게이트")
-    st.dataframe(
-        pd.DataFrame(snapshot["gates"]).rename(columns={
-            "label": "완료 조건", "status": "상태", "evidence": "증적", "gate_id": "ID",
-        })[["상태", "완료 조건", "증적"]],
-        hide_index=True,
-        width="stretch",
-    )
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "최종 품질 게이트",
+            "자동 판정에 사용된 게이트입니다. HOLD가 있으면 최종 인수 설명 전에 원인을 먼저 해소합니다.",
+            icon="fact_check",
+            badges=((f"PASS {snapshot['gate_summary']['pass']}/{snapshot['gate_summary']['total']}", "green"),),
+        )
+        st.dataframe(
+            pd.DataFrame(snapshot["gates"]).rename(columns={
+                "label": "완료 조건", "status": "상태", "evidence": "증적", "gate_id": "ID",
+            })[["상태", "완료 조건", "증적"]],
+            hide_index=True,
+            width="stretch",
+        )
 
-    st.markdown("### 핵심 업무 흐름 인수 범위")
-    st.dataframe(
-        pd.DataFrame(snapshot["workflow_coverage"]).rename(columns={
-            "workflow": "업무 흐름", "status": "상태", "evidence": "증적",
-        }),
-        hide_index=True,
-        width="stretch",
-    )
+    with st.container(border=True):
+        _render_voc_section_heading(
+            "핵심 업무 흐름 인수 범위",
+            "시연에서 설명할 업무 흐름별 증적 준비 상태입니다.",
+            icon="account_tree",
+        )
+        st.dataframe(
+            pd.DataFrame(snapshot["workflow_coverage"]).rename(columns={
+                "workflow": "업무 흐름", "status": "상태", "evidence": "증적",
+            }),
+            hide_index=True,
+            width="stretch",
+        )
 
-    quantitative = snapshot["quantitative"]
-    release_scope = quantitative.get("release_scope", {}) if isinstance(quantitative.get("release_scope"), dict) else {}
     voc_counts = release_scope.get("voc_counts", {}) if isinstance(release_scope.get("voc_counts"), dict) else {}
     fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
     judge_counts = release_scope.get("executable_judge_counts", {}) if isinstance(release_scope.get("executable_judge_counts"), dict) else {}

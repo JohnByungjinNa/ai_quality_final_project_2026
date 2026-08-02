@@ -1,5 +1,5 @@
 {
-  "version": "독립LLM1.6",
+  "version": "독립LLM1.5",
   "rubric_id": "VOC-INDEPENDENT-JUDGE-100",
   "title": "독립 LLM Judge 100점 평가 기준",
   "judge_provider_policy": "runtime_configurable",

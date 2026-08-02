@@ -112,10 +112,13 @@ def test_voc_history_page_renders_without_exceptions():
     assert "선택" not in history_columns
     assert {"Run ID", "실행 시각", "유형", "상태"}.issubset(history_columns)
     assert "T" not in str(app.dataframe[0].value["실행 시각"].iloc[0])
-    assert json.loads(app.dataframe[0].proto.selection_default)["selection"]["rows"] == [0]
+    assert set(app.dataframe[0].proto.selection_mode) == {
+        Dataframe.SelectionMode.SINGLE_ROW,
+        Dataframe.SelectionMode.SINGLE_CELL,
+    }
     assert any(button.label == "선택 Run 상세" for button in app.button)
     assert any(
-        item.value == "Run 행의 아무 곳이나 선택하면 실행 상세 팝업이 열립니다."
+        item.value == "Run 행을 선택하면 상세 팝업이 열리고, 다음 액션 대상도 함께 바뀝니다."
         for item in app.caption
     )
 
@@ -129,10 +132,86 @@ def test_voc_history_selected_run_detail_opens_in_dialog():
 
     assert not app.exception
     rendered_markdown = "\n".join(item.value for item in app.markdown)
-    assert "실행 상세 · RUN-" in rendered_markdown
-    assert {"유형", "상태", "대상", "독립 LLM 평가", "개선안 타당성"}.issubset(
-        {metric.label for metric in app.metric}
+    rendered_caption = "\n".join(item.value for item in app.caption)
+    assert ":material/history: 실행 상세" in rendered_markdown
+    assert "Run RUN-" in rendered_caption
+    for label in ("Run 상태", "대상 Case", "독립 LLM 평가", "타당성·승인"):
+        assert label in rendered_caption
+    assert any(
+        {"Case ID", "질문", "상태", "다음 액션", "독립 LLM", "타당성", "승인"}.issubset(
+            set(frame.value.columns)
+        )
+        for frame in app.dataframe
     )
+    assert "증적 무결성 정상" in rendered_caption
+
+
+def test_history_validity_review_rows_are_korean_and_safe():
+    rows = voc_quality_view._history_validity_review_rows(
+        [
+            {
+                "reviewer_role": "QA",
+                "reviewer_name_or_id": "??? ???",
+                "decision": "APPROVE",
+                "comment": "??? ???",
+                "from_state": "AI_REVIEWED",
+                "to_state": "QA_REVIEWED",
+                "reviewed_at": "2026-08-02T10:38:37",
+            },
+            {
+                "reviewer_role": "BUSINESS",
+                "reviewer_name_or_id": "TC-16 ??? ??",
+                "decision": "APPROVE",
+                "comment": "TC-16 ??? ?? ?? LLM PASS? ??? AI_PASS? ???? QA ?? ??",
+                "from_state": "QA_REVIEWED",
+                "to_state": "BUSINESS_APPROVED",
+                "reviewed_at": "2026-08-02T10:40:01",
+            },
+        ]
+    )
+
+    assert rows.iloc[0]["단계"] == "QA 검토"
+    assert rows.iloc[0]["결정"] == "승인"
+    assert rows.iloc[0]["검토자"] == "검토자 미확인"
+    assert rows.iloc[0]["상태 변화"] == "AI 평가 완료 → QA 검토 완료"
+    assert rows.iloc[0]["검토 의견"] == "QA 검토 단계에서 승인 처리되었습니다. (AI 평가 완료 → QA 검토 완료)"
+    assert rows.iloc[1]["단계"] == "업무 승인"
+    assert rows.iloc[1]["검토자"] == "검토자 미확인"
+    assert rows.iloc[1]["검토 의견"] == "업무 승인 단계에서 승인 처리되었습니다. (QA 검토 완료 → 업무 승인 완료)"
+    assert "???" not in rows.iloc[1]["검토 의견"]
+
+
+def test_voc_history_row_selection_opens_detail_dialog(monkeypatch):
+    state = {
+        voc_quality_view.HISTORY_TABLE_KEY: {
+            "selection": {"rows": [0], "columns": [], "cells": [[1, "상태"]]}
+        }
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._remember_history_run_selection(
+        voc_quality_view.HISTORY_TABLE_KEY,
+        ("RUN-01", "RUN-02"),
+    )
+
+    assert state[voc_quality_view.HISTORY_SELECTED_RUN_ID_KEY] == "RUN-02"
+    assert state[voc_quality_view.HISTORY_DETAIL_DIALOG_RUN_ID_KEY] == "RUN-02"
+    assert state[voc_quality_view.HISTORY_TABLE_KEY] == {
+        "selection": {"rows": [1], "columns": [], "cells": []}
+    }
+
+
+def test_voc_history_dialog_dismiss_resets_table_selection_nonce(monkeypatch):
+    state = {
+        voc_quality_view.HISTORY_DETAIL_DIALOG_RUN_ID_KEY: "RUN-01",
+        voc_quality_view.HISTORY_TABLE_NONCE_KEY: 4,
+    }
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._dismiss_history_detail_dialog()
+
+    assert voc_quality_view.HISTORY_DETAIL_DIALOG_RUN_ID_KEY not in state
+    assert state[voc_quality_view.HISTORY_TABLE_NONCE_KEY] == 5
 
 
 def test_voc_history_execution_and_case_evidence_are_human_readable():
@@ -171,12 +250,22 @@ def test_voc_dashboard_renders_operational_quality_summary():
 
     assert not app.exception
     assert any(item.label == "기간" for item in app.date_input)
-    dashboard_markup = "\n".join(item.value for item in app.markdown)
+    dashboard_markup = "\n".join(
+        [item.value for item in app.markdown]
+        + [item.value for item in app.caption]
+    )
     assert "Agent 가동" in dashboard_markup
     assert "최신 Run 품질" in dashboard_markup
-    assert "기간 미종결 결함" in dashboard_markup
+    assert "조치 필요" in dashboard_markup
+    assert "조치 필요 현황" in dashboard_markup
+    assert "평가 필요" in dashboard_markup
+    assert "보완·재시험 필요" in dashboard_markup
+    assert "QA 검토 대기" in dashboard_markup
+    assert "업무 승인 대기" in dashboard_markup
+    assert "미종결 결함" in dashboard_markup
     assert "우선 확인 사항" not in dashboard_markup
     assert "실행 기반과 Trace 현황" not in dashboard_markup
+    assert "기간 미종결 결함·후보" not in dashboard_markup
     assert "기간 Run 판정 추이" in dashboard_markup
     assert "기간 수행 이력" in dashboard_markup
     assert "최근 연결 판정" in dashboard_markup
@@ -195,7 +284,9 @@ def test_voc_dashboard_renders_operational_quality_summary():
     assert "vqd-agent-card good" in dashboard_markup
     assert "vqd-agent-card bad" in dashboard_markup
     assert len(app.get("vega_lite_chart")) == 2
-    assert {"수행", "Run", "등록"}.issubset(app.dataframe[0].value.columns)
+    assert {"구분", "대상", "다음 조치", "상태", "수행/등록", "Run"}.issubset(
+        app.dataframe[0].value.columns
+    )
 
 
 def test_agent_management_cards_show_start_time_and_stop_impact_without_summary_metrics():
@@ -832,6 +923,12 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
     monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
+    monkeypatch.setattr(voc_quality_view, "_sync_goal_testcase_recent_artifacts", lambda case: None)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_manual_demo_flow_overview",
+        lambda case: render_order.append(f"flow:{case['case_id']}"),
+    )
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
@@ -863,15 +960,22 @@ def test_goal_monitor_renders_result_below_agent_pipeline(monkeypatch):
         "_render_goal_judge_result",
         lambda case_id: render_order.append(f"judge-result:{case_id}"),
     )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_manual_followup_flow",
+        lambda case_id: render_order.append(f"followup:{case_id}"),
+    )
 
     voc_quality_view.render_goal_monitor()
 
     assert render_order == [
         "selector",
+        "flow:TC-01",
         "pipeline",
         "result:TC-01",
         "judge-select:TC-01",
         "judge-result:TC-01",
+        "followup:TC-01",
     ]
 
 
@@ -887,6 +991,12 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
     monkeypatch.setattr(voc_quality_view.st, "markdown", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(voc_quality_view, "_goal_testcase_selector", lambda: render_order.append("selector"))
+    monkeypatch.setattr(voc_quality_view, "_sync_goal_testcase_recent_artifacts", lambda case: None)
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_manual_demo_flow_overview",
+        lambda case: render_order.append(f"flow:{case['case_id']}"),
+    )
     monkeypatch.setattr(voc_quality_view, "pipeline_trace_events", lambda *_args: {})
     monkeypatch.setattr(
         voc_quality_view,
@@ -913,15 +1023,22 @@ def test_goal_monitor_keeps_pipeline_below_selector_after_completion_focus(monke
         "_render_goal_judge_result",
         lambda case_id: render_order.append(f"judge-result:{case_id}"),
     )
+    monkeypatch.setattr(
+        voc_quality_view,
+        "_render_manual_followup_flow",
+        lambda case_id: render_order.append(f"followup:{case_id}"),
+    )
 
     voc_quality_view.render_goal_monitor()
 
     assert render_order == [
         "selector",
+        "flow:TC-01",
         "pipeline",
         "result:TC-01",
         "judge-select:TC-01",
         "judge-result:TC-01",
+        "followup:TC-01",
     ]
 
 
@@ -2006,6 +2123,30 @@ def test_goal_result_focus_anchor_stays_mounted_and_scrolls_once(monkeypatch):
     assert "goal_testcase_focus_result" not in state
 
 
+def test_goal_judge_result_focus_anchor_stays_mounted_and_scrolls_once(monkeypatch):
+    state = {"goal_judge_result_focus_once": True}
+    rendered = []
+
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+    monkeypatch.setattr(
+        voc_quality_view.st,
+        "html",
+        lambda body, **kwargs: rendered.append((body, kwargs)),
+    )
+
+    voc_quality_view._render_goal_judge_result_focus_anchor_once()
+    voc_quality_view._render_goal_judge_result_focus_anchor_once()
+
+    assert len(rendered) == 2
+    assert "goal-judge-result-scroll-anchor" in rendered[0][0]
+    assert "scrollIntoView" in rendered[0][0]
+    assert rendered[0][1]["unsafe_allow_javascript"] is True
+    assert "goal-judge-result-scroll-anchor" in rendered[1][0]
+    assert "scrollIntoView" not in rendered[1][0]
+    assert rendered[1][1]["unsafe_allow_javascript"] is False
+    assert "goal_judge_result_focus_once" not in state
+
+
 def test_live_testcase_pipeline_renders_recent_snapshot_without_active_job(monkeypatch):
     state = {
         "goal_testcase_selected_case_id": "TC-01",
@@ -2368,18 +2509,18 @@ def test_validity_candidate_rows_remove_empty_select_column_and_localize_statuse
 
     assert "선택" not in rows.columns
     assert list(rows.columns) == [
-        "수행 일시",
-        "Run ID",
         "Case ID",
-        "수행 유형",
         "질문",
-        "독립 LLM 평가",
-        "독립 LLM 점수",
+        "다음 조치",
         "개선안 타당성",
         "타당성 점수",
         "승인 단계",
-        "다음 조치",
+        "독립 LLM 평가",
+        "독립 LLM 점수",
+        "수행 유형",
+        "수행 일시",
         "정식 승인",
+        "Run ID",
     ]
     row = rows.iloc[0]
     assert row["수행 유형"] == "일괄 수행"
@@ -3112,14 +3253,40 @@ def test_batch_combined_selection_rows_merge_groups_and_cases():
     )
 
     assert "선택" not in rows.columns
-    assert list(rows.columns)[:5] == ["체크", "대상", "이름", "구현 상태", "현황"]
+    assert list(rows.columns)[:6] == ["체크", "구분", "대상", "이름", "구현 상태", "선택 현황"]
     assert rows.loc[0, "_kind"] == "group"
-    assert rows.loc[0, "대상"] == "▾ VOC"
+    assert rows.loc[0, "구분"] == "그룹"
+    assert rows.loc[0, "대상"] == "VOC"
     assert bool(rows.loc[0, "체크"]) is False
     assert rows.loc[0, "구현 상태"] == "부분 선택"
     assert rows.loc[1, "_kind"] == "case"
+    assert rows.loc[1, "구분"] == "Case"
     assert bool(rows.loc[1, "체크"]) is True
     assert bool(rows.loc[3, "체크"]) is True
+
+
+def test_batch_group_table_rows_show_visual_selection_state():
+    group_keys = ("voc", "gate")
+    cases_by_group = {
+        "voc": [
+            {"case_id": "TC-01", "name": "첫 번째", "implementation_status": "IMPLEMENTED"},
+            {"case_id": "TC-02", "name": "두 번째", "implementation_status": "DEFINED"},
+        ],
+        "gate": [{"case_id": "QG-01", "name": "게이트", "implementation_status": "DEFINED"}],
+    }
+    groups = {"voc": {"label": "VOC"}, "gate": {"label": "Gate"}}
+
+    rows = voc_quality_view._batch_group_table_rows(
+        group_keys,
+        cases_by_group,
+        groups,
+        ["TC-01", "QG-01"],
+    )
+
+    assert list(rows.columns)[:4] == ["그룹", "상태", "현황", "실행 가능"]
+    assert rows.loc[0, "상태"] == "부분 선택"
+    assert rows.loc[0, "현황"] == "1 / 2건"
+    assert rows.loc[1, "상태"] == "전체 선택"
 
 
 def test_batch_group_toggle_selects_or_clears_entire_group(monkeypatch):
@@ -3267,10 +3434,17 @@ def test_batch_execution_uses_list_selector_instead_of_dropdowns():
     assert "data_editor" in selector_source
     assert "CheckboxColumn" in selector_source
     assert "ButtonColumn" not in selector_source
-    assert '"선택"' not in selector_source
+    assert "column_order=[\"체크\", \"케이스 ID\", \"상태\", \"이름\"]" in selector_source
     assert "실행 대상 리스트" not in selector_source
-    assert "group_column, case_column" in selector_source
-    assert "선택 건수" in selector_source
+    assert "검증 그룹" in selector_source
+    assert "_batch_case_selection_rows" in selector_source
+    assert "_batch_combined_selection_rows" not in selector_source
+    assert "전체선택" in selector_source
+    assert "실행가능" in selector_source
+    assert "선택해제" in selector_source
+    assert "보기" in selector_source
+    assert "Case 선택" in selector_source
+    assert "_render_batch_selection_mini_summary" in selector_source
     assert "독립 LLM 평가 옵션" in selector_source
     assert "_render_batch_judge_selection_badge(judge_config)" in selector_source
 

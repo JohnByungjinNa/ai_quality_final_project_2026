@@ -1,4 +1,5 @@
 import json
+import inspect
 from copy import deepcopy
 
 import pytest
@@ -354,21 +355,24 @@ def test_improvement_validity_page_renders_without_exceptions():
     app.run()
     assert not app.exception
     assert any("검증 대상 선택" in item.value for item in app.markdown)
-    assert {metric.label for metric in app.metric}.issuperset(
-        {"개선안 타당성 평가 필요", "보완·재시험 필요", "QA 검토 가능", "업무 승인 가능", "정식 승인 완료"}
-    )
+    rendered_caption = "\n".join(item.value for item in app.caption)
+    for label in ("개선안 타당성 평가 필요", "보완·재시험 필요", "QA 검토 가능", "업무 승인 가능", "정식 승인 완료"):
+        assert label in rendered_caption
     assert {control.label for control in app.segmented_control}.issuperset({"회차 유형", "평가 상태"})
     assert not any(selectbox.label in {"회차 유형", "평가 상태"} for selectbox in app.selectbox)
-    assert len(app.dataframe) >= 3
+    assert len(app.dataframe) >= 1
     assert app.dataframe[0].value.columns.tolist() == [
-        "수행 일시", "Run ID", "Case ID", "수행 유형", "질문", "독립 LLM 평가",
-        "독립 LLM 점수", "개선안 타당성", "타당성 점수", "승인 단계", "다음 조치", "정식 승인",
+        "Case ID", "질문", "다음 조치", "개선안 타당성", "타당성 점수", "승인 단계",
+        "독립 LLM 평가", "독립 LLM 점수", "수행 유형", "수행 일시", "정식 승인", "Run ID",
     ]
-    assert any("QA 검토/승인 대기 대상" in item.value for item in app.markdown)
-    assert any("선택 기준 · TC-01" in item.value for item in app.markdown)
-    assert any("평가 항목과 점수 지표" in item.value for item in app.markdown)
-    assert any("개선안 타당성 평가 수행 절차" in item.value for item in app.markdown)
-    assert any("QA 검토 가능 조건" in item.value for item in app.markdown)
+    assert any("선택 Case 판단 · TC-01" in item.value for item in app.markdown)
+    assert any(button.label == "선택 대상 상세 보기" for button in app.button)
+    assert not any("개선안 타당성 평가 수행 절차" in item.value for item in app.markdown)
+    rendered = "\n".join(
+        [item.value for item in app.markdown]
+        + [item.value for item in app.caption]
+    )
+    assert "QA 검토/승인 대기 대상" not in rendered
 
     app.toggle[0].set_value(True).run()
     assert not app.exception
@@ -384,12 +388,42 @@ def test_validity_candidate_detail_dialog_renders_execution_evidence():
     import inspect
     source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)
     assert '["대상 요약", "Agent 파이프라인 결과", "독립 LLM 평가", "개선안 타당성 평가", "QA 검토·승인"]' in source
+    assert "_render_validity_auto_evaluation_controls" not in source
+    assert "read_only=True" in source
+    assert "show_actions=False" in source
+    assert "compact=True" in inspect.getsource(voc_quality_view.render_improvement_validity)
     assert any("Agent 파이프라인 요약" in item.value for item in app.markdown)
     assert any("최종 개선안" in item.value for item in app.markdown)
     assert {metric.label for metric in app.metric}.issuperset(
         {"Case", "독립 LLM 평가", "개선안 타당성 평가", "승인 단계", "독립 LLM 평가 점수", "개선안 타당성 점수"}
     )
     assert not any(button.label == "이 대상으로 검증 진행" for button in app.button)
+    assert not any(button.label == "확인 메모 저장" for button in app.button)
+    assert not any(button.label == "선택 대상 개선안 타당성 평가 실행" for button in app.button)
+    assert not any(button.label == "보완 지시 기반 재시험 실행" for button in app.button)
+
+
+def test_validity_candidate_detail_dialog_uses_stateful_table_selection():
+    render_source = inspect.getsource(voc_quality_view.render_improvement_validity)
+    dialog_source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)
+
+    assert "_validity_candidate_table_widget_key()" in render_source
+    assert "_remember_validity_candidate_selection" in render_source
+    assert 'selection_mode=["single-row", "single-cell"]' in render_source
+    assert "VALIDITY_DETAIL_DIALOG_CANDIDATE_KEY" in render_source
+    assert "_open_validity_candidate_dialog(selected)" in render_source
+    assert "_render_validity_candidate_dialog(clicked)" not in render_source
+    assert "on_dismiss=_dismiss_validity_candidate_dialog" in dialog_source
+
+
+def test_validity_workflow_status_keys_are_scoped_between_page_and_dialog():
+    workflow_source = inspect.getsource(voc_quality_view._render_validity_workflow_status)
+    dialog_source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)
+
+    assert 'key_scope: str = "main"' in workflow_source
+    assert 'f"{key_scope}_workflow_{action_model[\'action_code\']}"' in workflow_source
+    assert 'f"{key_scope}_workflow_evaluate"' in workflow_source
+    assert 'key_scope="dialog"' in dialog_source
 
 
 def test_validity_candidate_filter_and_rows_are_list_friendly():
