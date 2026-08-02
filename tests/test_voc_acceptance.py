@@ -205,3 +205,11 @@ def test_acceptance_page_renders_without_exceptions():
     assert not app.exception
     assert any(selectbox.label == "최종 인수 대상 Run" for selectbox in app.selectbox)
     assert app.metric[0].label == "인수 판정"
+    metric_values = {metric.label: metric.value for metric in app.metric}
+    assert metric_values["정식 승인"] == "정식 승인"
+    assert metric_values["품질 게이트"] == "12/12"
+    assert metric_values["HOLD"] == "0"
+    assert metric_values["VOC 개선 PASS"] == "18/18"
+    assert metric_values["장애 검증 실행"] == "8/8"
+    assert metric_values["독립 LLM PASS"] == "18/18"
+    assert metric_values["업무 승인 완료"] == "18/18"

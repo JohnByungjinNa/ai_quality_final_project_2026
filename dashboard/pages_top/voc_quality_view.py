@@ -14803,11 +14803,21 @@ def render_acceptance():
     )
 
     quantitative = snapshot["quantitative"]
+    release_scope = quantitative.get("release_scope", {}) if isinstance(quantitative.get("release_scope"), dict) else {}
+    voc_counts = release_scope.get("voc_counts", {}) if isinstance(release_scope.get("voc_counts"), dict) else {}
+    fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
+    judge_counts = release_scope.get("executable_judge_counts", {}) if isinstance(release_scope.get("executable_judge_counts"), dict) else {}
+    validity_counts = release_scope.get("executable_validity_counts", {}) if isinstance(release_scope.get("executable_validity_counts"), dict) else {}
+    voc_total = int(release_scope.get("voc_count") or 0)
+    fault_total = int(release_scope.get("fault_count") or 0)
+    judge_total = int(release_scope.get("judge_required_count") or voc_total)
+    validity_total = int(release_scope.get("validity_required_count") or voc_total)
+    fault_confirmed = int(fault_counts.get("PASS") or 0) + int(fault_counts.get("REVIEW_REQUIRED") or 0)
     with st.container(horizontal=True):
-        st.metric("Agent 파이프라인 통과", quantitative["case_counts"].get("PASS", 0), border=True)
-        st.metric("독립 LLM 평가", sum(quantitative["judge_counts"].values()), border=True)
-        st.metric("개선안 타당성 평가", sum(quantitative["validity_counts"].values()), border=True)
-        st.metric("비통과율", f"{quantitative['failure_rate_percent']}%", border=True)
+        st.metric("VOC 개선 PASS", f"{int(voc_counts.get('PASS') or 0)}/{voc_total}", border=True)
+        st.metric("장애 검증 실행", f"{fault_confirmed}/{fault_total}", border=True)
+        st.metric("독립 LLM PASS", f"{int(judge_counts.get('PASS') or 0)}/{judge_total}", border=True)
+        st.metric("업무 승인 완료", f"{int(validity_counts.get('BUSINESS_APPROVED') or 0)}/{validity_total}", border=True)
     st.caption(
         "비용은 현재 저장 증적에 공통 필드가 없어 확인 불가로 표시합니다. "
         "응답시간은 수행 이력의 Run·Case 시작/종료 시각으로 확인합니다."
