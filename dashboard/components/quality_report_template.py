@@ -529,12 +529,13 @@ def build_voc_quality_report_html(model):
     donut_style = "background:conic-gradient(" + ",".join(gradient_parts) + ")"
 
     release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
+    has_release_scope = bool(release_scope)
     judge_required_total = int(release_scope.get("judge_required_count") or release_scope.get("voc_count") or total or 0)
     validity_required_total = int(release_scope.get("validity_required_count") or release_scope.get("voc_count") or total or 0)
     fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
     fault_total = int(release_scope.get("fault_count") or 0)
     fault_confirmed = int(fault_counts.get("PASS") or 0) + int(fault_counts.get("REVIEW_REQUIRED") or 0)
-    stage_rows = (
+    stage_rows = [
         (
             "1단계 · VOC 분석 및 개선안",
             len(evaluation.get("voc_examples", [])),
@@ -549,23 +550,30 @@ def build_voc_quality_report_html(model):
         ),
         (
             "3단계 · 독립 LLM 평가",
-            int((release_scope.get("executable_judge_counts") or {}).get("PASS", 0) or 0),
-            judge_required_total,
-            "VOC 개선 Case 기준 PASS",
+            int((release_scope.get("executable_judge_counts") or {}).get("PASS", 0) or 0)
+            if has_release_scope
+            else int(evaluation.get("judge_evaluated", 0) or 0),
+            judge_required_total if has_release_scope else total,
+            "VOC 개선 Case 기준 PASS" if has_release_scope else _voc_count_summary(evaluation.get("judge_counts", {})),
         ),
         (
             "4단계 · 개선안 타당성 평가",
-            int((release_scope.get("executable_validity_counts") or {}).get("BUSINESS_APPROVED", 0) or 0),
-            validity_required_total,
-            "VOC 개선 Case 기준 업무 승인",
+            int((release_scope.get("executable_validity_counts") or {}).get("BUSINESS_APPROVED", 0) or 0)
+            if has_release_scope
+            else int(evaluation.get("validity_evaluated", 0) or 0),
+            validity_required_total if has_release_scope else total,
+            "VOC 개선 Case 기준 업무 승인" if has_release_scope else _voc_count_summary(evaluation.get("validity_counts", {})),
         ),
-        (
-            "5단계 · 장애 검증 실행",
-            fault_confirmed,
-            fault_total,
-            "장애 보호 동작 실행 확인",
-        ),
-    )
+    ]
+    if has_release_scope:
+        stage_rows.append(
+            (
+                "5단계 · 장애 검증 실행",
+                fault_confirmed,
+                fault_total,
+                "장애 보호 동작 실행 확인",
+            )
+        )
     stage_bars = "".join(
         f"<div class='qrt-rate-row qrt-stage-row'><span>{escape(label)}</span>"
         f"<div><i style='width:{(value / max(expected, 1) * 100):.1f}%'></i></div>"
@@ -614,11 +622,16 @@ def build_voc_quality_report_html(model):
     ]
     linked_retest_count = int(release_scope.get("linked_retest_count") or 0)
     if linked_retest_count:
+        linked_labels = [
+            f"{item.get('case_id', '-')} → {item.get('retest_run_id', '-')}"
+            for item in (release_scope.get("linked_retest_evidence") or [])[:2]
+            if isinstance(item, dict)
+        ]
         claim_rows.append(
             (
                 "연결 RETEST",
                 "검증 완료",
-                _voc_display_text(f"{linked_retest_count}건 · 보완 재시험 결과 반영"),
+                _voc_display_text(f"{linked_retest_count}건 · {', '.join(linked_labels) or '보완 재시험 결과 반영'}"),
             )
         )
     claim_rows.append(

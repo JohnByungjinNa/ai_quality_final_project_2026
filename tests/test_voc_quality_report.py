@@ -52,6 +52,16 @@ def test_report_page_renders_without_exceptions():
 
     assert not app.exception
     assert app.radio[0].options == ["최종 품질 보고서", "증적 초안"]
+    assert app.selectbox[0].value == voc_quality_service.latest_voc_full_run_id()
+    visible_text = "\n".join(
+        [str(item.value) for item in app.markdown]
+        + [str(item.value) for item in app.caption]
+    )
+    assert "TC-16 RETEST 반영 흐름" in visible_text
+    assert "RUN-20260802-114121-660669-e482" in visible_text
+    assert "FORMAL_APPROVED" in visible_text
+    assert any(button.label == "최종 시연에서 확인" for button in app.button)
+    assert any(button.label == "RETEST 이력 보기" for button in app.button)
     assert app.segmented_control[0].options == list(voc_quality_service.REPORT_CATEGORIES)
 
 

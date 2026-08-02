@@ -213,3 +213,12 @@ def test_acceptance_page_renders_without_exceptions():
     assert metric_values["장애 검증 실행"] == "8/8"
     assert metric_values["독립 LLM PASS"] == "18/18"
     assert metric_values["업무 승인 완료"] == "18/18"
+    visible_text = "\n".join(
+        [str(item.value) for item in app.markdown]
+        + [str(item.value) for item in app.caption]
+    )
+    assert "TC-16 RETEST 반영 흐름" in visible_text
+    assert "RUN-20260802-114121-660669-e482" in visible_text
+    assert "FORMAL_APPROVED" in visible_text
+    assert any(button.label == "품질 보고서에서 확인" for button in app.button)
+    assert any(button.label == "RETEST 이력 보기" for button in app.button)
