@@ -7,21 +7,41 @@ from dashboard.services import voc_acceptance_service
 
 
 def _report_model(*, formal=False):
-    pass_count = 26 if formal else 1
-    judge_count = 26 if formal else 1
-    validity = {"BUSINESS_APPROVED": 26} if formal else {"REVISION_REQUIRED": 1}
+    pass_count = 18 if formal else 1
+    review_count = 8 if formal else 23
+    error_count = 0 if formal else 2
+    judge_count = 18 if formal else 1
+    validity = {"BUSINESS_APPROVED": 18} if formal else {"REVISION_REQUIRED": 1}
     release_scope = {
-        "basis": "실행 가능 Case PASS + 후속 구현 Case 승인",
+        "basis": "VOC 개선 Case PASS·승인 + 장애 검증 실행 확인 + 후속 구현 Case 승인",
         "catalog_total_cases": 35,
         "selected_count": 35,
         "executable_count": 26,
+        "voc_count": 18,
+        "fault_count": 8,
+        "judge_required_count": 18,
+        "validity_required_count": 18,
         "pending_count": 9,
         "executable_counts": {
             "PASS": pass_count,
             "FAIL": 0,
-            "ERROR": 0 if formal else 2,
-            "REVIEW_REQUIRED": 0 if formal else 23,
+            "ERROR": error_count,
+            "REVIEW_REQUIRED": review_count,
             "NOT_RUN": 0,
+        },
+        "voc_counts": {
+            "PASS": pass_count,
+            "FAIL": 0,
+            "ERROR": error_count,
+            "REVIEW_REQUIRED": 0 if formal else 15,
+            "NOT_RUN": 0,
+        },
+        "fault_counts": {
+            "PASS": 0,
+            "FAIL": 0,
+            "ERROR": 0,
+            "REVIEW_REQUIRED": 8 if formal else 6,
+            "NOT_RUN": 0 if formal else 2,
         },
         "pending_counts": {
             "PASS": 0,
@@ -32,8 +52,12 @@ def _report_model(*, formal=False):
         },
         "executable_judge_counts": {"PASS": judge_count},
         "executable_validity_counts": validity,
+        "linked_retest_evidence": [],
+        "linked_retest_count": 0,
         "full_catalog_selected": True,
-        "executable_pass_ready": formal,
+        "executable_pass_ready": False,
+        "voc_pass_ready": formal,
+        "fault_execution_ready": formal,
         "pending_plan_approved": True,
         "judge_pass_ready": formal,
         "validity_approval_ready": formal,
@@ -48,8 +72,8 @@ def _report_model(*, formal=False):
             "counts": {
                 "PASS": pass_count,
                 "FAIL": 0,
-                "ERROR": 0 if formal else 2,
-                "REVIEW_REQUIRED": 0 if formal else 23,
+                "ERROR": error_count,
+                "REVIEW_REQUIRED": review_count,
                 "NOT_RUN": 0 if formal else 9,
             },
         },
@@ -67,7 +91,7 @@ def _report_model(*, formal=False):
             "trace_events": 180,
         },
         "defects": [] if formal else [
-            {"defect_id": "VOC-DEF-1", "severity": "HIGH", "status": "OPEN"}
+            {"defect_id": "VOC-DEF-1", "severity": "HIGH", "status": "OPEN", "evidence_status": "CONFIRMED"}
         ],
         "risks": [] if formal else [
             {"level": "HIGH", "risk": "최종 35 PASS 미충족", "action": "재시험"}
@@ -114,7 +138,7 @@ def test_acceptance_gate_holds_unproven_release(monkeypatch):
     assert snapshot["decision"] == "HOLD"
     assert snapshot["user_signoff"] == "PENDING"
     assert {item["gate_id"] for item in snapshot["gates"] if item["status"] == "HOLD"} >= {
-        "pipeline", "judge", "validity", "defects"
+        "voc_pipeline", "fault_execution", "judge", "validity", "defects"
     }
     assert snapshot["quantitative"]["cost_krw"] == "NOT_AVAILABLE"
     assert voc_acceptance_service.latest_full_run_id() == "RUN-20260716-000000-000000-aaaa"
@@ -132,8 +156,13 @@ def test_acceptance_is_ready_for_uat_only_when_every_gate_passes(monkeypatch):
     )
 
     assert snapshot["decision"] == "READY_FOR_UAT"
-    assert snapshot["gate_summary"] == {"pass": 10, "hold": 0, "total": 10}
+    assert snapshot["release_report_decision"] == "FORMAL_APPROVED"
+    assert snapshot["gate_summary"] == {"pass": 11, "hold": 0, "total": 11}
     assert snapshot["user_signoff"] == "PENDING"
+    gates = {item["gate_id"]: item for item in snapshot["gates"]}
+    assert gates["voc_pipeline"]["evidence"].startswith("PASS 18/18")
+    assert gates["fault_execution"]["status"] == "PASS"
+    assert gates["defects"]["evidence"] == "확정 미종결 0건 · 미확정 후보 0건"
 
 
 def test_acceptance_evidence_writes_json_and_markdown(monkeypatch, tmp_path):

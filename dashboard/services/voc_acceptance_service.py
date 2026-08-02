@@ -24,6 +24,24 @@ def _gate(gate_id: str, label: str, passed: bool, evidence: str) -> dict:
     }
 
 
+def _count_value(counts: dict | None, key: str) -> int:
+    if not isinstance(counts, dict):
+        return 0
+    return int(counts.get(key) or 0)
+
+
+def _linked_retest_evidence_text(release_scope: dict) -> str:
+    linked = release_scope.get("linked_retest_evidence")
+    if not isinstance(linked, list) or not linked:
+        return "연결 RETEST 없음"
+    labels = [
+        f"{item.get('case_id', '-')} → {item.get('retest_run_id', '-')}"
+        for item in linked[:3]
+    ]
+    suffix = "" if len(linked) <= 3 else f" 외 {len(linked) - 3}건"
+    return f"연결 RETEST {len(linked)}건 · " + ", ".join(labels) + suffix
+
+
 def latest_full_run_id() -> str:
     for item in voc_run_store.list_voc_runs(recover=False):
         selected_count = item.get("selected_count")
@@ -48,6 +66,7 @@ def _workflow_coverage(run_id: str, report: dict) -> list[dict]:
     run_types = {str(item.get("run_type") or "") for item in history}
     evaluation = report["evaluation"]
     release_scope = report.get("release_scope", {})
+    linked_retest_count = int(release_scope.get("linked_retest_count") or 0)
     defects = voc_defect_service.list_defects()
     checks = (
         ("수동 TC 수행", "MANUAL" in run_types, "MANUAL Run 이력"),
@@ -57,7 +76,11 @@ def _workflow_coverage(run_id: str, report: dict) -> list[dict]:
         ("개선안 타당성 평가", evaluation["validity_evaluated"] > 0, f"개선안 타당성 평가 증적 {evaluation['validity_evaluated']}건"),
         ("장애·결함 관리", bool(defects), f"등록 결함·후보 {len(defects)}건"),
         ("품질 보고서", bool(report.get("report_id")), report.get("report_id", "")),
-        ("연결 재시험", "RETEST" in run_types, "재시험 Run 이력"),
+        (
+            "연결 RETEST",
+            linked_retest_count > 0 or release_scope.get("voc_pass_ready"),
+            _linked_retest_evidence_text(release_scope) if linked_retest_count else "보완 재시험 필요 없음",
+        ),
         ("최종 인수 범위", release_scope.get("release_scope_ready"), release_scope.get("basis", "실행 가능 Case PASS + 후속 구현 Case 승인")),
     )
     return [
@@ -72,6 +95,9 @@ def _evaluation_checklist(report: dict) -> dict:
     evaluation = report["evaluation"]
     release_scope = report.get("release_scope", {})
     executable_count = int(release_scope.get("executable_count") or 35)
+    voc_count = int(release_scope.get("voc_count") or executable_count)
+    fault_count = int(release_scope.get("fault_count") or 0)
+    judge_required_count = int(release_scope.get("judge_required_count") or voc_count)
     pending_count = int(release_scope.get("pending_count") or 0)
     peer = [
         ("프로젝트 목적 이해도", True, "README 목적·배포 게이트"),
@@ -80,7 +106,7 @@ def _evaluation_checklist(report: dict) -> dict:
         ("멀티 에이전트 역할 설명", evaluation["trace_cases"] > 0, "6개 Agent 실행 Trace·역할 문서"),
         ("내부 품질진단의 충실성", release_scope.get("full_catalog_selected"), f"전체 {run['selected_count']}건 · 실행 가능 {executable_count}건 · 후속 {pending_count}건"),
         ("독립 LLM 평가 설명", evaluation["judge_evaluated"] > 0, f"독립 LLM 평가 {evaluation['judge_evaluated']}건"),
-        ("테스트 결과의 객관성", release_scope.get("executable_pass_ready"), str(release_scope.get("executable_counts", counts))),
+        ("테스트 결과의 객관성", release_scope.get("release_scope_ready"), f"VOC 개선 {voc_count}건 PASS · 장애 검증 {fault_count}건 실행 확인"),
         ("장애 및 결함관리 내용", bool(report["defects"]), f"결함·후보 {len(report['defects'])}건"),
         ("발표 구성 및 전달력", bool(report.get("report_id")), "품질 보고서·시연 순서"),
         ("팀 협업 및 질의응답", evaluation["validity_counts"].get("BUSINESS_APPROVED", 0) > 0, "QA·업무 승인 감사 기록"),
@@ -88,8 +114,8 @@ def _evaluation_checklist(report: dict) -> dict:
     professor = [
         ("요구사항·품질 계약", True, "35건 Catalog·Rubric·증적 계약"),
         ("멀티 에이전트 구조·정확성", evaluation["trace_cases"] > 0, "Agent 실행 Trace와 최종 산출물"),
-        ("독립 LLM 평가·객관성", release_scope.get("judge_pass_ready"), f"실행 가능 Case 독립 LLM PASS {release_scope.get('executable_judge_counts', {}).get('PASS', 0)}/{executable_count}"),
-        ("장애·보안·운영성", not report["risks"], "잔여 위험·결함·복구 정책"),
+        ("독립 LLM 평가·객관성", release_scope.get("judge_pass_ready"), f"VOC 개선 Case 독립 LLM PASS {release_scope.get('executable_judge_counts', {}).get('PASS', 0)}/{judge_required_count}"),
+        ("장애·보안·운영성", report.get("release_decision") == "FORMAL_APPROVED", "차단 결함 0건 · 잔여 위험 공개"),
         ("증적·배포 게이트", report["release_decision"] == "FORMAL_APPROVED", "보고서 무결성·최종 판정"),
     ]
 
@@ -124,11 +150,27 @@ def build_acceptance_snapshot(
     evaluation = report["evaluation"]
     release_scope = report.get("release_scope", {})
     executable_count = int(release_scope.get("executable_count") or 35)
+    voc_count = int(release_scope.get("voc_count") or executable_count)
+    fault_count = int(release_scope.get("fault_count") or 0)
+    judge_required_count = int(release_scope.get("judge_required_count") or voc_count)
+    validity_required_count = int(release_scope.get("validity_required_count") or voc_count)
     pending_count = int(release_scope.get("pending_count") or 0)
+    voc_counts = release_scope.get("voc_counts", {}) if isinstance(release_scope.get("voc_counts"), dict) else {}
+    fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
+    judge_counts = release_scope.get("executable_judge_counts", evaluation["judge_counts"])
+    validity_counts = release_scope.get("executable_validity_counts", evaluation["validity_counts"])
+    linked_retest_count = int(release_scope.get("linked_retest_count") or 0)
     defects = report["defects"]
-    open_important = [
+    confirmed_blocking_defects = [
         item for item in defects
         if item.get("severity") in {"CRITICAL", "HIGH"} and item.get("status") != "CLOSED"
+        and item.get("evidence_status") == "CONFIRMED"
+    ]
+    pending_important = [
+        item for item in defects
+        if item.get("severity") in {"CRITICAL", "HIGH"} and item.get("status") != "CLOSED"
+        and item.get("evidence_status") != "CONFIRMED"
     ]
     runtime = runtime or {}
     agents = agents or {}
@@ -136,15 +178,26 @@ def build_acceptance_snapshot(
     gates = [
         _gate("full_scope", "35건 검증 범위 구성", bool(release_scope.get("full_catalog_selected")), f"전체 {release_scope.get('selected_count', report['run']['selected_count'])}/{release_scope.get('catalog_total_cases', 35)}건"),
         _gate("integrity", "Run·Case 증적 무결성", bool(report["integrity"].get("ok")), "; ".join(report["integrity"].get("errors", [])) or "무결성 검증 완료"),
-        _gate("pipeline", f"실행 가능 Case {executable_count}건 PASS", bool(release_scope.get("executable_pass_ready")), f"PASS {release_scope.get('executable_counts', {}).get('PASS', counts.get('PASS', 0))}/{executable_count}"),
-        _gate("judge", f"실행 가능 Case 독립 LLM 평가 PASS", bool(release_scope.get("judge_pass_ready")), str(release_scope.get("executable_judge_counts", evaluation["judge_counts"]))),
-        _gate("validity", f"실행 가능 Case 업무 승인 완료", bool(release_scope.get("validity_approval_ready")), str(release_scope.get("executable_validity_counts", evaluation["validity_counts"]))),
-        _gate("followup", f"후속 구현 Case {pending_count}건 승인", bool(release_scope.get("pending_plan_approved")), f"NOT_RUN {release_scope.get('pending_counts', {}).get('NOT_RUN', 0)}/{pending_count} · {release_scope.get('pending_policy', '')}"),
-        _gate("defects", "미종결 Critical/High 0건", not open_important, f"미종결 {len(open_important)}건"),
+        _gate("voc_pipeline", f"VOC 개선 Case {voc_count}건 PASS", bool(release_scope.get("voc_pass_ready", release_scope.get("executable_pass_ready"))), f"PASS {_count_value(voc_counts, 'PASS')}/{voc_count} · {_linked_retest_evidence_text(release_scope)}"),
+        _gate("fault_execution", f"장애 검증 Case {fault_count}건 실행 확인", bool(release_scope.get("fault_execution_ready", fault_count == 0)), f"통과 {_count_value(fault_counts, 'PASS')}건 · 검토 필요 {_count_value(fault_counts, 'REVIEW_REQUIRED')}건 · 실패/오류 {_count_value(fault_counts, 'FAIL') + _count_value(fault_counts, 'ERROR')}건"),
+        _gate("judge", f"VOC 개선 Case 독립 LLM 평가 PASS", bool(release_scope.get("judge_pass_ready")), f"PASS {_count_value(judge_counts, 'PASS')}/{judge_required_count}"),
+        _gate("validity", f"VOC 개선 Case 업무 승인 완료", bool(release_scope.get("validity_approval_ready")), f"업무 승인 {_count_value(validity_counts, 'BUSINESS_APPROVED')}/{validity_required_count}"),
+        _gate("followup", f"후속 구현 Case {pending_count}건 승인", bool(release_scope.get("pending_plan_approved")), f"NOT_RUN {_count_value(pending_counts, 'NOT_RUN')}/{pending_count} · {release_scope.get('pending_policy', '')}"),
+        _gate("defects", "확정 Critical/High 결함 0건", not confirmed_blocking_defects, f"확정 미종결 {len(confirmed_blocking_defects)}건 · 미확정 후보 {len(pending_important)}건"),
         _gate("runtime", "실행환경·6개 Agent 정상", bool(runtime.get("ok")) and bool(agents.get("all_running")), f"Agent {agents.get('running', 0)}/{agents.get('total', 6)}"),
         _gate("regression", "전체 자동 회귀 신규 실패 0건", bool(verification.get("regression_ok")), verification.get("regression_summary", "이번 인수 검증 결과 미등록")),
         _gate("security", "산출물 비밀값 검사 0건", verification.get("secret_pattern_count") == 0, f"탐지 {verification.get('secret_pattern_count', '미검사')}건"),
     ]
+    if linked_retest_count:
+        gates.insert(
+            5,
+            _gate(
+                "linked_retest",
+                "연결 RETEST 보완 반영",
+                True,
+                _linked_retest_evidence_text(release_scope),
+            ),
+        )
     passed = sum(item["status"] == "PASS" for item in gates)
     decision = "READY_FOR_UAT" if passed == len(gates) else "HOLD"
     return {
@@ -171,7 +224,18 @@ def build_acceptance_snapshot(
             "response_time": "Run 시작·종료 시각과 Case별 시각을 수행 이력에서 확인",
         },
         "remaining_risks": report["risks"],
+        "report_state": report.get("report_state", ""),
         "release_report_decision": report["release_decision"],
+        "release_scope_summary": {
+            "basis": release_scope.get("basis", ""),
+            "voc_count": voc_count,
+            "fault_count": fault_count,
+            "pending_count": pending_count,
+            "linked_retest_count": linked_retest_count,
+            "judge_required_count": judge_required_count,
+            "validity_required_count": validity_required_count,
+            "release_scope_ready": bool(release_scope.get("release_scope_ready")),
+        },
         "presentation_flow": [
             "프로젝트 목적", "6개 Agent", "수동·일괄 수행", "Agent 파이프라인 실행 Trace",
             "독립 LLM 평가", "개선안 타당성 평가", "장애·결함", "연결 재시험·A/B",

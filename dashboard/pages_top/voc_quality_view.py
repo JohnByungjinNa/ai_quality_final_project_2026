@@ -8324,6 +8324,77 @@ def _render_approved_demo_flow_panel(
     return selected
 
 
+def _render_acceptance_formal_connection(snapshot: dict) -> None:
+    scope = snapshot.get("release_scope_summary", {}) if isinstance(snapshot.get("release_scope_summary"), dict) else {}
+    release_decision = str(snapshot.get("release_report_decision") or "")
+    report_state = str(snapshot.get("report_state") or "")
+    readiness = str(snapshot.get("decision") or "")
+    is_formal = release_decision == "FORMAL_APPROVED"
+    ready_for_uat = readiness == "READY_FOR_UAT"
+    badge_tone = "green" if is_formal else "orange"
+    readiness_tone = "green" if ready_for_uat else "orange"
+
+    with st.container(border=True):
+        title_col, status_col = st.columns([2.4, 1.4], gap="small", vertical_alignment="center")
+        with title_col:
+            st.markdown("#### 정식 승인 결과 연결")
+            st.caption(
+                "품질 보고서의 최종 판정이 최종 인수·시연 게이트에 연결된 상태입니다. "
+                "Run ID보다 인수 범위와 보완 RETEST 반영 여부를 먼저 확인합니다."
+            )
+        with status_col:
+            st.markdown(
+                f":{badge_tone}-badge[{_voc_status_label(release_decision)}] "
+                f":blue-badge[{_voc_status_label(report_state)}] "
+                f":{readiness_tone}-badge[{_voc_status_label(readiness)}]",
+                text_alignment="right",
+            )
+            st.caption(f"Run {snapshot.get('run_id', '-')}", text_alignment="right")
+
+        cards = [
+            {
+                "icon": "task_alt",
+                "label": "VOC 개선 Case",
+                "value": f"{int(scope.get('voc_count') or 0)}건",
+                "detail": "PASS·독립 LLM·업무 승인 완료",
+                "tone": "green" if scope.get("release_scope_ready") else "orange",
+            },
+            {
+                "icon": "shield",
+                "label": "장애 검증 Case",
+                "value": f"{int(scope.get('fault_count') or 0)}건",
+                "detail": "장애 보호 동작 실행 확인",
+                "tone": "blue",
+            },
+            {
+                "icon": "pending_actions",
+                "label": "후속 구현 Case",
+                "value": f"{int(scope.get('pending_count') or 0)}건",
+                "detail": "승인된 미실행 계획으로 관리",
+                "tone": "blue",
+            },
+            {
+                "icon": "sync_alt",
+                "label": "연결 RETEST",
+                "value": f"{int(scope.get('linked_retest_count') or 0)}건",
+                "detail": "부족 Case 보완 결과를 원본 회차에 반영",
+                "tone": "green" if int(scope.get("linked_retest_count") or 0) else "gray",
+            },
+        ]
+        for column, card in zip(st.columns(4, gap="small"), cards, strict=False):
+            badge = {
+                "green": ":green-badge[충족]",
+                "blue": ":blue-badge[확인]",
+                "orange": ":orange-badge[확인 필요]",
+                "gray": ":gray-badge[없음]",
+            }.get(card["tone"], ":gray-badge[확인]")
+            with column.container(border=True, height=122):
+                st.caption(f":material/{card['icon']}: {card['label']}")
+                st.markdown(f"### {card['value']}")
+                st.caption(card["detail"])
+                st.markdown(badge)
+
+
 def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> pd.DataFrame:
     rows = []
     for candidate in candidates:
@@ -14095,26 +14166,46 @@ def _report_stage_rows(model: dict) -> list[tuple[str, str, str, str]]:
     evaluation = model.get("evaluation", {}) if isinstance(model.get("evaluation"), dict) else {}
     release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
     total = int(run.get("selected_count") or 0)
-    executable_total = int(release_scope.get("executable_count") or total)
+    judge_required_total = int(release_scope.get("judge_required_count") or release_scope.get("voc_count") or total)
+    validity_required_total = int(release_scope.get("validity_required_count") or release_scope.get("voc_count") or total)
+    fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
+    fault_total = int(release_scope.get("fault_count") or 0)
+    fault_confirmed = int(fault_counts.get("PASS") or 0) + int(fault_counts.get("REVIEW_REQUIRED") or 0)
     return [
         ("VOC 분석 및 개선안", str(len(evaluation.get("voc_examples", []) or [])), str(total), "대표 산출물·개선안 연결"),
         ("6개 에이전트 내부 진단", str(int(evaluation.get("trace_cases", 0) or 0)), str(total), f"추적 이벤트 {int(evaluation.get('trace_events', 0) or 0)}건"),
-        ("독립 LLM 평가", str(int((release_scope.get("executable_judge_counts") or {}).get("PASS", 0) or 0)), str(executable_total), "실행 가능 Case 기준 PASS 집계"),
-        ("개선안 타당성 평가", str(int((release_scope.get("executable_validity_counts") or {}).get("BUSINESS_APPROVED", 0) or 0)), str(executable_total), "실행 가능 Case 기준 업무 승인 집계"),
+        ("독립 LLM 평가", str(int((release_scope.get("executable_judge_counts") or {}).get("PASS", 0) or 0)), str(judge_required_total), "VOC 개선 Case 기준 PASS 집계"),
+        ("개선안 타당성 평가", str(int((release_scope.get("executable_validity_counts") or {}).get("BUSINESS_APPROVED", 0) or 0)), str(validity_required_total), "VOC 개선 Case 기준 업무 승인 집계"),
+        ("장애 검증 실행", str(fault_confirmed), str(fault_total), "장애 보호 동작 실행 확인"),
     ]
 
 
 def _report_claim_rows(model: dict) -> list[tuple[str, str, str]]:
     release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
-    executable_counts = release_scope.get("executable_counts", {}) if isinstance(release_scope.get("executable_counts"), dict) else {}
+    voc_counts = release_scope.get("voc_counts", {}) if isinstance(release_scope.get("voc_counts"), dict) else {}
+    fault_counts = release_scope.get("fault_counts", {}) if isinstance(release_scope.get("fault_counts"), dict) else {}
     pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
-    executable_total = int(release_scope.get("executable_count") or 0)
+    voc_total = int(release_scope.get("voc_count") or 0)
+    fault_total = int(release_scope.get("fault_count") or 0)
+    fault_confirmed = int(fault_counts.get("PASS") or 0) + int(fault_counts.get("REVIEW_REQUIRED") or 0)
     pending_total = int(release_scope.get("pending_count") or 0)
-    return [
-        ("실행 가능 Case", "충족" if release_scope.get("executable_pass_ready") else "확인 필요", f"PASS {int(executable_counts.get('PASS') or 0)}/{executable_total}건"),
+    rows = [
+        ("VOC 개선 Case", "충족" if release_scope.get("voc_pass_ready", release_scope.get("executable_pass_ready")) else "확인 필요", f"PASS {int(voc_counts.get('PASS') or 0)}/{voc_total}건"),
+        ("장애 검증 Case", "충족" if release_scope.get("fault_execution_ready", fault_total == 0) else "확인 필요", f"실행 확인 {fault_confirmed}/{fault_total}건"),
         ("후속 구현 Case", "승인" if release_scope.get("pending_plan_approved") else "확인 필요", f"NOT_RUN {int(pending_counts.get('NOT_RUN') or 0)}/{pending_total}건 · 후속 구현 계획 기준"),
-        ("최종 인수 범위", "검증 완료" if release_scope.get("release_scope_ready") else "미검증", str(release_scope.get("basis") or "실행 가능 Case PASS + 후속 구현 Case 승인")),
     ]
+    linked_retest_count = int(release_scope.get("linked_retest_count") or 0)
+    if linked_retest_count:
+        linked_labels = [
+            f"{item.get('case_id', '-')} → {item.get('retest_run_id', '-')}"
+            for item in (release_scope.get("linked_retest_evidence") or [])[:2]
+            if isinstance(item, dict)
+        ]
+        rows.append(("연결 RETEST", "반영", f"{linked_retest_count}건 · {', '.join(linked_labels) or '보완 재시험 반영'}"))
+    rows.append(
+        ("최종 인수 범위", "검증 완료" if release_scope.get("release_scope_ready") else "미검증", str(release_scope.get("basis") or "VOC 개선 Case PASS·승인 + 장애 검증 실행 확인 + 후속 구현 Case 승인"))
+    )
+    return rows
 
 
 def _report_table_rows(items: list[dict], columns: list[tuple[str, str]], *, empty_text: str) -> list[list[str]]:
@@ -14675,16 +14766,23 @@ def render_acceptance():
     with st.spinner("Run·Case·독립 LLM 평가·개선안 타당성 평가·결함·회귀 증적을 대조하고 있습니다..."):
         snapshot = build_voc_acceptance_snapshot(run_id, baseline_run_id)
 
-    if snapshot["decision"] == "READY_FOR_UAT":
+    _render_acceptance_formal_connection(snapshot)
+    if snapshot.get("release_report_decision") == "FORMAL_APPROVED" and snapshot["decision"] == "READY_FOR_UAT":
+        st.success("정식 승인 완료 결과가 최종 인수·시연 게이트까지 연결되었습니다. 사용자 UAT와 최종 서명이 남았습니다.")
+    elif snapshot.get("release_report_decision") == "FORMAL_APPROVED":
+        st.warning("품질 보고서는 정식 승인 완료 상태입니다. 다만 최종 인수 보조 점검 중 HOLD 항목이 남아 있습니다.")
+    elif snapshot["decision"] == "READY_FOR_UAT":
         st.success("모든 자동 품질 게이트를 통과했습니다. 사용자 UAT와 최종 서명이 남았습니다.")
     else:
         st.error("현재 최종 판정은 HOLD입니다. 미충족 게이트를 보완하기 전 정식 배포할 수 없습니다.")
 
+    scope_summary = snapshot.get("release_scope_summary", {}) if isinstance(snapshot.get("release_scope_summary"), dict) else {}
     with st.container(horizontal=True):
-        st.metric("인수 판정", snapshot["decision"], border=True)
+        st.metric("인수 판정", _voc_status_label(snapshot["decision"]), border=True)
+        st.metric("정식 승인", _voc_status_label(snapshot.get("release_report_decision")), border=True)
         st.metric("품질 게이트", f"{snapshot['gate_summary']['pass']}/{snapshot['gate_summary']['total']}", border=True)
         st.metric("HOLD", snapshot["gate_summary"]["hold"], border=True)
-        st.metric("사용자 서명", snapshot["user_signoff"], border=True)
+        st.metric("연결 RETEST", f"{int(scope_summary.get('linked_retest_count') or 0)}건", border=True)
 
     st.markdown("### 최종 품질 게이트")
     st.dataframe(
