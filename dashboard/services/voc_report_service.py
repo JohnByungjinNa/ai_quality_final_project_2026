@@ -79,6 +79,17 @@ def _scope_from_manifest(catalog: dict, manifest: dict, summary: dict) -> dict:
         ]
     if not scope or not scope.get("selected_case_ids"):
         scope = build_verification_scope(catalog.get("cases", []), selected)
+    else:
+        derived_scope = build_verification_scope(catalog.get("cases", []), selected)
+        for key in (
+            "voc_case_ids",
+            "fault_case_ids",
+            "judge_required_case_ids",
+            "validity_required_case_ids",
+            "voc_count",
+            "fault_count",
+        ):
+            scope.setdefault(key, derived_scope.get(key))
     return scope
 
 
@@ -97,14 +108,24 @@ def _evaluation_counts_for_case_ids(evaluation: dict, case_ids: set[str], field:
 def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluation: dict) -> dict:
     scope = _scope_from_manifest(catalog, manifest, summary)
     executable_ids = {str(case_id) for case_id in scope.get("executable_case_ids", [])}
+    voc_ids = {str(case_id) for case_id in scope.get("voc_case_ids", [])}
+    fault_ids = {str(case_id) for case_id in scope.get("fault_case_ids", [])}
+    judge_required_ids = {str(case_id) for case_id in scope.get("judge_required_case_ids", [])} or voc_ids
+    validity_required_ids = {str(case_id) for case_id in scope.get("validity_required_case_ids", [])} or voc_ids
     pending_ids = {str(case_id) for case_id in scope.get("pending_case_ids", [])}
     executable_counts = _counts_for_case_ids(summary, executable_ids)
+    voc_counts = _counts_for_case_ids(summary, voc_ids)
+    fault_counts = _counts_for_case_ids(summary, fault_ids)
     pending_counts = _counts_for_case_ids(summary, pending_ids)
-    executable_judge_counts = _evaluation_counts_for_case_ids(evaluation, executable_ids, "judge_decision")
-    executable_validity_counts = _evaluation_counts_for_case_ids(evaluation, executable_ids, "validity_state")
+    executable_judge_counts = _evaluation_counts_for_case_ids(evaluation, judge_required_ids, "judge_decision")
+    executable_validity_counts = _evaluation_counts_for_case_ids(evaluation, validity_required_ids, "validity_state")
     catalog_total = int(scope.get("catalog_total_cases") or len(catalog.get("cases", [])) or 0)
     selected_count = int(scope.get("selected_count") or len(scope.get("selected_case_ids", [])) or 0)
     executable_total = int(scope.get("executable_count") or len(executable_ids))
+    voc_total = int(scope.get("voc_count") or len(voc_ids))
+    fault_total = int(scope.get("fault_count") or len(fault_ids))
+    judge_required_total = len(judge_required_ids)
+    validity_required_total = len(validity_required_ids)
     pending_total = int(scope.get("pending_count") or len(pending_ids))
 
     full_catalog_selected = (
@@ -113,35 +134,55 @@ def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluatio
         and executable_total + pending_total == selected_count
     )
     executable_pass_ready = executable_total > 0 and executable_counts.get("PASS", 0) == executable_total
+    voc_pass_ready = voc_total > 0 and voc_counts.get("PASS", 0) == voc_total
+    fault_execution_ready = fault_total == 0 or (
+        fault_counts.get("PASS", 0) + fault_counts.get("REVIEW_REQUIRED", 0) == fault_total
+        and fault_counts.get("ERROR", 0) == 0
+        and fault_counts.get("FAIL", 0) == 0
+        and fault_counts.get("NOT_RUN", 0) == 0
+    )
     pending_plan_approved = pending_counts.get("NOT_RUN", 0) == pending_total
-    judge_pass_ready = executable_total > 0 and executable_judge_counts.get("PASS", 0) == executable_total
+    judge_pass_ready = judge_required_total > 0 and executable_judge_counts.get("PASS", 0) == judge_required_total
     validity_approval_ready = (
-        executable_total > 0
-        and executable_validity_counts.get("BUSINESS_APPROVED", 0) == executable_total
+        validity_required_total > 0
+        and executable_validity_counts.get("BUSINESS_APPROVED", 0) == validity_required_total
     )
     release_scope_ready = all(
         (
             full_catalog_selected,
-            executable_pass_ready,
+            voc_pass_ready,
+            fault_execution_ready,
             pending_plan_approved,
             judge_pass_ready,
             validity_approval_ready,
         )
     )
     return {
-        "basis": "실행 가능 Case PASS + 후속 구현 Case 승인",
+        "basis": "VOC 개선 Case PASS·승인 + 장애 검증 실행 확인 + 후속 구현 Case 승인",
         "catalog_total_cases": catalog_total,
         "selected_count": selected_count,
         "executable_case_ids": sorted(executable_ids),
+        "voc_case_ids": sorted(voc_ids),
+        "fault_case_ids": sorted(fault_ids),
+        "judge_required_case_ids": sorted(judge_required_ids),
+        "validity_required_case_ids": sorted(validity_required_ids),
         "pending_case_ids": sorted(pending_ids),
         "executable_count": executable_total,
+        "voc_count": voc_total,
+        "fault_count": fault_total,
+        "judge_required_count": judge_required_total,
+        "validity_required_count": validity_required_total,
         "pending_count": pending_total,
         "executable_counts": executable_counts,
+        "voc_counts": voc_counts,
+        "fault_counts": fault_counts,
         "pending_counts": pending_counts,
         "executable_judge_counts": executable_judge_counts,
         "executable_validity_counts": executable_validity_counts,
         "full_catalog_selected": full_catalog_selected,
         "executable_pass_ready": executable_pass_ready,
+        "voc_pass_ready": voc_pass_ready,
+        "fault_execution_ready": fault_execution_ready,
         "pending_plan_approved": pending_plan_approved,
         "judge_pass_ready": judge_pass_ready,
         "validity_approval_ready": validity_approval_ready,
@@ -306,20 +347,26 @@ def _risk_rows(
     if not integrity.get("ok"):
         risks.append({"level": "HIGH", "risk": "Run 증적 무결성 오류", "action": "누락·불일치 증적 복구"})
     executable_counts = scope.get("executable_counts") if isinstance(scope.get("executable_counts"), dict) else counts
+    voc_counts = scope.get("voc_counts") if isinstance(scope.get("voc_counts"), dict) else executable_counts
+    fault_counts = scope.get("fault_counts") if isinstance(scope.get("fault_counts"), dict) else {}
     pending_counts = scope.get("pending_counts") if isinstance(scope.get("pending_counts"), dict) else {}
-    if executable_counts.get("ERROR"):
-        risks.append({"level": "HIGH", "risk": f"실행 가능 Case 오류 {executable_counts['ERROR']}건", "action": "오류 원인 조치 후 연결 재시험"})
-    if executable_counts.get("FAIL"):
-        risks.append({"level": "HIGH", "risk": f"실행 가능 Case 실패 {executable_counts['FAIL']}건", "action": "결함 등록과 재시험"})
-    if executable_counts.get("REVIEW_REQUIRED"):
-        risks.append({"level": "MEDIUM", "risk": f"실행 가능 Case 검토 필요 {executable_counts['REVIEW_REQUIRED']}건", "action": "독립 LLM 평가·QA 검토 수행"})
+    if voc_counts.get("ERROR"):
+        risks.append({"level": "HIGH", "risk": f"VOC 개선 Case 오류 {voc_counts['ERROR']}건", "action": "VOC 근거·기대값 보완 후 재시험"})
+    if voc_counts.get("FAIL"):
+        risks.append({"level": "HIGH", "risk": f"VOC 개선 Case 실패 {voc_counts['FAIL']}건", "action": "결함 등록과 재시험"})
+    if voc_counts.get("REVIEW_REQUIRED"):
+        risks.append({"level": "MEDIUM", "risk": f"VOC 개선 Case 검토 필요 {voc_counts['REVIEW_REQUIRED']}건", "action": "독립 LLM 평가·타당성 평가·QA 검토 수행"})
+    if fault_counts.get("ERROR") or fault_counts.get("FAIL") or fault_counts.get("NOT_RUN"):
+        risks.append({"level": "HIGH", "risk": "장애 검증 Case 실행 미충족", "action": "Fault 실행 로그와 장애 검증 결과 확인"})
+    elif fault_counts.get("REVIEW_REQUIRED"):
+        risks.append({"level": "MEDIUM", "risk": f"장애 검증 Case 확인 대기 {fault_counts['REVIEW_REQUIRED']}건", "action": "장애 주입 결과가 기대한 보호 동작인지 검토"})
     if pending_counts.get("NOT_RUN") and not scope.get("pending_plan_approved"):
         risks.append({"level": "MEDIUM", "risk": f"후속 구현 Case 승인 확인 필요 {pending_counts['NOT_RUN']}건", "action": "후속 구현 계획과 제외 사유 승인"})
     pending = [item for item in defects if item.get("evidence_status") == "PENDING"]
     if pending:
         risks.append({"level": "MEDIUM", "risk": f"미확정 결함 후보 {len(pending)}건", "action": "원본 Run·실행 Trace 확보 전 PENDING 유지"})
     if not scope.get("release_scope_ready"):
-        risks.append({"level": "HIGH", "risk": "최종 인수 범위 미충족", "action": "실행 가능 Case PASS·독립 LLM PASS·업무 승인과 후속 구현 승인 상태를 맞추세요."})
+        risks.append({"level": "HIGH", "risk": "최종 인수 범위 미충족", "action": "VOC 개선 Case PASS·독립 LLM PASS·업무 승인, 장애 검증 실행 확인, 후속 구현 승인 상태를 맞추세요."})
     return risks
 
 

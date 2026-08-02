@@ -574,6 +574,16 @@ def verify_run_integrity(run_id: str) -> dict:
         for case_id in verification_scope.get("pending_case_ids", [])
         if case_id
     }
+    judge_required_case_ids = {
+        str(case_id)
+        for case_id in verification_scope.get("judge_required_case_ids", [])
+        if case_id
+    }
+    validity_required_case_ids = {
+        str(case_id)
+        for case_id in verification_scope.get("validity_required_case_ids", [])
+        if case_id
+    }
     results = summary.get("case_results", [])
     result_ids = [item.get("case_id") for item in results]
     if len(result_ids) != len(set(result_ids)):
@@ -595,14 +605,34 @@ def verify_run_integrity(run_id: str) -> dict:
         case_id = item.get("case_id")
         if not case_id:
             continue
+        case_id_text = str(case_id)
         case_dir = run_dir / "cases" / str(case_id)
+        pipeline_payload = {}
         for filename in ("pipeline_result.json", "trace.json", "rule_result.json"):
-            if not (case_dir / filename).exists():
+            artifact_path = case_dir / filename
+            if not artifact_path.exists():
                 errors.append(f"Case 증적 누락: {case_id}/{filename}")
-        scope_pending = str(case_id) in pending_case_ids
-        if manifest.get("judge_enabled") and not scope_pending and not (case_dir / "judge_result.json").exists():
+            elif filename == "pipeline_result.json":
+                try:
+                    pipeline_payload = _read_json(artifact_path)
+                except Exception:
+                    pipeline_payload = {}
+        scope_pending = case_id_text in pending_case_ids
+        case_mode = str(pipeline_payload.get("mode") or "")
+        status_passed = status == "PASS"
+        judge_required = status_passed and (
+            case_id_text in judge_required_case_ids
+            if judge_required_case_ids
+            else not scope_pending and case_mode != "fault" and status_passed
+        )
+        validity_required = status_passed and (
+            case_id_text in validity_required_case_ids
+            if validity_required_case_ids
+            else not scope_pending and case_mode != "fault" and status_passed
+        )
+        if manifest.get("judge_enabled") and judge_required and not (case_dir / "judge_result.json").exists():
             errors.append(f"독립 LLM 평가 증적 누락: {case_id}/judge_result.json")
-        if manifest.get("validity_reviewed") and not scope_pending and not (case_dir / "validity_result.json").exists():
+        if manifest.get("validity_reviewed") and validity_required and not (case_dir / "validity_result.json").exists():
             errors.append(f"개선안 타당성 평가 증적 누락: {case_id}/validity_result.json")
     stored_counts = summary.get("counts", {})
     if any(int(stored_counts.get(status, 0)) != counted[status] for status in CASE_STATUSES):

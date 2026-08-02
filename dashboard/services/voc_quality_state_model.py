@@ -247,6 +247,8 @@ VOC_NEXT_ACTIONS = {
 }
 
 EXECUTABLE_IMPLEMENTATION_STATUS = "IMPLEMENTED"
+VOC_EVALUATION_EXECUTION_TYPES = {"voc_pipeline"}
+FAULT_VERIFICATION_EXECUTION_TYPES = {"fault_proxy", "isolated_fault"}
 
 MENU_IO_SPEC = {
     "batch_execution": {
@@ -490,17 +492,24 @@ def classify_catalog_cases(cases: list[dict]) -> dict:
     execution_types = Counter()
     implementation_statuses = Counter()
     executable_case_ids = []
+    voc_case_ids = []
+    fault_case_ids = []
     pending_case_ids = []
 
     for item in cases:
         case_id = str(item.get("case_id") or "")
         if not case_id:
             continue
-        execution_types[str(item.get("execution_type") or "defined_only")] += 1
+        execution_type = str(item.get("execution_type") or "defined_only")
+        execution_types[execution_type] += 1
         implementation_status = str(item.get("implementation_status") or "DEFINED")
         implementation_statuses[implementation_status] += 1
         if implementation_status == EXECUTABLE_IMPLEMENTATION_STATUS:
             executable_case_ids.append(case_id)
+            if execution_type in VOC_EVALUATION_EXECUTION_TYPES:
+                voc_case_ids.append(case_id)
+            elif execution_type in FAULT_VERIFICATION_EXECUTION_TYPES:
+                fault_case_ids.append(case_id)
         else:
             pending_case_ids.append(case_id)
 
@@ -509,8 +518,12 @@ def classify_catalog_cases(cases: list[dict]) -> dict:
         "execution_type_counts": dict(sorted(execution_types.items())),
         "implementation_status_counts": dict(sorted(implementation_statuses.items())),
         "executable_case_ids": executable_case_ids,
+        "voc_case_ids": voc_case_ids,
+        "fault_case_ids": fault_case_ids,
         "pending_case_ids": pending_case_ids,
         "executable_count": len(executable_case_ids),
+        "voc_count": len(voc_case_ids),
+        "fault_count": len(fault_case_ids),
         "pending_count": len(pending_case_ids),
     }
 
@@ -530,8 +543,14 @@ def build_verification_scope(cases: list[dict], selected_case_ids: list[str]) ->
         "selected_count": len(selected),
         "unknown_case_ids": unknown,
         "executable_case_ids": selected_summary["executable_case_ids"],
+        "voc_case_ids": selected_summary["voc_case_ids"],
+        "fault_case_ids": selected_summary["fault_case_ids"],
+        "judge_required_case_ids": selected_summary["voc_case_ids"],
+        "validity_required_case_ids": selected_summary["voc_case_ids"],
         "pending_case_ids": selected_summary["pending_case_ids"],
         "executable_count": selected_summary["executable_count"],
+        "voc_count": selected_summary["voc_count"],
+        "fault_count": selected_summary["fault_count"],
         "pending_count": selected_summary["pending_count"],
         "execution_type_counts": selected_summary["execution_type_counts"],
         "implementation_status_counts": selected_summary["implementation_status_counts"],
