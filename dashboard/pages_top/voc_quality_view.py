@@ -8300,7 +8300,7 @@ def _render_approved_demo_flow_panel(
                 st.markdown(":blue-badge[최종 시연 화면]")
         with action_columns[2]:
             st.caption(
-                "정식 배포 판정은 35건 전체 Run 기준을 유지합니다. "
+                "정식 배포 판정은 실행 가능 Case 승인과 후속 구현 Case 승인 상태를 함께 봅니다. "
                 "이 카드는 단일 승인 Case의 시연 흐름을 빠르게 확인하는 용도입니다."
             )
 
@@ -14070,6 +14070,7 @@ def _report_overview_rows(model: dict) -> list[tuple[str, str]]:
     counts = run.get("counts", {}) if isinstance(run.get("counts"), dict) else {}
     evaluation = model.get("evaluation", {}) if isinstance(model.get("evaluation"), dict) else {}
     integrity = model.get("integrity", {}) if isinstance(model.get("integrity"), dict) else {}
+    release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
     return [
         ("보고서 ID", str(model.get("report_id", "-"))),
         ("보고서 상태", _voc_status_label(model.get("report_state", "-"))),
@@ -14080,6 +14081,8 @@ def _report_overview_rows(model: dict) -> list[tuple[str, str]]:
         ("테스트 묶음", str(run.get("suite_id") or "-")),
         ("카탈로그 버전", str(run.get("catalog_version") or "-")),
         ("대상 Case", f"{int(run.get('selected_count') or 0)}건"),
+        ("인수 기준", str(release_scope.get("basis") or "실행 가능 Case PASS + 후속 구현 Case 승인")),
+        ("실행 가능/후속", f"{int(release_scope.get('executable_count') or 0)}건 / {int(release_scope.get('pending_count') or 0)}건"),
         ("내부 판정", " · ".join(f"{_voc_status_label(key)} {int(value or 0)}건" for key, value in counts.items()) or "-"),
         ("독립 LLM 평가", " · ".join(f"{_voc_status_label(key)} {int(value or 0)}건" for key, value in (evaluation.get("judge_counts") or {}).items()) or "-"),
         ("개선안 타당성 평가", " · ".join(f"{_voc_status_label(key)} {int(value or 0)}건" for key, value in (evaluation.get("validity_counts") or {}).items()) or "-"),
@@ -14090,23 +14093,27 @@ def _report_overview_rows(model: dict) -> list[tuple[str, str]]:
 def _report_stage_rows(model: dict) -> list[tuple[str, str, str, str]]:
     run = model.get("run", {}) if isinstance(model.get("run"), dict) else {}
     evaluation = model.get("evaluation", {}) if isinstance(model.get("evaluation"), dict) else {}
+    release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
     total = int(run.get("selected_count") or 0)
+    executable_total = int(release_scope.get("executable_count") or total)
     return [
         ("VOC 분석 및 개선안", str(len(evaluation.get("voc_examples", []) or [])), str(total), "대표 산출물·개선안 연결"),
         ("6개 에이전트 내부 진단", str(int(evaluation.get("trace_cases", 0) or 0)), str(total), f"추적 이벤트 {int(evaluation.get('trace_events', 0) or 0)}건"),
-        ("독립 LLM 평가", str(int(evaluation.get("judge_evaluated", 0) or 0)), str(total), "독립 LLM 평가 결과 집계"),
-        ("개선안 타당성 평가", str(int(evaluation.get("validity_evaluated", 0) or 0)), str(total), "개선안 타당성·승인 단계 집계"),
+        ("독립 LLM 평가", str(int((release_scope.get("executable_judge_counts") or {}).get("PASS", 0) or 0)), str(executable_total), "실행 가능 Case 기준 PASS 집계"),
+        ("개선안 타당성 평가", str(int((release_scope.get("executable_validity_counts") or {}).get("BUSINESS_APPROVED", 0) or 0)), str(executable_total), "실행 가능 Case 기준 업무 승인 집계"),
     ]
 
 
 def _report_claim_rows(model: dict) -> list[tuple[str, str, str]]:
-    claims = model.get("claims", {}) if isinstance(model.get("claims"), dict) else {}
-    baseline = claims.get("baseline", {}) if isinstance(claims.get("baseline"), dict) else {}
-    final = claims.get("final", {}) if isinstance(claims.get("final"), dict) else {}
+    release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
+    executable_counts = release_scope.get("executable_counts", {}) if isinstance(release_scope.get("executable_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
+    executable_total = int(release_scope.get("executable_count") or 0)
+    pending_total = int(release_scope.get("pending_count") or 0)
     return [
-        ("기준선 실행", "검증 완료" if baseline.get("verified") else "미검증", "; ".join(baseline.get("errors", []) or []) or "33건 통과 / 2건 실패 조건 확인"),
-        ("최종 실행", "검증 완료" if final.get("verified") else "미검증", "; ".join(final.get("errors", []) or []) or "35건 통과 조건 확인"),
-        ("개선 추이", "검증 완료" if claims.get("improvement_verified") else "미검증", str(claims.get("claim_text") or "초기 33건 통과 / 2건 실패 → 최종 35건 통과")),
+        ("실행 가능 Case", "충족" if release_scope.get("executable_pass_ready") else "확인 필요", f"PASS {int(executable_counts.get('PASS') or 0)}/{executable_total}건"),
+        ("후속 구현 Case", "승인" if release_scope.get("pending_plan_approved") else "확인 필요", f"NOT_RUN {int(pending_counts.get('NOT_RUN') or 0)}/{pending_total}건 · 후속 구현 계획 기준"),
+        ("최종 인수 범위", "검증 완료" if release_scope.get("release_scope_ready") else "미검증", str(release_scope.get("basis") or "실행 가능 Case PASS + 후속 구현 Case 승인")),
     ]
 
 
@@ -14415,13 +14422,16 @@ def _report_candidate_summary_by_run() -> dict[str, dict]:
 def _report_run_is_final(row: dict, candidate_summary: dict[str, dict]) -> bool:
     run_id = str(row.get("run_id") or "")
     selected_count = int(row.get("selected_count") or 0)
+    scope = row.get("verification_scope", {}) if isinstance(row.get("verification_scope"), dict) else {}
+    catalog_total = int(scope.get("catalog_total_cases") or 35)
+    executable_count = int(scope.get("executable_count") or selected_count)
     approved_count = int(candidate_summary.get(run_id, {}).get("approved_count", 0) or 0)
     return (
         str(row.get("deployment_decision") or "") == "FORMAL_QUALITY_APPROVED"
         or (
             str(row.get("status") or "") == "COMPLETED"
-            and selected_count == 35
-            and approved_count >= 35
+            and selected_count == catalog_total
+            and approved_count >= executable_count
         )
     )
 
@@ -14431,11 +14441,13 @@ def _report_run_label(row: dict, candidate_summary: dict[str, dict], *, final_sc
     selected_count = int(row.get("selected_count") or 0)
     bucket = candidate_summary.get(run_id, {})
     approved_count = int(bucket.get("approved_count", 0) or 0)
+    scope = row.get("verification_scope", {}) if isinstance(row.get("verification_scope"), dict) else {}
+    executable_count = int(scope.get("executable_count") or selected_count)
     status = _voc_status_label(row.get("deployment_decision") or row.get("validity_state") or "미판정")
     if final_scope:
-        return f"{run_id} · 정식 승인 완료 · {selected_count}건"
+        return f"{run_id} · 정식 승인 완료 · 실행 가능 {executable_count}/{selected_count}건"
     return (
-        f"{run_id} · 승인 {approved_count}/{selected_count or '-'}건 · "
+        f"{run_id} · 실행 가능 승인 {approved_count}/{executable_count or '-'}건 · "
         f"{status}"
     )
 
@@ -14451,7 +14463,7 @@ def _render_report_scope_cards(
     validity_missing_count = sum(int(item.get("validity_missing_count", 0) or 0) for item in candidate_summary.values())
     columns = st.columns(4, gap="small")
     cards = [
-        ("verified", "최종 보고서 대상", f"{len(final_rows)}건", "35건 전체 정식 승인 완료"),
+        ("verified", "최종 보고서 대상", f"{len(final_rows)}건", "실행 가능 Case 승인 + 후속 구현 승인"),
         ("draft", "증적 초안", f"{len(draft_rows)}건", "평가·승인 진행 중 Run"),
         ("approval", "업무 승인 Case", f"{approved_case_count}건", "보고서/시연 연결 가능"),
         ("pending_actions", "남은 평가", f"{judge_missing_count + validity_missing_count}건", f"독립 LLM {judge_missing_count} · 개선안 타당성 {validity_missing_count}"),
@@ -14483,7 +14495,7 @@ def _render_voc_quality_report(report_mode: str):
     final_scope = report_mode == REPORT_MODE_FINAL
     report_rows = final_rows if final_scope else draft_rows
     if final_scope:
-        st.caption("35건 전체가 통과·독립 LLM 평가 통과·개선안 타당성 평가 업무 승인까지 완료된 Run만 최종 보고서 대상으로 표시합니다.")
+        st.caption("실행 가능 Case가 통과·독립 LLM 평가 통과·업무 승인 완료되고, 후속 구현 Case가 승인된 Run만 최종 보고서 대상으로 표시합니다.")
     else:
         st.caption("승인 전 Run은 최종 보고서가 아니라 누락 평가와 보완 위치를 확인하는 증적 초안으로만 표시합니다.")
 
@@ -14491,7 +14503,7 @@ def _render_voc_quality_report(report_mode: str):
         with st.container(border=True):
             if final_scope:
                 st.markdown("#### 최종 품질 보고서 대상 Run이 아직 없습니다.")
-                st.caption("일괄 TC 35건 실행 → 독립 LLM 평가 → 개선안 타당성 평가 → QA 검토 → 업무 승인 완료 후 이 목록에 표시됩니다.")
+                st.caption("35건 검증 회차 실행 → 실행 가능 Case 독립 LLM 평가 → 개선안 타당성 평가 → QA 검토 → 업무 승인 완료 후 이 목록에 표시됩니다.")
                 st.markdown(":gray-badge[정식 승인 완료 Run 없음]")
                 _render_approved_demo_flow_panel("report")
             else:

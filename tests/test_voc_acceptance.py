@@ -7,9 +7,39 @@ from dashboard.services import voc_acceptance_service
 
 
 def _report_model(*, formal=False):
-    pass_count = 35 if formal else 1
-    judge_count = 35 if formal else 1
-    validity = {"BUSINESS_APPROVED": 35} if formal else {"REVISION_REQUIRED": 1}
+    pass_count = 26 if formal else 1
+    judge_count = 26 if formal else 1
+    validity = {"BUSINESS_APPROVED": 26} if formal else {"REVISION_REQUIRED": 1}
+    release_scope = {
+        "basis": "실행 가능 Case PASS + 후속 구현 Case 승인",
+        "catalog_total_cases": 35,
+        "selected_count": 35,
+        "executable_count": 26,
+        "pending_count": 9,
+        "executable_counts": {
+            "PASS": pass_count,
+            "FAIL": 0,
+            "ERROR": 0 if formal else 2,
+            "REVIEW_REQUIRED": 0 if formal else 23,
+            "NOT_RUN": 0,
+        },
+        "pending_counts": {
+            "PASS": 0,
+            "FAIL": 0,
+            "ERROR": 0,
+            "REVIEW_REQUIRED": 0,
+            "NOT_RUN": 9,
+        },
+        "executable_judge_counts": {"PASS": judge_count},
+        "executable_validity_counts": validity,
+        "full_catalog_selected": True,
+        "executable_pass_ready": formal,
+        "pending_plan_approved": True,
+        "judge_pass_ready": formal,
+        "validity_approval_ready": formal,
+        "release_scope_ready": formal,
+        "pending_policy": "후속 구현 Case는 카탈로그에 DEFINED로 승인된 항목이며 이번 회차에서는 NOT_RUN이 정상 상태입니다.",
+    }
     return {
         "report_id": "VOC-REPORT-RUN-TEST",
         "release_decision": "FORMAL_APPROVED" if formal else "NOT_APPROVED",
@@ -26,7 +56,7 @@ def _report_model(*, formal=False):
         "integrity": {"ok": True, "errors": []},
         "claims": {
             "improvement_verified": formal,
-            "claim_text": "초기 33 PASS / 2 FAIL → 최종 35 PASS",
+            "claim_text": "실행 가능 Case PASS + 후속 구현 Case 승인",
         },
         "evaluation": {
             "judge_evaluated": judge_count,
@@ -42,6 +72,13 @@ def _report_model(*, formal=False):
         "risks": [] if formal else [
             {"level": "HIGH", "risk": "최종 35 PASS 미충족", "action": "재시험"}
         ],
+        "verification_scope": {
+            "catalog_total_cases": 35,
+            "selected_count": 35,
+            "executable_count": 26,
+            "pending_count": 9,
+        },
+        "release_scope": release_scope,
     }
 
 
@@ -77,7 +114,7 @@ def test_acceptance_gate_holds_unproven_release(monkeypatch):
     assert snapshot["decision"] == "HOLD"
     assert snapshot["user_signoff"] == "PENDING"
     assert {item["gate_id"] for item in snapshot["gates"] if item["status"] == "HOLD"} >= {
-        "pipeline", "judge", "validity", "defects", "comparison"
+        "pipeline", "judge", "validity", "defects"
     }
     assert snapshot["quantitative"]["cost_krw"] == "NOT_AVAILABLE"
     assert voc_acceptance_service.latest_full_run_id() == "RUN-20260716-000000-000000-aaaa"

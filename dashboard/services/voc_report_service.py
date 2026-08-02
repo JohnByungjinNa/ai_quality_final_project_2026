@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.paths import VOC_RUNTIME_DIR
 from services import voc_defect_service, voc_run_store
+from services.voc_quality_state_model import build_verification_scope
 
 
 STATUS_ORDER = ("PASS", "FAIL", "ERROR", "REVIEW_REQUIRED", "NOT_RUN")
@@ -55,6 +56,100 @@ def _normalized_counts(summary: dict) -> dict[str, int]:
     results = summary.get("case_results", [])
     counted = Counter(str(item.get("status") or "ERROR") for item in results)
     return {status: int(counted.get(status, 0)) for status in STATUS_ORDER}
+
+
+def _counts_for_case_ids(summary: dict, case_ids: set[str]) -> dict[str, int]:
+    counted = Counter(
+        str(item.get("status") or "ERROR")
+        for item in summary.get("case_results", [])
+        if str(item.get("case_id") or "") in case_ids
+    )
+    return {status: int(counted.get(status, 0)) for status in STATUS_ORDER}
+
+
+def _scope_from_manifest(catalog: dict, manifest: dict, summary: dict) -> dict:
+    metadata = manifest.get("run_metadata", {}) if isinstance(manifest.get("run_metadata"), dict) else {}
+    scope = metadata.get("verification_scope") if isinstance(metadata.get("verification_scope"), dict) else {}
+    selected = list(manifest.get("selected_case_ids") or [])
+    if not selected:
+        selected = [
+            str(item.get("case_id") or "")
+            for item in summary.get("case_results", [])
+            if item.get("case_id")
+        ]
+    if not scope or not scope.get("selected_case_ids"):
+        scope = build_verification_scope(catalog.get("cases", []), selected)
+    return scope
+
+
+def _evaluation_counts_for_case_ids(evaluation: dict, case_ids: set[str], field: str) -> dict[str, int]:
+    counted = Counter()
+    for item in evaluation.get("case_evaluations", []):
+        case_id = str(item.get("case_id") or "")
+        if case_id not in case_ids:
+            continue
+        value = str(item.get(field) or "")
+        if value:
+            counted[value] += 1
+    return dict(counted)
+
+
+def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluation: dict) -> dict:
+    scope = _scope_from_manifest(catalog, manifest, summary)
+    executable_ids = {str(case_id) for case_id in scope.get("executable_case_ids", [])}
+    pending_ids = {str(case_id) for case_id in scope.get("pending_case_ids", [])}
+    executable_counts = _counts_for_case_ids(summary, executable_ids)
+    pending_counts = _counts_for_case_ids(summary, pending_ids)
+    executable_judge_counts = _evaluation_counts_for_case_ids(evaluation, executable_ids, "judge_decision")
+    executable_validity_counts = _evaluation_counts_for_case_ids(evaluation, executable_ids, "validity_state")
+    catalog_total = int(scope.get("catalog_total_cases") or len(catalog.get("cases", [])) or 0)
+    selected_count = int(scope.get("selected_count") or len(scope.get("selected_case_ids", [])) or 0)
+    executable_total = int(scope.get("executable_count") or len(executable_ids))
+    pending_total = int(scope.get("pending_count") or len(pending_ids))
+
+    full_catalog_selected = (
+        selected_count == catalog_total
+        and not scope.get("unknown_case_ids")
+        and executable_total + pending_total == selected_count
+    )
+    executable_pass_ready = executable_total > 0 and executable_counts.get("PASS", 0) == executable_total
+    pending_plan_approved = pending_counts.get("NOT_RUN", 0) == pending_total
+    judge_pass_ready = executable_total > 0 and executable_judge_counts.get("PASS", 0) == executable_total
+    validity_approval_ready = (
+        executable_total > 0
+        and executable_validity_counts.get("BUSINESS_APPROVED", 0) == executable_total
+    )
+    release_scope_ready = all(
+        (
+            full_catalog_selected,
+            executable_pass_ready,
+            pending_plan_approved,
+            judge_pass_ready,
+            validity_approval_ready,
+        )
+    )
+    return {
+        "basis": "실행 가능 Case PASS + 후속 구현 Case 승인",
+        "catalog_total_cases": catalog_total,
+        "selected_count": selected_count,
+        "executable_case_ids": sorted(executable_ids),
+        "pending_case_ids": sorted(pending_ids),
+        "executable_count": executable_total,
+        "pending_count": pending_total,
+        "executable_counts": executable_counts,
+        "pending_counts": pending_counts,
+        "executable_judge_counts": executable_judge_counts,
+        "executable_validity_counts": executable_validity_counts,
+        "full_catalog_selected": full_catalog_selected,
+        "executable_pass_ready": executable_pass_ready,
+        "pending_plan_approved": pending_plan_approved,
+        "judge_pass_ready": judge_pass_ready,
+        "validity_approval_ready": validity_approval_ready,
+        "release_scope_ready": release_scope_ready,
+        "pending_policy": (
+            "후속 구현 Case는 카탈로그에 DEFINED로 승인된 항목이며 이번 회차에서는 NOT_RUN이 정상 상태입니다."
+        ),
+    }
 
 
 def _claim_check(
@@ -145,22 +240,35 @@ def _case_evaluation_stats(run_id: str, summary: dict) -> dict:
     trace_events = 0
     trace_cases = 0
     examples = []
+    case_evaluations = []
     for result in summary.get("case_results", []):
         case_id = result.get("case_id")
+        case_row = {
+            "case_id": case_id,
+            "judge_decision": "",
+            "validity_state": "",
+            "trace_event_count": 0,
+        }
         try:
             artifact = voc_run_store.load_case_artifacts(run_id, case_id)
         except Exception:
+            case_evaluations.append(case_row)
             continue
         events = artifact.get("trace", {}).get("events", [])
         if events:
             trace_cases += 1
             trace_events += len(events)
+            case_row["trace_event_count"] = len(events)
         judge_result = artifact.get("judge_result", {})
         if judge_result:
-            judge[judge_result.get("decision") or judge_result.get("status") or "UNKNOWN"] += 1
+            judge_decision = judge_result.get("decision") or judge_result.get("status") or "UNKNOWN"
+            judge[judge_decision] += 1
+            case_row["judge_decision"] = judge_decision
         validity_result = artifact.get("validity_result", {})
         if validity_result:
-            validity[validity_result.get("workflow_state") or validity_result.get("decision") or "UNKNOWN"] += 1
+            validity_state = validity_result.get("workflow_state") or validity_result.get("decision") or "UNKNOWN"
+            validity[validity_state] += 1
+            case_row["validity_state"] = validity_state
         pipeline = artifact.get("pipeline_result", {})
         execution_result = pipeline.get("execution", {}).get("result", {})
         if execution_result and len(examples) < 3:
@@ -173,6 +281,7 @@ def _case_evaluation_stats(run_id: str, summary: dict) -> dict:
                     "trace_id": artifact.get("trace", {}).get("trace_id", ""),
                 }
             )
+        case_evaluations.append(case_row)
     return {
         "judge_counts": dict(judge),
         "judge_evaluated": sum(judge.values()),
@@ -181,26 +290,36 @@ def _case_evaluation_stats(run_id: str, summary: dict) -> dict:
         "trace_cases": trace_cases,
         "trace_events": trace_events,
         "voc_examples": examples,
+        "case_evaluations": case_evaluations,
     }
 
 
-def _risk_rows(counts: dict, defects: list[dict], integrity: dict, claims: dict) -> list[dict]:
+def _risk_rows(
+    counts: dict,
+    defects: list[dict],
+    integrity: dict,
+    claims: dict,
+    release_scope: dict | None = None,
+) -> list[dict]:
     risks = []
+    scope = release_scope or {}
     if not integrity.get("ok"):
         risks.append({"level": "HIGH", "risk": "Run 증적 무결성 오류", "action": "누락·불일치 증적 복구"})
-    if counts.get("ERROR"):
-        risks.append({"level": "HIGH", "risk": f"ERROR {counts['ERROR']}건", "action": "오류 원인 조치 후 연결 재시험"})
-    if counts.get("FAIL"):
-        risks.append({"level": "HIGH", "risk": f"FAIL {counts['FAIL']}건", "action": "결함 등록과 재시험"})
-    if counts.get("REVIEW_REQUIRED"):
-        risks.append({"level": "MEDIUM", "risk": f"사람 검토 필요 {counts['REVIEW_REQUIRED']}건", "action": "독립 LLM 평가·QA 검토 수행"})
-    if counts.get("NOT_RUN"):
-        risks.append({"level": "MEDIUM", "risk": f"미실행 {counts['NOT_RUN']}건", "action": "후속 품질 단계에서 실행"})
+    executable_counts = scope.get("executable_counts") if isinstance(scope.get("executable_counts"), dict) else counts
+    pending_counts = scope.get("pending_counts") if isinstance(scope.get("pending_counts"), dict) else {}
+    if executable_counts.get("ERROR"):
+        risks.append({"level": "HIGH", "risk": f"실행 가능 Case 오류 {executable_counts['ERROR']}건", "action": "오류 원인 조치 후 연결 재시험"})
+    if executable_counts.get("FAIL"):
+        risks.append({"level": "HIGH", "risk": f"실행 가능 Case 실패 {executable_counts['FAIL']}건", "action": "결함 등록과 재시험"})
+    if executable_counts.get("REVIEW_REQUIRED"):
+        risks.append({"level": "MEDIUM", "risk": f"실행 가능 Case 검토 필요 {executable_counts['REVIEW_REQUIRED']}건", "action": "독립 LLM 평가·QA 검토 수행"})
+    if pending_counts.get("NOT_RUN") and not scope.get("pending_plan_approved"):
+        risks.append({"level": "MEDIUM", "risk": f"후속 구현 Case 승인 확인 필요 {pending_counts['NOT_RUN']}건", "action": "후속 구현 계획과 제외 사유 승인"})
     pending = [item for item in defects if item.get("evidence_status") == "PENDING"]
     if pending:
         risks.append({"level": "MEDIUM", "risk": f"미확정 결함 후보 {len(pending)}건", "action": "원본 Run·실행 Trace 확보 전 PENDING 유지"})
-    if not claims["baseline"]["verified"] or not claims["final"]["verified"]:
-        risks.append({"level": "HIGH", "risk": "33/2 → 35 개선 추이 미증명", "action": "동일 조건 기준선·최종 Run 연결"})
+    if not scope.get("release_scope_ready"):
+        risks.append({"level": "HIGH", "risk": "최종 인수 범위 미충족", "action": "실행 가능 Case PASS·독립 LLM PASS·업무 승인과 후속 구현 승인 상태를 맞추세요."})
     return risks
 
 
@@ -235,16 +354,14 @@ def build_quality_report_model(run_id: str, baseline_run_id: str = "") -> dict:
     }
     defects = voc_defect_service.list_defects()
     evaluation = _case_evaluation_stats(run_id, summary)
+    release_scope = _release_scope_model(catalog, manifest, summary, evaluation)
     formal_approval = (
-        claims["improvement_verified"]
+        release_scope["release_scope_ready"]
         and integrity.get("ok")
         and not [item for item in defects if item.get("status") != "CLOSED" and item.get("severity") in {"HIGH", "CRITICAL"}]
-        and evaluation["judge_evaluated"] == 35
-        and evaluation["judge_counts"].get("PASS", 0) == 35
-        and evaluation["validity_counts"].get("BUSINESS_APPROVED", 0) == 35
     )
     decision = "FORMAL_APPROVED" if formal_approval else "NOT_APPROVED"
-    risks = _risk_rows(counts, defects, integrity, claims)
+    risks = _risk_rows(counts, defects, integrity, claims, release_scope)
     coverage = _group_coverage(catalog, summary)
     generated_at = _now_iso()
     return {
@@ -266,6 +383,8 @@ def build_quality_report_model(run_id: str, baseline_run_id: str = "") -> dict:
         },
         "integrity": integrity,
         "claims": claims,
+        "verification_scope": _scope_from_manifest(catalog, manifest, summary),
+        "release_scope": release_scope,
         "coverage": coverage,
         "evaluation": evaluation,
         "defects": [
@@ -284,9 +403,9 @@ def build_quality_report_model(run_id: str, baseline_run_id: str = "") -> dict:
         "formula": {
             "status_count": "각 Case summary.status의 단순 건수",
             "coverage": "그룹별 선택 Case 수 / Catalog 그룹 기대 건수",
-            "success_rate": "PASS / 전체 35 × 100; 35건이 아니면 정식 성공률로 사용하지 않음",
+            "success_rate": "실행 가능 Case PASS / 실행 가능 Case 수 × 100; 후속 구현 Case는 별도 승인 상태로 판단",
             "improvement_claim": "동일 suite·catalog·TC hash·Rubric·35 Case인 33/2 기준선과 35 PASS 최종 Run이 모두 검증될 때만 참",
-            "release": "35 PASS + 독립 LLM 평가 35 PASS + 개선안 타당성 평가 BUSINESS_APPROVED 35건 + 미종결 High/Critical 0건",
+            "release": "실행 가능 Case PASS + 실행 가능 Case 독립 LLM PASS + 실행 가능 Case 업무 승인 + 후속 구현 Case 승인 + 미종결 High/Critical 0건",
         },
     }
 
@@ -303,6 +422,11 @@ def _table_html(headers: list[str], rows: list[list[object]]) -> str:
 def render_report_txt(model: dict) -> str:
     run = model["run"]
     counts = run["counts"]
+    release_scope = model.get("release_scope", {})
+    executable_total = int(release_scope.get("executable_count") or run["selected_count"] or 0)
+    pending_total = int(release_scope.get("pending_count") or 0)
+    executable_counts = release_scope.get("executable_counts", {}) if isinstance(release_scope.get("executable_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
     lines = [
         "VOC 품질평가 증적 보고서",
         "=" * 30,
@@ -319,7 +443,10 @@ def render_report_txt(model: dict) -> str:
         "3단계: 독립 LLM 평가",
         f"- 독립 LLM 평가 Case: {model['evaluation']['judge_evaluated']}건, 판정: {model['evaluation']['judge_counts']}",
         "",
-        "35건 정량 분석",
+        "검증 범위 정량 분석",
+        f"- 인수 기준: {release_scope.get('basis', '실행 가능 Case PASS + 후속 구현 Case 승인')}",
+        f"- 실행 가능 Case: PASS {executable_counts.get('PASS', 0)}/{executable_total}건",
+        f"- 후속 구현 Case: NOT_RUN {pending_counts.get('NOT_RUN', 0)}/{pending_total}건 · 후속 구현 계획 승인 기준",
     ]
     for row in model["coverage"]:
         lines.append(
@@ -328,10 +455,10 @@ def render_report_txt(model: dict) -> str:
         )
     lines.extend([
         "",
-        "초기 33 PASS / 2 FAIL → 최종 35 PASS 개선 주장",
-        f"- 검증 여부: {'VERIFIED' if model['claims']['improvement_verified'] else 'NOT_VERIFIED'}",
-        f"- 기준선: {'; '.join(model['claims']['baseline']['errors']) or '검증 완료'}",
-        f"- 최종: {'; '.join(model['claims']['final']['errors']) or '검증 완료'}",
+        "최종 인수 범위",
+        f"- 검증 여부: {'VERIFIED' if release_scope.get('release_scope_ready') else 'NOT_VERIFIED'}",
+        f"- 실행 가능 Case 독립 LLM: {release_scope.get('executable_judge_counts', {})}",
+        f"- 실행 가능 Case 업무 승인: {release_scope.get('executable_validity_counts', {})}",
         "",
         "결함관리",
     ])
@@ -394,6 +521,11 @@ def render_report_xml(model: dict) -> str:
 def render_report_html(model: dict) -> str:
     run = model["run"]
     counts = run["counts"]
+    release_scope = model.get("release_scope", {})
+    executable_total = int(release_scope.get("executable_count") or run["selected_count"] or 0)
+    pending_total = int(release_scope.get("pending_count") or 0)
+    executable_counts = release_scope.get("executable_counts", {}) if isinstance(release_scope.get("executable_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
     max_count = max(max(counts.values()), 1)
     bars = "".join(
         f"<div class='bar-row'><span>{status}</span><i style='width:{counts[status] / max_count * 100:.1f}%'></i><b>{counts[status]}</b></div>"
@@ -411,7 +543,7 @@ def render_report_html(model: dict) -> str:
         ["등급", "잔여 위험", "운영 권고"],
         [[item["level"], item["risk"], item["action"]] for item in model["risks"]],
     )
-    claim_state = "VERIFIED" if model["claims"]["improvement_verified"] else "NOT_VERIFIED"
+    claim_state = "VERIFIED" if release_scope.get("release_scope_ready") else "NOT_VERIFIED"
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><title>VOC 품질평가 증적 보고서</title>
 <style>
@@ -432,9 +564,10 @@ Run ID: {html.escape(run['run_id'])}<br>실행: {html.escape(str(run['started_at
 <h2>2단계: 6개 멀티 에이전트 내부 품질진단</h2><p>실행 Trace 보유 Case {model['evaluation']['trace_cases']}건, 실행 Trace 이벤트 {model['evaluation']['trace_events']}건.</p>
 <h2>3단계: 독립 LLM 평가</h2><p>독립 LLM 평가 {model['evaluation']['judge_evaluated']}건 · {html.escape(str(model['evaluation']['judge_counts']))}</p>
 <h2>전체 테스트 정량 분석</h2><div class="card">{bars}</div>{coverage_table}
-<h2>테스트 추이와 완료 주장</h2><div class="card warning"><b>{html.escape(model['claims']['claim_text'])}: {claim_state}</b><br>
-기준선: {html.escape('; '.join(model['claims']['baseline']['errors']) or '검증 완료')}<br>
-최종: {html.escape('; '.join(model['claims']['final']['errors']) or '검증 완료')}</div>
+<h2>최종 인수 범위</h2><div class="card warning"><b>{html.escape(str(release_scope.get('basis', '실행 가능 Case PASS + 후속 구현 Case 승인')))}: {claim_state}</b><br>
+실행 가능 Case: PASS {executable_counts.get('PASS', 0)}/{executable_total}건<br>
+후속 구현 Case: NOT_RUN {pending_counts.get('NOT_RUN', 0)}/{pending_total}건 · 후속 구현 계획 승인 기준<br>
+독립 LLM: {html.escape(str(release_scope.get('executable_judge_counts', {})))} · 업무 승인: {html.escape(str(release_scope.get('executable_validity_counts', {})))}</div>
 <h2>분기 인터페이스 오류와 API 429 결함관리</h2>{defect_table}
 <h2>Evaluator·Critic과 독립 LLM 평가 역할 구분</h2>{_table_html(['역할','범위','독립성'], [[r['role'],r['scope'],r['independence']] for r in model['roles']])}
 <h2>성공적인 품질평가 판단 근거</h2><p>수행 이력 수치, Case 증적, 독립 LLM 평가, 개선안 타당성 평가 승인, 결함 상태를 서로 대조합니다. 현재 미충족 항목이 있어 정식 품질 승인으로 판정하지 않았습니다.</p>

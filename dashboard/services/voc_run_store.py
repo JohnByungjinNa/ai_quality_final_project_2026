@@ -563,6 +563,17 @@ def verify_run_integrity(run_id: str) -> dict:
             errors.append(f"JSON 손상: {name}.json ({type(exc).__name__})")
 
     selected = manifest.get("selected_case_ids", [])
+    metadata = manifest.get("run_metadata", {}) if isinstance(manifest.get("run_metadata"), dict) else {}
+    verification_scope = (
+        metadata.get("verification_scope")
+        if isinstance(metadata.get("verification_scope"), dict)
+        else {}
+    )
+    pending_case_ids = {
+        str(case_id)
+        for case_id in verification_scope.get("pending_case_ids", [])
+        if case_id
+    }
     results = summary.get("case_results", [])
     result_ids = [item.get("case_id") for item in results]
     if len(result_ids) != len(set(result_ids)):
@@ -588,9 +599,10 @@ def verify_run_integrity(run_id: str) -> dict:
         for filename in ("pipeline_result.json", "trace.json", "rule_result.json"):
             if not (case_dir / filename).exists():
                 errors.append(f"Case 증적 누락: {case_id}/{filename}")
-        if manifest.get("judge_enabled") and not (case_dir / "judge_result.json").exists():
+        scope_pending = str(case_id) in pending_case_ids
+        if manifest.get("judge_enabled") and not scope_pending and not (case_dir / "judge_result.json").exists():
             errors.append(f"독립 LLM 평가 증적 누락: {case_id}/judge_result.json")
-        if manifest.get("validity_reviewed") and not (case_dir / "validity_result.json").exists():
+        if manifest.get("validity_reviewed") and not scope_pending and not (case_dir / "validity_result.json").exists():
             errors.append(f"개선안 타당성 평가 증적 누락: {case_id}/validity_result.json")
     stored_counts = summary.get("counts", {})
     if any(int(stored_counts.get(status, 0)) != counted[status] for status in CASE_STATUSES):
@@ -769,7 +781,7 @@ def save_validity_evaluation(run_id: str, case_id: str, validity_result: dict) -
                 immediate_hold_count = int(bool(immediate_holds))
         target["immediate_hold_count"] = immediate_hold_count
         target["validity_evaluation_count"] = saved["evaluation_sequence"]
-        _refresh_validity_summary(summary)
+        _refresh_validity_summary(summary, manifest)
         _atomic_write_json(run_dir / "summary.json", summary)
 
         manifest["validity_reviewed"] = True
@@ -804,6 +816,7 @@ def apply_validity_human_review(
     with _STORE_LOCK:
         run_dir = _run_dir(run_id)
         case_id = _safe_case_id(case_id)
+        manifest = _read_json(run_dir / "manifest.json")
         summary = _read_json(run_dir / "summary.json")
         path = run_dir / "cases" / case_id / "validity_result.json"
         if not path.exists():
@@ -844,18 +857,33 @@ def apply_validity_human_review(
             raise ValueError("summary에 사람 검토 대상 Case가 없습니다.")
         target["approval_state"] = next_state
         target["formal_approval"] = payload["formal_approval"]
-        _refresh_validity_summary(summary)
+        _refresh_validity_summary(summary, manifest)
         _atomic_write_json(run_dir / "summary.json", summary)
         rebuild_run_index()
         return {"summary": summary, "validity_result": payload, "review": review}
 
 
-def _refresh_validity_summary(summary: dict) -> None:
+def _refresh_validity_summary(summary: dict, manifest: dict | None = None) -> None:
     all_cases = summary.get("case_results", [])
-    reviewed = [item for item in all_cases if item.get("validity_status")]
+    metadata = manifest.get("run_metadata", {}) if isinstance(manifest, dict) else {}
+    verification_scope = (
+        metadata.get("verification_scope")
+        if isinstance(metadata.get("verification_scope"), dict)
+        else {}
+    )
+    executable_ids = {
+        str(case_id)
+        for case_id in verification_scope.get("executable_case_ids", [])
+        if case_id
+    }
+    scoped_cases = [
+        item for item in all_cases
+        if not executable_ids or str(item.get("case_id") or "") in executable_ids
+    ]
+    reviewed = [item for item in scoped_cases if item.get("validity_status")]
     states = [item.get("approval_state", "DRAFT") for item in reviewed]
     formally_approved = sum(bool(item.get("formal_approval")) for item in reviewed)
-    if all_cases and formally_approved == len(all_cases):
+    if scoped_cases and formally_approved == len(scoped_cases):
         validity_state = "BUSINESS_APPROVED"
         deployment = "FORMAL_QUALITY_APPROVED"
     elif formally_approved:
@@ -884,6 +912,11 @@ def _refresh_validity_summary(summary: dict) -> None:
             "DRAFT", "AI_REVIEWED", "QA_REVIEWED", "BUSINESS_APPROVED",
             "REVISION_REQUIRED", "REJECTED",
         )
+    }
+    summary["validity_scope"] = {
+        "basis": "실행 가능 Case 기준",
+        "eligible_count": len(scoped_cases),
+        "excluded_pending_count": max(len(all_cases) - len(scoped_cases), 0),
     }
     summary["validity_updated_at"] = _now_iso()
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 from dashboard.services import voc_quality_service
+from dashboard.services.voc_quality_state_model import build_verification_scope
 
 
 def _configure_store(monkeypatch, tmp_path):
@@ -16,7 +17,7 @@ def _configure_store(monkeypatch, tmp_path):
     return report_service, store
 
 
-def _start_run(store, case_ids, *, run_type="BATCH"):
+def _start_run(store, case_ids, *, run_type="BATCH", run_metadata=None):
     return store.start_voc_run(
         run_type=run_type,
         selected_case_ids=case_ids,
@@ -27,6 +28,7 @@ def _start_run(store, case_ids, *, run_type="BATCH"):
         model_snapshot={"summary": {"provider": "openai", "model": "test"}},
         judge_enabled=False,
         environment_fingerprint={"fingerprint_sha256": "env"},
+        run_metadata=run_metadata or {},
     )
 
 
@@ -117,3 +119,71 @@ def test_33_2_to_35_claim_requires_matching_full_runs_and_defect_links(monkeypat
     assert verified["claims"]["improvement_verified"] is True
     assert verified["release_decision"] == "NOT_APPROVED"
     assert unlinked["claims"]["improvement_verified"] is False
+
+
+def test_formal_report_uses_executable_scope_and_approved_followup_cases(monkeypatch, tmp_path):
+    report_service, store = _configure_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(report_service.voc_defect_service, "list_defects", lambda: [])
+    catalog = report_service._catalog()
+    case_ids = [item["case_id"] for item in catalog["cases"]]
+    scope = build_verification_scope(catalog["cases"], case_ids)
+    executable_ids = set(scope["executable_case_ids"])
+    pending_ids = set(scope["pending_case_ids"])
+    run = _start_run(store, case_ids, run_metadata={"verification_scope": scope})
+    results = []
+
+    for case_id in case_ids:
+        if case_id in executable_ids:
+            store.save_case_artifacts(
+                run["run_id"],
+                case_id,
+                pipeline_result={"execution": {"result": {"summary": "요약", "policy": "개선안"}}},
+                trace={"trace_id": f"trace-{case_id}", "events": [{"status": "success"}]},
+                rule_result={"status": "PASS"},
+                judge_result={"decision": "PASS", "status": "PASS", "total_score": 90},
+            )
+            results.append(
+                {
+                    "case_id": case_id,
+                    "status": "PASS",
+                    "attempt_count": 1,
+                    "judge_status": "PASS",
+                    "judge_score": 90,
+                }
+            )
+        else:
+            store.save_case_artifacts(
+                run["run_id"],
+                case_id,
+                pipeline_result={"execution": {"result": {}, "message": "후속 구현 계획 승인"}},
+                trace={"trace_id": "", "events": []},
+                rule_result={"status": "NOT_RUN"},
+                judge_result={"decision": "NOT_RUN", "status": "NOT_RUN", "message": "후속 구현 Case"},
+            )
+            results.append({"case_id": case_id, "status": "NOT_RUN", "attempt_count": 0, "judge_status": "NOT_RUN"})
+
+    store.complete_voc_run(run["run_id"], results, lifecycle_status="COMPLETED")
+    for case_id in sorted(executable_ids):
+        store.save_validity_evaluation(
+            run["run_id"],
+            case_id,
+            {
+                "decision": "AI_PASS",
+                "status": "AI_PASS",
+                "workflow_state": "BUSINESS_APPROVED",
+                "formal_approval": True,
+                "total_score": 92,
+                "immediate_hold_rules_triggered": [],
+            },
+        )
+
+    model = report_service.build_quality_report_model(run["run_id"])
+
+    assert len(executable_ids) == 26
+    assert len(pending_ids) == 9
+    assert model["release_decision"] == "FORMAL_APPROVED"
+    assert model["release_scope"]["executable_pass_ready"] is True
+    assert model["release_scope"]["pending_plan_approved"] is True
+    assert model["release_scope"]["judge_pass_ready"] is True
+    assert model["release_scope"]["validity_approval_ready"] is True
+    assert model["integrity"]["ok"] is True

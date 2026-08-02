@@ -2548,9 +2548,20 @@ def _start_voc_run(
         "model_snapshot.json": model_snapshot,
         "prompt_snapshot.json": prompt_snapshot,
     }
+    selected_case_ids = [case["case_id"] for case in cases]
+    normalized_metadata = dict(run_metadata or {})
+    normalized_metadata.setdefault(
+        "verification_scope",
+        build_verification_scope(catalog.get("cases", []), selected_case_ids),
+    )
+    normalized_metadata.setdefault(
+        "state_model",
+        build_state_model_snapshot(catalog.get("cases", []), selected_case_ids),
+    )
+    normalized_metadata.setdefault("state_model_version", STATE_MODEL_VERSION)
     return voc_run_store.start_voc_run(
         run_type=run_type,
-        selected_case_ids=[case["case_id"] for case in cases],
+        selected_case_ids=selected_case_ids,
         suite_id=catalog.get("suite_id", "VOC-QA-35"),
         catalog_version=str(catalog.get("version", "")),
         test_case_hash=voc_run_store.canonical_sha256(catalog.get("cases", [])),
@@ -2559,7 +2570,7 @@ def _start_voc_run(
         judge_enabled=judge_config["enabled"],
         environment_fingerprint=environment,
         snapshots=snapshots,
-        run_metadata=_sanitize_evidence_value(run_metadata or {}),
+        run_metadata=_sanitize_evidence_value(normalized_metadata),
     )
 
 

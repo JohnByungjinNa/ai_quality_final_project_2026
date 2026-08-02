@@ -173,7 +173,7 @@ def test_voc_report_uses_chatbot_report_style_and_evidence_sections():
     assert "1. 테스트 요약" in report_html
     assert "품질 평가 단계 상세" in report_html
     assert "테스트 결과 상세" in report_html
-    assert "개선 추이 및 결함 관리" in report_html
+    assert "최종 인수 범위 및 결함 관리" in report_html
     assert "독립성 및 잔여 위험" in report_html
     assert "종합 평가 및 의견" in report_html
     assert "개선 권고 사항" in report_html

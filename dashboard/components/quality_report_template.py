@@ -576,24 +576,29 @@ def build_voc_quality_report_html(model):
         for row in coverage
     ) or "<tr><td colspan='7'>점검 범위 데이터가 없습니다.</td></tr>"
 
-    claim_verified = bool(claims.get("improvement_verified"))
+    release_scope = model.get("release_scope", {}) if isinstance(model.get("release_scope"), dict) else {}
+    executable_counts = release_scope.get("executable_counts", {}) if isinstance(release_scope.get("executable_counts"), dict) else {}
+    pending_counts = release_scope.get("pending_counts", {}) if isinstance(release_scope.get("pending_counts"), dict) else {}
+    executable_total = int(release_scope.get("executable_count") or total or 0)
+    pending_total = int(release_scope.get("pending_count") or 0)
+    claim_verified = bool(release_scope.get("release_scope_ready", claims.get("improvement_verified")))
     baseline = claims.get("baseline", {})
     final = claims.get("final", {})
     claim_rows = (
         (
-            "기준선 실행",
-            "검증 완료" if baseline.get("verified") else "미검증",
-            _voc_display_text("; ".join(baseline.get("errors", [])) or "33건 통과 / 2건 실패 조건 확인"),
+            "실행 가능 Case",
+            "검증 완료" if release_scope.get("executable_pass_ready") else "미검증",
+            _voc_display_text(f"PASS {int(executable_counts.get('PASS') or 0)}/{executable_total}건"),
         ),
         (
-            "최종 실행",
-            "검증 완료" if final.get("verified") else "미검증",
-            _voc_display_text("; ".join(final.get("errors", [])) or "35건 통과 조건 확인"),
+            "후속 구현 Case",
+            "검증 완료" if release_scope.get("pending_plan_approved") else "미검증",
+            _voc_display_text(f"NOT_RUN {int(pending_counts.get('NOT_RUN') or 0)}/{pending_total}건 · 후속 구현 계획 기준"),
         ),
         (
-            "개선 추이",
+            "최종 인수 범위",
             "검증 완료" if claim_verified else "미검증",
-            _voc_display_text(claims.get("claim_text", "초기 33건 통과 / 2건 실패 → 최종 35건 통과")),
+            _voc_display_text(release_scope.get("basis", "실행 가능 Case PASS + 후속 구현 Case 승인")),
         ),
     )
     claim_table_rows = "".join(
@@ -627,7 +632,7 @@ def build_voc_quality_report_html(model):
     if not integrity.get("ok"):
         recommendations.insert(0, "실행·케이스·증적 파일 무결성 오류를 먼저 복구하세요.")
     if not claim_verified:
-        recommendations.append("동일 조건의 기준선 실행과 최종 실행을 연결해 개선 추이를 검증하세요.")
+        recommendations.append("실행 가능 Case의 PASS·독립 LLM PASS·업무 승인과 후속 구현 Case 승인 상태를 맞추세요.")
     if not recommendations:
         recommendations.append("현재 승인 기준을 유지하고 신규·경계 사례를 회귀 테스트에 추가하세요.")
     recommendation_html = "".join(
@@ -663,8 +668,8 @@ def build_voc_quality_report_html(model):
       </section>
       <section class="qrt-section"><div class="qrt-section-title">2. 품질 평가 단계 상세</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>평가 단계</th><th>증적 건수</th><th>대상 건수</th><th>근거</th></tr></thead><tbody>{stage_table_rows}</tbody></table></div></section>
       <section class="qrt-section"><div class="qrt-section-title">3. 테스트 결과 상세</div><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>검증 영역</th><th>선택/기대</th><th>통과</th><th>실패</th><th>오류</th><th>검토 필요</th><th>미실행</th></tr></thead><tbody>{coverage_rows}</tbody></table></div></section>
-      <section class="qrt-section"><div class="qrt-section-title">4. 개선 추이 및 결함 관리</div><div class="qrt-two">
-        <div><h3 class="qrt-subtitle">33건 통과 / 2건 실패 → 35건 통과 검증</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>구분</th><th>상태</th><th>판정 근거</th></tr></thead><tbody>{claim_table_rows}</tbody></table></div></div>
+      <section class="qrt-section"><div class="qrt-section-title">4. 최종 인수 범위 및 결함 관리</div><div class="qrt-two">
+        <div><h3 class="qrt-subtitle">실행 가능 Case PASS + 후속 구현 Case 승인</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>구분</th><th>상태</th><th>판정 근거</th></tr></thead><tbody>{claim_table_rows}</tbody></table></div></div>
         <div><h3 class="qrt-subtitle">주요 결함 요약</h3><div class="qrt-table-wrap"><table class="qrt-table"><thead><tr><th>결함 ID</th><th>제목</th><th>심각도</th><th>상태</th><th>증적</th><th>담당자</th></tr></thead><tbody>{defect_rows}</tbody></table></div></div>
       </div></section>
       <section class="qrt-section"><div class="qrt-section-title">5. 독립성 및 잔여 위험</div><div class="qrt-two">
@@ -673,7 +678,7 @@ def build_voc_quality_report_html(model):
       </div></section>
       <div class="qrt-bottom"><section class="qrt-opinion"><h3 class="qrt-subtitle">6. 종합 평가 및 의견</h3>
         <p>✓ 전체 통과율은 <b>{pass_rate:.1f}%</b>, 증적 상태는 <b>{escape(_voc_display_label(model.get('report_state')))}</b>입니다.</p>
-        <p>✓ 개선 추이 검증은 <b>{'완료' if claim_verified else '미완료'}</b>, 증적 무결성은 <b>{'정상' if integrity.get('ok') else '확인 필요'}</b>입니다.</p>
+        <p>✓ 최종 인수 범위 검증은 <b>{'완료' if claim_verified else '미완료'}</b>, 증적 무결성은 <b>{'정상' if integrity.get('ok') else '확인 필요'}</b>입니다.</p>
         <p class="qrt-conclusion">→ 결론: {escape(_voc_display_label(model.get('release_decision', 'NOT_APPROVED')))} — {conclusion}</p>
         </section><section class="qrt-recommend"><h3 class="qrt-subtitle">7. 개선 권고 사항</h3><ul>{recommendation_html}</ul></section></div>
     </div>
