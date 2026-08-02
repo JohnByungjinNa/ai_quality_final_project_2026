@@ -58,9 +58,14 @@ def _normalized_counts(summary: dict) -> dict[str, int]:
     return {status: int(counted.get(status, 0)) for status in STATUS_ORDER}
 
 
-def _counts_for_case_ids(summary: dict, case_ids: set[str]) -> dict[str, int]:
+def _counts_for_case_ids(
+    summary: dict,
+    case_ids: set[str],
+    status_overrides: dict[str, str] | None = None,
+) -> dict[str, int]:
+    overrides = status_overrides or {}
     counted = Counter(
-        str(item.get("status") or "ERROR")
+        str(overrides.get(str(item.get("case_id") or "")) or item.get("status") or "ERROR")
         for item in summary.get("case_results", [])
         if str(item.get("case_id") or "") in case_ids
     )
@@ -93,16 +98,79 @@ def _scope_from_manifest(catalog: dict, manifest: dict, summary: dict) -> dict:
     return scope
 
 
-def _evaluation_counts_for_case_ids(evaluation: dict, case_ids: set[str], field: str) -> dict[str, int]:
-    counted = Counter()
+def _evaluation_counts_for_case_ids(
+    evaluation: dict,
+    case_ids: set[str],
+    field: str,
+    value_overrides: dict[str, str] | None = None,
+) -> dict[str, int]:
+    values_by_case = {}
     for item in evaluation.get("case_evaluations", []):
         case_id = str(item.get("case_id") or "")
         if case_id not in case_ids:
             continue
         value = str(item.get(field) or "")
         if value:
-            counted[value] += 1
+            values_by_case[case_id] = value
+    for case_id, value in (value_overrides or {}).items():
+        if case_id in case_ids and value:
+            values_by_case[case_id] = str(value)
+    counted = Counter(values_by_case.values())
     return dict(counted)
+
+
+def _latest_linked_retest_evidence(parent_run_id: str, case_ids: set[str]) -> dict[str, dict]:
+    if not parent_run_id or not case_ids:
+        return {}
+    linked: dict[str, dict] = {}
+    for row in voc_run_store.list_voc_runs(recover=False):
+        if str(row.get("run_type") or "") != "RETEST":
+            continue
+        run_id = str(row.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            stored = voc_run_store.load_voc_run(run_id)
+        except Exception:
+            continue
+        manifest = stored.get("manifest", {})
+        metadata = manifest.get("run_metadata", {}) if isinstance(manifest.get("run_metadata"), dict) else {}
+        if str(metadata.get("parent_run_id") or row.get("parent_run_id") or "") != parent_run_id:
+            continue
+        if manifest.get("status") != "COMPLETED":
+            continue
+        for result in stored.get("summary", {}).get("case_results", []):
+            case_id = str(result.get("case_id") or "")
+            if case_id not in case_ids:
+                continue
+            try:
+                artifacts = voc_run_store.load_case_artifacts(run_id, case_id)
+            except Exception:
+                continue
+            judge = artifacts.get("judge_result", {}) if isinstance(artifacts.get("judge_result"), dict) else {}
+            validity = artifacts.get("validity_result", {}) if isinstance(artifacts.get("validity_result"), dict) else {}
+            if (
+                result.get("status") == "PASS"
+                and judge.get("decision") == "PASS"
+                and validity.get("workflow_state") == "BUSINESS_APPROVED"
+                and bool(validity.get("formal_approval"))
+            ):
+                evidence = {
+                    "case_id": case_id,
+                    "retest_run_id": run_id,
+                    "parent_run_id": parent_run_id,
+                    "status": "PASS",
+                    "judge_decision": "PASS",
+                    "validity_state": "BUSINESS_APPROVED",
+                    "validity_score": validity.get("total_score"),
+                    "judge_score": judge.get("total_score"),
+                    "started_at": manifest.get("started_at") or row.get("started_at") or "",
+                    "finished_at": manifest.get("finished_at") or row.get("finished_at") or "",
+                }
+                previous = linked.get(case_id)
+                if not previous or evidence["started_at"] >= previous.get("started_at", ""):
+                    linked[case_id] = evidence
+    return linked
 
 
 def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluation: dict) -> dict:
@@ -113,12 +181,36 @@ def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluatio
     judge_required_ids = {str(case_id) for case_id in scope.get("judge_required_case_ids", [])} or voc_ids
     validity_required_ids = {str(case_id) for case_id in scope.get("validity_required_case_ids", [])} or voc_ids
     pending_ids = {str(case_id) for case_id in scope.get("pending_case_ids", [])}
-    executable_counts = _counts_for_case_ids(summary, executable_ids)
-    voc_counts = _counts_for_case_ids(summary, voc_ids)
+    parent_run_id = str(manifest.get("run_id") or "")
+    linked_retests = _latest_linked_retest_evidence(parent_run_id, voc_ids)
+    retest_status_overrides = {
+        case_id: evidence["status"]
+        for case_id, evidence in linked_retests.items()
+    }
+    retest_judge_overrides = {
+        case_id: evidence["judge_decision"]
+        for case_id, evidence in linked_retests.items()
+    }
+    retest_validity_overrides = {
+        case_id: evidence["validity_state"]
+        for case_id, evidence in linked_retests.items()
+    }
+    executable_counts = _counts_for_case_ids(summary, executable_ids, retest_status_overrides)
+    voc_counts = _counts_for_case_ids(summary, voc_ids, retest_status_overrides)
     fault_counts = _counts_for_case_ids(summary, fault_ids)
     pending_counts = _counts_for_case_ids(summary, pending_ids)
-    executable_judge_counts = _evaluation_counts_for_case_ids(evaluation, judge_required_ids, "judge_decision")
-    executable_validity_counts = _evaluation_counts_for_case_ids(evaluation, validity_required_ids, "validity_state")
+    executable_judge_counts = _evaluation_counts_for_case_ids(
+        evaluation,
+        judge_required_ids,
+        "judge_decision",
+        retest_judge_overrides,
+    )
+    executable_validity_counts = _evaluation_counts_for_case_ids(
+        evaluation,
+        validity_required_ids,
+        "validity_state",
+        retest_validity_overrides,
+    )
     catalog_total = int(scope.get("catalog_total_cases") or len(catalog.get("cases", [])) or 0)
     selected_count = int(scope.get("selected_count") or len(scope.get("selected_case_ids", [])) or 0)
     executable_total = int(scope.get("executable_count") or len(executable_ids))
@@ -164,6 +256,8 @@ def _release_scope_model(catalog: dict, manifest: dict, summary: dict, evaluatio
         "executable_case_ids": sorted(executable_ids),
         "voc_case_ids": sorted(voc_ids),
         "fault_case_ids": sorted(fault_ids),
+        "linked_retest_evidence": sorted(linked_retests.values(), key=lambda item: item["case_id"]),
+        "linked_retest_count": len(linked_retests),
         "judge_required_case_ids": sorted(judge_required_ids),
         "validity_required_case_ids": sorted(validity_required_ids),
         "pending_case_ids": sorted(pending_ids),
@@ -363,6 +457,15 @@ def _risk_rows(
     if pending_counts.get("NOT_RUN") and not scope.get("pending_plan_approved"):
         risks.append({"level": "MEDIUM", "risk": f"후속 구현 Case 승인 확인 필요 {pending_counts['NOT_RUN']}건", "action": "후속 구현 계획과 제외 사유 승인"})
     pending = [item for item in defects if item.get("evidence_status") == "PENDING"]
+    confirmed_blocking = [
+        item
+        for item in defects
+        if item.get("evidence_status") == "CONFIRMED"
+        and item.get("status") != "CLOSED"
+        and item.get("severity") in {"HIGH", "CRITICAL"}
+    ]
+    if confirmed_blocking:
+        risks.append({"level": "HIGH", "risk": f"확정 HIGH/CRITICAL 결함 미종결 {len(confirmed_blocking)}건", "action": "조치·재시험 후 결함 종료"})
     if pending:
         risks.append({"level": "MEDIUM", "risk": f"미확정 결함 후보 {len(pending)}건", "action": "원본 Run·실행 Trace 확보 전 PENDING 유지"})
     if not scope.get("release_scope_ready"):
@@ -402,10 +505,17 @@ def build_quality_report_model(run_id: str, baseline_run_id: str = "") -> dict:
     defects = voc_defect_service.list_defects()
     evaluation = _case_evaluation_stats(run_id, summary)
     release_scope = _release_scope_model(catalog, manifest, summary, evaluation)
+    confirmed_blocking_defects = [
+        item
+        for item in defects
+        if item.get("evidence_status") == "CONFIRMED"
+        and item.get("status") != "CLOSED"
+        and item.get("severity") in {"HIGH", "CRITICAL"}
+    ]
     formal_approval = (
         release_scope["release_scope_ready"]
         and integrity.get("ok")
-        and not [item for item in defects if item.get("status") != "CLOSED" and item.get("severity") in {"HIGH", "CRITICAL"}]
+        and not confirmed_blocking_defects
     )
     decision = "FORMAL_APPROVED" if formal_approval else "NOT_APPROVED"
     risks = _risk_rows(counts, defects, integrity, claims, release_scope)

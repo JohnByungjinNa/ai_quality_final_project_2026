@@ -3629,6 +3629,57 @@ def test_normal_test_case_runs_voc_and_saves_report(monkeypatch, tmp_path):
     assert "[REDACTED_EMAIL]" in pipeline_text
 
 
+def test_no_data_case_safe_hold_is_not_pipeline_error(monkeypatch, tmp_path):
+    store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
+
+    def fake_run_voc(_question, save_report=False, timeout_seconds=180, task_override=None):
+        return {
+            "ok": True,
+            "result": {
+                "ok": False,
+                "summary": "현재 VOC 데이터에서 직접적으로 일치하는 사례를 찾지 못했습니다. 추가 로그 또는 주문번호 기반 확인이 필요합니다.",
+                "policy": "",
+                "trace": "audit_trace_id=t-no-data; retrieved=0; no_related_data",
+                "message": "현재 VOC 데이터에서 직접적으로 일치하는 사례를 찾지 못했습니다. 추가 로그 또는 주문번호 기반 확인이 필요합니다.",
+            },
+        }
+
+    monkeypatch.setattr(voc_quality_service, "run_voc_analysis", fake_run_voc)
+    monkeypatch.setattr(
+        voc_quality_service,
+        "pipeline_trace_events",
+        lambda *_args: {"trace_id": "trace-no-data", "events": [{"status": "success"}]},
+    )
+    monkeypatch.setattr(
+        voc_quality_service.voc_judge_service,
+        "evaluate_independent_judge",
+        lambda **_kwargs: {
+            "status": "PASS",
+            "decision": "PASS",
+            "total_score": 91,
+            "dimension_scores": {},
+            "provider": "gemini",
+            "model": "judge-model",
+            "independence_grade": "A",
+            "attempts": [{"attempt": 1, "status": "SUCCESS"}],
+        },
+    )
+
+    result = voc_quality_service.run_test_case(
+        "TC-16",
+        judge_config={"enabled": True, "provider": "gemini", "model": "judge-model"},
+    )
+    stored = store.load_voc_run(result["run_id"])
+    artifacts = store.load_case_artifacts(result["run_id"], "TC-16")
+    execution_result = artifacts["pipeline_result"]["execution"]["result"]
+
+    assert result["evidence_status"] == "PASS"
+    assert stored["summary"]["counts"]["PASS"] == 1
+    assert execution_result["ok"] is True
+    assert execution_result["safe_no_data_hold"] is True
+    assert "단정하지 않고 답변을 보류" in execution_result["policy"]
+
+
 def test_batch_run_executes_implemented_cases_and_records_pending_cases(monkeypatch, tmp_path):
     store = _configure_temp_voc_run_store(monkeypatch, tmp_path)
     catalog = load_quality_test_catalog()

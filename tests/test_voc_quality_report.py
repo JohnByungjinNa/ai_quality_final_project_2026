@@ -187,3 +187,126 @@ def test_formal_report_uses_executable_scope_and_approved_followup_cases(monkeyp
     assert model["release_scope"]["judge_pass_ready"] is True
     assert model["release_scope"]["validity_approval_ready"] is True
     assert model["integrity"]["ok"] is True
+
+
+def test_formal_report_accepts_approved_linked_retest_and_pending_defect_candidates(monkeypatch, tmp_path):
+    report_service, store = _configure_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        report_service.voc_defect_service,
+        "list_defects",
+        lambda: [
+            {
+                "defect_id": "VOC-DEF-20260716-142005-6582",
+                "title": "API 429 장애",
+                "severity": "HIGH",
+                "status": "OPEN",
+                "evidence_status": "PENDING",
+            }
+        ],
+    )
+    catalog = report_service._catalog()
+    case_ids = [item["case_id"] for item in catalog["cases"]]
+    scope = build_verification_scope(catalog["cases"], case_ids)
+    voc_ids = set(scope["voc_case_ids"])
+    fault_ids = set(scope["fault_case_ids"])
+    pending_ids = set(scope["pending_case_ids"])
+    parent = _start_run(store, case_ids, run_metadata={"verification_scope": scope})
+    results = []
+
+    for case_id in case_ids:
+        if case_id == "TC-16":
+            store.save_case_artifacts(
+                parent["run_id"],
+                case_id,
+                pipeline_result={"mode": "voc", "execution": {"ok": True, "result": {"ok": False}}},
+                trace={"trace_id": f"trace-{case_id}", "events": [{"status": "success"}]},
+                rule_result={"status": "NOT_RUN"},
+                judge_result={"decision": "NOT_RUN", "status": "NOT_RUN"},
+            )
+            results.append({"case_id": case_id, "status": "ERROR", "attempt_count": 1, "judge_status": "NOT_RUN"})
+        elif case_id in voc_ids:
+            store.save_case_artifacts(
+                parent["run_id"],
+                case_id,
+                pipeline_result={"mode": "voc", "execution": {"ok": True, "result": {"ok": True, "summary": "요약", "policy": "개선안"}}},
+                trace={"trace_id": f"trace-{case_id}", "events": [{"status": "success"}]},
+                rule_result={"status": "PASS"},
+                judge_result={"decision": "PASS", "status": "PASS", "total_score": 90},
+            )
+            results.append({"case_id": case_id, "status": "PASS", "attempt_count": 1, "judge_status": "PASS", "judge_score": 90})
+        elif case_id in fault_ids:
+            store.save_case_artifacts(
+                parent["run_id"],
+                case_id,
+                pipeline_result={"mode": "fault", "execution": {"ok": True, "output": "PASS"}},
+                trace={"trace_id": "", "events": []},
+                rule_result={"status": "REVIEW_REQUIRED"},
+                judge_result={"decision": "NOT_RUN", "status": "NOT_RUN"},
+            )
+            results.append({"case_id": case_id, "status": "REVIEW_REQUIRED", "attempt_count": 1, "judge_status": "NOT_RUN"})
+        elif case_id in pending_ids:
+            store.save_case_artifacts(
+                parent["run_id"],
+                case_id,
+                pipeline_result={"execution": {"result": {}, "message": "후속 구현 계획 승인"}},
+                trace={"trace_id": "", "events": []},
+                rule_result={"status": "NOT_RUN"},
+                judge_result={"decision": "NOT_RUN", "status": "NOT_RUN"},
+            )
+            results.append({"case_id": case_id, "status": "NOT_RUN", "attempt_count": 0, "judge_status": "NOT_RUN"})
+
+    store.complete_voc_run(parent["run_id"], results, lifecycle_status="COMPLETED")
+    for case_id in sorted(voc_ids - {"TC-16"}):
+        store.save_validity_evaluation(
+            parent["run_id"],
+            case_id,
+            {
+                "decision": "AI_PASS",
+                "status": "AI_PASS",
+                "workflow_state": "BUSINESS_APPROVED",
+                "formal_approval": True,
+                "total_score": 92,
+                "immediate_hold_rules_triggered": [],
+            },
+        )
+
+    retest = _start_run(
+        store,
+        ["TC-16"],
+        run_type="RETEST",
+        run_metadata={"parent_run_id": parent["run_id"], "verification_scope": build_verification_scope(catalog["cases"], ["TC-16"])},
+    )
+    store.save_case_artifacts(
+        retest["run_id"],
+        "TC-16",
+        pipeline_result={"mode": "voc", "execution": {"ok": True, "result": {"ok": True, "summary": "보류", "policy": "단정 금지"}}},
+        trace={"trace_id": "trace-tc16-retest", "events": [{"status": "success"}]},
+        rule_result={"status": "PASS"},
+        judge_result={"decision": "PASS", "status": "PASS", "total_score": 99},
+    )
+    store.complete_voc_run(
+        retest["run_id"],
+        [{"case_id": "TC-16", "status": "PASS", "attempt_count": 1, "judge_status": "PASS", "judge_score": 99}],
+        lifecycle_status="COMPLETED",
+    )
+    store.save_validity_evaluation(
+        retest["run_id"],
+        "TC-16",
+        {
+            "decision": "AI_PASS",
+            "status": "AI_PASS",
+            "workflow_state": "BUSINESS_APPROVED",
+            "formal_approval": True,
+            "total_score": 96,
+            "immediate_hold_rules_triggered": [],
+        },
+    )
+
+    model = report_service.build_quality_report_model(parent["run_id"])
+
+    assert model["release_decision"] == "FORMAL_APPROVED"
+    assert model["report_state"] == "FINAL"
+    assert model["release_scope"]["linked_retest_count"] == 1
+    assert model["release_scope"]["voc_counts"]["PASS"] == 18
+    assert model["release_scope"]["executable_judge_counts"]["PASS"] == 18
+    assert model["release_scope"]["executable_validity_counts"]["BUSINESS_APPROVED"] == 18
