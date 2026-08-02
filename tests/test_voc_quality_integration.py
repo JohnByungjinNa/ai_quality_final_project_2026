@@ -975,6 +975,206 @@ def test_pipeline_result_message_suppresses_internal_a2a_completion_text():
     ) == "VOC 테스트 실행 완료"
 
 
+def test_manual_followup_flow_model_waits_for_independent_judge():
+    model = voc_quality_view._manual_followup_flow_model(
+        {
+            "mode": "voc",
+            "case": {"case_id": "TC-01", "question": "보험금 청구 진행 상태가 앱에 표시되지 않습니다."},
+            "run_id": "RUN-MANUAL-01",
+            "evidence_status": "PASS",
+            "execution": {"ok": True, "result": {"ok": True}},
+        },
+        "TC-01",
+        candidate={},
+    )
+
+    assert model["visible"] is True
+    assert model["action_code"] == "RUN_JUDGE"
+    assert model["target"]["enabled"] is False
+    assert model["target"]["button_label"] == "위에서 독립 LLM 평가 실행"
+
+
+def test_manual_followup_flow_model_links_judge_result_to_validity_page():
+    model = voc_quality_view._manual_followup_flow_model(
+        {
+            "mode": "voc",
+            "case": {"case_id": "TC-01", "question": "보험금 청구 진행 상태가 앱에 표시되지 않습니다."},
+            "run_id": "RUN-MANUAL-01",
+            "evidence_status": "PASS",
+            "execution": {"ok": True, "result": {"ok": True}},
+            "judge_result": {"decision": "PASS", "total_score": 91},
+        },
+        "TC-01",
+        candidate={
+            "run_id": "RUN-MANUAL-01",
+            "case_id": "TC-01",
+            "judge_status": "PASS",
+            "judge_score": 91,
+            "validity_status": "NOT_RUN",
+            "workflow_state": "DRAFT",
+            "immediate_hold_count": 0,
+            "formal_approval": False,
+        },
+    )
+
+    assert model["action_code"] == "RUN_VALIDITY"
+    assert model["target"]["enabled"] is True
+    assert model["target"]["page"] == voc_quality_view.VOC_VALIDITY_PAGE_NAME
+    assert model["target"]["button_label"] == "타당성 평가로 이동"
+
+
+def test_manual_followup_flow_model_links_review_required_to_run_evidence():
+    model = voc_quality_view._manual_followup_flow_model(
+        {
+            "mode": "voc",
+            "case": {"case_id": "TC-01", "question": "보험금 청구 진행 상태가 앱에 표시되지 않습니다."},
+            "run_id": "RUN-MANUAL-01",
+            "evidence_status": "PASS",
+            "execution": {"ok": True, "result": {"ok": True}},
+            "judge_result": {"decision": "REVIEW_REQUIRED", "total_score": 76},
+        },
+        "TC-01",
+        candidate={
+            "run_id": "RUN-MANUAL-01",
+            "case_id": "TC-01",
+            "judge_status": "REVIEW_REQUIRED",
+            "judge_score": 76,
+            "validity_status": "NOT_RUN",
+            "workflow_state": "DRAFT",
+            "immediate_hold_count": 0,
+            "formal_approval": False,
+        },
+    )
+
+    assert model["action_code"] == "REVIEW_PIPELINE_RESULT"
+    assert model["target"]["enabled"] is True
+    assert model["target"]["page"] == "history_detail"
+    assert model["target"]["button_label"] == "Run 증적 확인"
+    assert "바로 타당성 검증으로 넘기지 않고" in model["target"]["detail"]
+
+
+def test_history_detail_target_moves_to_history_page(monkeypatch):
+    state = {}
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._apply_history_next_action_target(
+        {
+            "page": "history_detail",
+            "run_id": "RUN-MANUAL-01",
+            "case_id": "TC-01",
+            "action_code": "REVIEW_PIPELINE_RESULT",
+        }
+    )
+
+    assert state["current_menu"] == voc_quality_view.VOC_QUALITY_MENU_NAME
+    assert state["current_sub_menu"] == voc_quality_view.VOC_HISTORY_PAGE_NAME
+    assert state[voc_quality_view.HISTORY_SELECTED_RUN_ID_KEY] == "RUN-MANUAL-01"
+    assert state[voc_quality_view.HISTORY_DETAIL_DIALOG_RUN_ID_KEY] == "RUN-MANUAL-01"
+
+
+def test_history_validity_target_filters_by_run_not_case(monkeypatch):
+    class FakeSessionState(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    state = FakeSessionState()
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._apply_history_next_action_target(
+        {
+            "page": voc_quality_view.VOC_VALIDITY_PAGE_NAME,
+            "run_id": "RUN-MANUAL-01",
+            "case_id": "TC-01",
+            "action_code": "RUN_VALIDITY",
+        }
+    )
+
+    assert state["current_menu"] == voc_quality_view.VOC_QUALITY_MENU_NAME
+    assert state["current_sub_menu"] == voc_quality_view.VOC_VALIDITY_PAGE_NAME
+    assert state["voc_validity_selected_key"] == "RUN-MANUAL-01::TC-01"
+    assert state["voc_validity_candidate_query"] == "RUN-MANUAL-01"
+    assert state["voc_validity_candidate_status"] == "전체"
+    assert state["voc_validity_focus_action_code"] == "RUN_VALIDITY"
+    assert state["voc_validity_focus_target_key"] == "RUN-MANUAL-01::TC-01"
+    assert state["voc_validity_evaluation_focus_once"] is True
+    assert "개선안 타당성 평가를 실행" in state["voc_validity_focus_notice"]
+
+
+def test_validity_candidate_sync_uses_artifact_judge_pass_when_summary_is_stale():
+    candidate = {
+        "run_id": "RUN-MANUAL-01",
+        "case_id": "TC-01",
+        "judge_status": "NOT_RUN",
+        "judge_score": None,
+        "validity_status": "NOT_RUN",
+        "workflow_state": "DRAFT",
+    }
+    artifacts = {
+        "judge_result": {
+            "decision": "PASS",
+            "total_score": 87,
+            "provider": "gemini",
+            "model": "gemini-2.5-pro",
+        }
+    }
+
+    synced = voc_quality_view._sync_validity_candidate_from_artifacts(candidate, artifacts)
+    gate = voc_quality_view._validity_judge_gate_model(synced, artifacts)
+
+    assert synced["judge_status"] == "PASS"
+    assert synced["judge_score"] == 87
+    assert synced["judge_provider"] == "gemini"
+    assert gate["blocked"] is False
+    assert gate["next_title"] == "타당성 평가 진행 가능"
+
+
+@pytest.mark.parametrize(
+    ("workflow_state", "expected_action", "expected_button"),
+    [
+        ("AI_REVIEWED", "QA_REVIEW", "QA 검토로 이동"),
+        ("QA_REVIEWED", "BUSINESS_APPROVAL", "업무 승인으로 이동"),
+    ],
+)
+def test_manual_followup_flow_model_links_validity_to_human_approval(
+    workflow_state,
+    expected_action,
+    expected_button,
+):
+    model = voc_quality_view._manual_followup_flow_model(
+        {
+            "mode": "voc",
+            "case": {"case_id": "TC-01", "question": "보험금 청구 진행 상태가 앱에 표시되지 않습니다."},
+            "run_id": "RUN-MANUAL-01",
+            "evidence_status": "PASS",
+            "execution": {"ok": True, "result": {"ok": True}},
+            "judge_result": {"decision": "PASS", "total_score": 91},
+        },
+        "TC-01",
+        candidate={
+            "run_id": "RUN-MANUAL-01",
+            "case_id": "TC-01",
+            "judge_status": "PASS",
+            "judge_score": 91,
+            "validity_status": "AI_PASS",
+            "validity_score": 88,
+            "workflow_state": workflow_state,
+            "immediate_hold_count": 0,
+            "formal_approval": False,
+        },
+    )
+
+    assert model["action_code"] == expected_action
+    assert model["target"]["enabled"] is True
+    assert model["target"]["page"] == voc_quality_view.VOC_VALIDITY_PAGE_NAME
+    assert model["target"]["button_label"] == expected_button
+
+
 def test_goal_pipeline_uses_compact_inline_guide():
     import inspect
 
@@ -3903,6 +4103,213 @@ def test_rubric_reevaluation_plan_is_saved_without_mutating_run_results(monkeypa
     assert loaded["rubric_reevaluation_plan"]["status"] == "REEVALUATION_READY"
     assert loaded["summary"]["case_results"][0]["status"] == "PASS"
     assert row["rubric_reevaluation_plan_status"] == "REEVALUATION_READY"
+
+
+def test_history_rubric_plan_targets_follow_up_execution_buttons():
+    plan = {
+        "actions": [
+            {
+                "label": "독립 LLM 평가",
+                "method": "JUDGE_REEVALUATION",
+                "target_count": 2,
+                "target_case_ids": ["TC-01", "TC-02"],
+            },
+            {
+                "label": "개선안 타당성 평가",
+                "method": "VALIDITY_REEVALUATION",
+                "target_count": 1,
+                "target_case_ids": ["TC-03"],
+            },
+            {
+                "label": "내부 파이프라인",
+                "method": "RETEST_REQUIRED",
+                "target_count": 35,
+                "target_case_ids": ["TC-01"],
+            },
+        ]
+    }
+
+    targets = voc_quality_view._history_rubric_plan_next_targets("RUN-1", plan)
+
+    assert [target["button_label"] for target in targets] == [
+        "독립 LLM 재평가 열기",
+        "타당성 재평가로 이동",
+        "RETEST 준비로 이동",
+    ]
+    assert targets[0]["page"] == "history_detail"
+    assert targets[0]["case_id"] == "TC-01"
+    assert targets[1]["page"] == voc_quality_view.VOC_VALIDITY_PAGE_NAME
+    assert targets[1]["case_id"] == "TC-03"
+    assert targets[2]["page"] == voc_quality_view.VOC_BATCH_PAGE_NAME
+
+
+def test_history_judge_reevaluation_context_explains_no_auto_supplement():
+    detail = {
+        "manifest": {
+            "rubric_versions": {
+                "independent_judge": {"version": "J1.0", "sha256": "old"}
+            }
+        },
+        "rubric_reevaluation_plan": {
+            "actions": [
+                {
+                    "method": "JUDGE_REEVALUATION",
+                    "target_case_ids": ["TC-01"],
+                }
+            ]
+        },
+    }
+    artifacts = {
+        "judge_result": {
+            "decision": "REVIEW_REQUIRED",
+            "total_score": 76,
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "independence_hold": True,
+            "independence_hold_reason": "동일 Provider 계열 응답 영향 가능성",
+            "dimension_scores": {
+                "accuracy": {"score": 17, "max_points": 25, "reason": "원인 연결 일부 부족"},
+                "groundedness": {"score": 18, "max_points": 23, "reason": "근거 충족"},
+            },
+            "risks": ["VOC 근거 연결이 약합니다."],
+            "recommendations": ["담당자와 KPI를 더 구체화하세요."],
+        }
+    }
+
+    context = voc_quality_view._history_judge_reevaluation_context_model(
+        "TC-01",
+        artifacts,
+        detail,
+        current_judge_rubric={
+            "version": "J1.1",
+            "sha256": "new",
+            "dimensions": {
+                "accuracy": {"label": "정확성", "max_points": 25, "pass_floor": 18},
+                "groundedness": {"label": "근거성", "max_points": 23, "pass_floor": 18},
+            },
+        },
+    )
+
+    assert context["rubric_changed"] is True
+    assert "독립 LLM 평가 Rubric 기준 변경 대상입니다." in context["reasons"]
+    assert "기존 독립 LLM 판정이 검토 필요 상태입니다." in context["reasons"]
+    assert any("독립성 보류" in item for item in context["blockers"])
+    assert any("총점 기준 미달: 76 / 80점" in item for item in context["blockers"])
+    assert any("세부 항목 하한 미달: 정확성 17 / 18점" in item for item in context["blockers"])
+    assert any("위험 지적" in item for item in context["blockers"])
+    assert any("보완 권고" in item for item in context["blockers"])
+    assert any("같은 원인이 남으면" in item for item in context["review_focus"])
+    assert "저장된 Agent 파이프라인 결과" in context["reuses"]
+    assert "Agent 개선안 내용" in context["not_changed"]
+    assert context["stored_rubric_version"] == "J1.0"
+    assert context["current_rubric_version"] == "J1.1"
+
+
+def test_history_judge_reevaluation_result_model_links_pass_to_validity():
+    result = {
+        "run_id": "RUN-1",
+        "case_id": "TC-01",
+        "judge_result": {
+            "decision": "PASS",
+            "total_score": 86,
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
+            "evaluated_at": "2026-07-31T10:10:11+09:00",
+            "evaluation_history": [
+                {"decision": "REVIEW_REQUIRED", "total_score": 76}
+            ],
+        },
+    }
+
+    model = voc_quality_view._history_judge_reevaluation_result_model(
+        result,
+        current_judge_rubric={"version": "J1.1", "dimensions": {}},
+    )
+
+    assert model["before_decision"] == "REVIEW_REQUIRED"
+    assert model["after_decision"] == "PASS"
+    assert model["decision_changed"] is True
+    assert model["score_delta"] == "+10점 상승"
+    assert model["next_action"]["target"]["enabled"] is True
+    assert model["next_action"]["target"]["page"] == voc_quality_view.VOC_VALIDITY_PAGE_NAME
+    assert model["next_action"]["target"]["action_code"] == "RUN_VALIDITY"
+    assert model["next_action"]["target"]["button_label"] == "타당성 평가로 이동"
+    assert model["next_action"]["target"]["case_id"] == "TC-01"
+
+
+def test_history_judge_reevaluation_progress_model_shows_running_state():
+    model = voc_quality_view._history_judge_reevaluation_progress_model(
+        {
+            "status": "RUNNING",
+            "started_at": "2026-07-31T10:00:00+09:00",
+            "updated_at": "2026-07-31T10:00:02+09:00",
+            "progress": {
+                "percent": 52,
+                "stage": "독립 LLM 요청",
+                "detail": "선택한 Provider와 모델로 동일 결과를 재평가하고 있습니다.",
+            },
+        }
+    )
+
+    assert model["status"] == "RUNNING"
+    assert model["percent"] == 52
+    assert model["fraction"] == 0.52
+    assert model["stage"] == "독립 LLM 요청"
+    assert "재평가" in model["detail"]
+
+
+def test_history_judge_reevaluation_progress_model_completes_to_result_focus():
+    model = voc_quality_view._history_judge_reevaluation_progress_model(
+        {
+            "status": "COMPLETED",
+            "done": True,
+            "progress": {"percent": 92, "stage": "결과 저장"},
+        }
+    )
+
+    assert model["percent"] == 100
+    assert model["fraction"] == 1.0
+    assert model["stage"] == "독립 LLM 재평가 완료"
+    assert "결과 영역으로 이동" in model["detail"]
+    assert (
+        voc_quality_view._history_judge_reevaluation_focus_key("RUN-1", "TC-01")
+        == "voc_history_judge_reevaluation_focus::RUN-1::TC-01"
+    )
+
+
+def test_history_judge_reevaluation_result_model_keeps_review_on_blockers():
+    result = {
+        "run_id": "RUN-1",
+        "case_id": "TC-01",
+        "judge_result": {
+            "decision": "REVIEW_REQUIRED",
+            "total_score": 76,
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "dimension_scores": {
+                "accuracy": {"score": 17, "max_points": 25, "reason": "원인 일부 부족"},
+            },
+            "evaluation_history": [
+                {"decision": "REVIEW_REQUIRED", "total_score": 75}
+            ],
+        },
+    }
+
+    model = voc_quality_view._history_judge_reevaluation_result_model(
+        result,
+        current_judge_rubric={
+            "version": "J1.1",
+            "dimensions": {
+                "accuracy": {"label": "정확성", "max_points": 25, "pass_floor": 18},
+            },
+        },
+    )
+
+    assert model["after_decision"] == "REVIEW_REQUIRED"
+    assert model["next_action"]["target"]["enabled"] is False
+    assert model["next_action"]["label"] == "검토 필요 원인 확인"
+    assert any("총점 기준 미달" in item for item in model["blockers"])
+    assert any("세부 항목 하한 미달: 정확성 17 / 18점" in item for item in model["blockers"])
 
 
 def test_history_listing_does_not_interrupt_run_owned_by_another_process(monkeypatch, tmp_path):

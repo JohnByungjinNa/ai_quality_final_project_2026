@@ -224,9 +224,9 @@ VOC_NEXT_ACTIONS = {
         "icon": "pending_actions",
     },
     "RUBRIC_REEVALUATE": {
-        "label": "Rubric 재평가",
+        "label": "Rubric 기준 영향 확인",
         "menu": "수행 이력",
-        "detail": "Run 저장 당시 평가 기준과 현재 Rubric이 달라졌습니다. 기존 Agent 파이프라인 결과를 보존한 상태에서 평가 기준 변경 영향을 확인합니다.",
+        "detail": "Run 저장 당시 평가 기준과 현재 Rubric이 달라졌습니다. 독립 LLM PASS 확보 목적이 아니라 기존 결과를 보존한 상태에서 기준 변경 영향을 확인합니다.",
         "tone": "orange",
         "icon": "rule_settings",
     },

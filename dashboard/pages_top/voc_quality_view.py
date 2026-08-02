@@ -271,6 +271,14 @@ VALIDITY_RUN_TYPE_FILTER_VALUES = {
     "일괄 수행": "BATCH",
     "재시험": "RETEST",
 }
+VALIDITY_STATUS_FILTER_BY_ACTION = {
+    "RUN_VALIDITY": "전체",
+    "REWORK_AND_RETEST": "평가 완료",
+    "QA_REVIEW": "QA 검토 가능",
+    "BUSINESS_APPROVAL": "업무 승인 가능",
+    "FORMAL_APPROVED": "정식 승인",
+    "REPORT_READY": "정식 승인",
+}
 VALIDITY_CRITERIA_LABELS = {
     "complaint_to_root_cause": "불만↔근본 원인",
     "root_cause_to_action": "원인↔개선 조치",
@@ -293,7 +301,7 @@ VALIDITY_HOLD_RULE_LABELS = {
     "missing_voc_or_trace_evidence": "VOC·실행 Trace 근거 부족",
     "unsafe_or_noncompliant_action": "안전·규제 부적합 조치",
     "unresolved_high_or_critical_defect": "미종결 High/Critical 결함",
-    "judge_error_or_not_run": "독립 LLM 평가 미수행·오류",
+    "judge_error_or_not_run": "독립 LLM 평가 미통과 또는 미수행",
     "safety_regression_against_baseline": "기존 대비 안전성 회귀",
 }
 
@@ -632,6 +640,48 @@ def _execute_goal_judge(
     return reevaluate_voc_run_case(run_id, case_id, judge_config)
 
 
+def _execute_history_judge_reevaluation(
+    job_id: str,
+    run_id: str,
+    case_id: str,
+    judge_config: dict,
+) -> dict:
+    update_background_job(
+        job_id,
+        progress={
+            "percent": 12,
+            "stage": "재평가 준비",
+            "detail": "저장된 Run·Case 증적과 Agent 파이프라인 결과를 확인합니다.",
+        },
+    )
+    update_background_job(
+        job_id,
+        progress={
+            "percent": 34,
+            "stage": "평가 입력 구성",
+            "detail": "기존 개선안은 변경하지 않고 독립 LLM 평가 입력만 다시 구성합니다.",
+        },
+    )
+    update_background_job(
+        job_id,
+        progress={
+            "percent": 52,
+            "stage": "독립 LLM 요청",
+            "detail": "선택한 Provider와 모델로 동일 결과를 재평가하고 있습니다.",
+        },
+    )
+    reevaluated = reevaluate_voc_run_case(run_id, case_id, judge_config)
+    update_background_job(
+        job_id,
+        progress={
+            "percent": 92,
+            "stage": "결과 저장",
+            "detail": "재평가 결과와 이전 평가 이력을 Run 증적에 저장했습니다.",
+        },
+    )
+    return reevaluated
+
+
 @st.cache_resource
 def _batch_executor():
     return ThreadPoolExecutor(max_workers=1, thread_name_prefix="voc-batch")
@@ -694,14 +744,34 @@ def _judge_config_summary(judge_config: dict) -> dict:
     }
 
 
+def _html_status_chip_label(icon_name: str) -> str:
+    return {
+        "gavel": "평가",
+        "block": "미실행",
+        "hub": "연결",
+        "fact_check": "평가",
+        "hourglass_top": "진행",
+        "progress_activity": "진행",
+        "check_circle": "완료",
+        "done_all": "완료",
+        "warning": "확인",
+        "error": "오류",
+        "pending": "대기",
+        "pending_actions": "대기",
+        "play_circle": "실행",
+        "lock": "잠금",
+    }.get(str(icon_name or "").strip(), "확인")
+
+
 def _render_batch_judge_selection_badge(judge_config: dict) -> None:
     summary = _judge_config_summary(judge_config)
     tone = "on" if summary["enabled"] else "off"
     icon = "gavel" if summary["enabled"] else "block"
+    icon_label = _html_status_chip_label(icon)
     st.markdown(
         f"""
         <div class="vqa-batch-judge-summary {tone}">
-            <span class="material-symbols-rounded">{icon}</span>
+            <span>{escape(icon_label)}</span>
             <div>
                 <small>선택된 독립 LLM 평가</small>
                 <strong>{escape(summary["label"])}</strong>
@@ -715,9 +785,10 @@ def _render_batch_judge_selection_badge(judge_config: dict) -> None:
             font-family:'Segoe UI','Malgun Gothic',sans-serif;overflow:hidden;
         }}
         .vqa-batch-judge-summary span{{
-            flex:0 0 24px;font-size:24px;color:#155a96;
+            flex:0 0 38px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:900;color:#155a96;background:#e7f1fb;border:1px solid #bfd7ef;
         }}
-        .vqa-batch-judge-summary.off span{{color:#8a98aa}}
+        .vqa-batch-judge-summary.off span{{color:#6f7c8c;background:#eef1f4;border-color:#d3d9e0}}
         .vqa-batch-judge-summary small{{
             display:block;font-size:9px;line-height:1.1;color:#708096;font-weight:800;
         }}
@@ -792,7 +863,7 @@ def _manual_judge_config_controls(
             f"""
             <div class="vqa-cross-judge-guide">
                 <div class="vqa-cross-judge-card source">
-                    <span class="material-symbols-rounded">hub</span>
+                    <span>연결</span>
                     <div>
                         <small>1단계 파이프라인 LLM</small>
                         <strong>{pipeline_provider}</strong>
@@ -801,7 +872,7 @@ def _manual_judge_config_controls(
                 </div>
                 <div class="vqa-cross-judge-arrow">교차 평가</div>
                 <div class="vqa-cross-judge-card judge">
-                    <span class="material-symbols-rounded">fact_check</span>
+                    <span>평가</span>
                     <div>
                         <small>2단계 선택 평가 모델</small>
                         <strong>{selected_label}</strong>
@@ -820,7 +891,10 @@ def _manual_judge_config_controls(
                 border:1px solid #c9d8e8;background:#f8fbff;color:#244b72;min-height:76px;
             }}
             .vqa-cross-judge-card.judge{{background:#ffffff;border-color:#b9d2ed}}
-            .vqa-cross-judge-card span{{font-size:27px;color:#1f6fb2}}
+            .vqa-cross-judge-card span{{
+                flex:0 0 38px;height:28px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+                font-size:11px;font-weight:900;color:#1f6fb2;background:#e7f1fb;border:1px solid #bfd7ef;
+            }}
             .vqa-cross-judge-card small{{display:block;font-size:10px;color:#6a7b8f;margin-bottom:2px}}
             .vqa-cross-judge-card strong{{display:block;font-size:15px;color:#174f85}}
             .vqa-cross-judge-card p{{margin:2px 0 0;font-size:11px;color:#65788c}}
@@ -1792,6 +1866,7 @@ def _live_testcase_pipeline():
         st.session_state.pop("goal_testcase_job_id", None)
         discard_background_job(job_id)
         _load_goal_monitor_snapshot.clear()
+        _load_validity_candidates.clear()
         st.rerun(scope="app")
         return
     trace_id = st.session_state.get("goal_testcase_trace_id", "")
@@ -1839,6 +1914,8 @@ def _live_manual_judge():
     st.session_state.pop("goal_judge_focus_running_once", None)
     discard_background_job(job_id)
     _load_voc_history_rows.clear()
+    _load_validity_candidates.clear()
+    st.session_state.goal_manual_followup_focus_once = True
     st.rerun()
 
 
@@ -2243,6 +2320,7 @@ def _render_agent_control_log() -> None:
         return
     tone = "good" if log.get("ok") else "bad" if not log.get("command_ok") else "warn"
     icon = "check_circle" if log.get("ok") else "error" if not log.get("command_ok") else "warning"
+    icon_label = _html_status_chip_label(icon)
     lines = "".join(
         f"<li>{escape(str(line))}</li>"
         for line in log.get("lines", [])
@@ -2251,7 +2329,7 @@ def _render_agent_control_log() -> None:
         f"""
         <section class="vqa-agent-log {tone}">
             <div class="vqa-agent-log-head">
-                <span class="material-symbols-rounded">{icon}</span>
+                <span>{escape(icon_label)}</span>
                 <div>
                     <strong>{escape(str(log.get('title') or 'Agent 제어 처리 로그'))}</strong>
                     <small>처리 시간 {escape(str(log.get('duration_seconds', '-')))}초 · 확인 시각 {escape(str(log.get('checked_at', '-')))}</small>
@@ -2450,7 +2528,7 @@ def _render_agent_control_running_panel(job: dict) -> None:
         f"""
         <section class="vqa-agent-log warn">
             <div class="vqa-agent-log-head">
-                <span class="material-symbols-rounded">progress_activity</span>
+                <span>진행</span>
                 <div>
                     <strong>{escape(target)} {escape(action_label)} 처리 중</strong>
                     <small>시작 시각 {escape(started_at)} · 완료되면 Agent 상태를 자동으로 갱신합니다.</small>
@@ -3014,10 +3092,13 @@ def render_agents():
         .vqa-agent-log.warn{border-left-color:#b36a08}
         .vqa-agent-log.bad{border-left-color:#d83f36}
         .vqa-agent-log-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-        .vqa-agent-log-head span{font-size:24px;color:#155a96}
-        .vqa-agent-log.good .vqa-agent-log-head span{color:#299049}
-        .vqa-agent-log.warn .vqa-agent-log-head span{color:#b36a08}
-        .vqa-agent-log.bad .vqa-agent-log-head span{color:#d83f36}
+        .vqa-agent-log-head span{
+            flex:0 0 38px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:900;color:#155a96;background:#e7f1fb;border:1px solid #bfd7ef;
+        }
+        .vqa-agent-log.good .vqa-agent-log-head span{color:#1f7f43;background:#edf8f0;border-color:#bfdfca}
+        .vqa-agent-log.warn .vqa-agent-log-head span{color:#9b5c07;background:#fff2dc;border-color:#e6c383}
+        .vqa-agent-log.bad .vqa-agent-log-head span{color:#bd3029;background:#fff0ee;border-color:#efbbb6}
         .vqa-agent-log-head strong{display:block;color:#173f68;font-size:13px}
         .vqa-agent-log-head small{display:block;margin-top:2px;color:#718096;font-size:10px}
         .vqa-agent-log ol{
@@ -3355,7 +3436,7 @@ def _render_manual_judge_running_panel(selected_case_id: str) -> None:
         f"""
         <div class="vqa-judge-running">
             <div class="vqa-judge-running-head">
-                <span class="material-symbols-rounded">hourglass_top</span>
+                <span>진행</span>
                 <div>
                     <strong>독립 LLM 평가 진행 중</strong>
                     <small>Case {escape(str(running_case_id))} · 선택한 Provider가 저장된 Agent 파이프라인 개선안을 평가하고 있습니다.</small>
@@ -3371,7 +3452,10 @@ def _render_manual_judge_running_panel(selected_case_id: str) -> None:
             font-family:'Segoe UI','Malgun Gothic',sans-serif;
         }}
         .vqa-judge-running-head{{display:flex;align-items:center;gap:10px;margin-bottom:10px}}
-        .vqa-judge-running-head span{{color:#1f6fb2;font-size:26px}}
+        .vqa-judge-running-head span{{
+            flex:0 0 38px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+            color:#1f6fb2;background:#e7f1fb;border:1px solid #bfd7ef;font-size:11px;font-weight:900;
+        }}
         .vqa-judge-running-head strong{{display:block;font-size:13px}}
         .vqa-judge-running-head small{{display:block;margin-top:2px;color:#687a90;font-size:10px}}
         .vqa-judge-running-bar{{
@@ -3505,6 +3589,235 @@ def _render_goal_judge_result(selected_case_id: str):
                     st.caption("표시할 내용 없음")
 
 
+def _manual_followup_candidate(run_id: str, case_id: str) -> dict:
+    if not run_id or not case_id:
+        return {}
+    try:
+        return next(
+            (
+                candidate
+                for candidate in _load_validity_candidates()
+                if candidate.get("run_id") == run_id and candidate.get("case_id") == case_id
+            ),
+            {},
+        )
+    except Exception:
+        return {}
+
+
+def _manual_followup_action_target(run_id: str, case_id: str, action: dict) -> dict:
+    action_code = str(action.get("code") or "")
+    button_labels = {
+        "RUN_VALIDITY": "타당성 평가로 이동",
+        "REWORK_AND_RETEST": "보완·재평가로 이동",
+        "QA_REVIEW": "QA 검토로 이동",
+        "BUSINESS_APPROVAL": "업무 승인으로 이동",
+        "CHECK_REMAINING_CASES": "잔여 Case 검토로 이동",
+        "REPORT_READY": "품질 보고서로 이동",
+    }
+    if action_code in {"CHECK_PIPELINE_ERROR", "REVIEW_PIPELINE_RESULT"}:
+        return {
+            "enabled": True,
+            "page": "history_detail",
+            "run_id": run_id,
+            "case_id": case_id,
+            "action_code": action_code,
+            "button_label": "Run 증적 확인",
+            "detail": (
+                f"{case_id}의 독립 LLM 평가가 검토 필요 상태입니다. "
+                "바로 타당성 검증으로 넘기지 않고 수행 이력 상세에서 판정 근거와 Agent 결과를 먼저 확인합니다."
+            ),
+        }
+    if action_code in VOC_HISTORY_NAVIGABLE_VALIDITY_ACTIONS:
+        return {
+            "enabled": True,
+            "page": VOC_VALIDITY_PAGE_NAME,
+            "run_id": run_id,
+            "case_id": case_id,
+            "action_code": action_code,
+            "button_label": button_labels.get(action_code, "다음 액션으로 이동"),
+            "detail": f"{case_id}의 {action.get('label', '다음 액션')} 흐름을 이어서 진행합니다.",
+        }
+    if action_code == "REPORT_READY":
+        return {
+            "enabled": True,
+            "page": VOC_REPORT_PAGE_NAME,
+            "run_id": run_id,
+            "case_id": case_id,
+            "action_code": "REPORT_READY",
+            "button_label": button_labels["REPORT_READY"],
+            "detail": "업무 승인 완료 증적을 품질 보고서와 최종 인수·시연 대상으로 연결합니다.",
+        }
+    if action_code == "RUN_JUDGE":
+        return {
+            "enabled": False,
+            "button_label": "위에서 독립 LLM 평가 실행",
+            "detail": "Agent 파이프라인 산출물을 먼저 독립 LLM으로 평가하면 타당성 검증으로 이어갈 수 있습니다.",
+        }
+    return {
+        "enabled": False,
+        "button_label": "이동 액션 없음",
+        "detail": action.get("detail") or "현재 상태에서 바로 이동할 후속 화면이 없습니다.",
+    }
+
+
+def _manual_followup_flow_model(
+    test_execution: dict | None,
+    selected_case_id: str,
+    *,
+    candidate: dict | None = None,
+) -> dict:
+    test_execution = test_execution or {}
+    executed_case = test_execution.get("case") or {}
+    case_id = str(executed_case.get("case_id") or selected_case_id or "")
+    run_id = str(test_execution.get("run_id") or "")
+    if not run_id or not case_id:
+        return {"visible": False}
+
+    execution = test_execution.get("execution") if isinstance(test_execution.get("execution"), dict) else {}
+    result = execution.get("result") if isinstance(execution.get("result"), dict) else {}
+    pipeline_ok = bool(result.get("ok") or execution.get("ok"))
+    if test_execution.get("mode") == "voc":
+        pipeline_ok = pipeline_ok and bool(result.get("ok"))
+    evidence_status = str(test_execution.get("evidence_status") or ("PASS" if pipeline_ok else "ERROR"))
+
+    judge_result = test_execution.get("judge_result") if isinstance(test_execution.get("judge_result"), dict) else {}
+    judge_status = str(judge_result.get("decision") or "NOT_RUN")
+    if candidate is None and judge_status not in {"", "NOT_RUN"}:
+        candidate = _manual_followup_candidate(run_id, case_id)
+    candidate = candidate or {}
+
+    validity_status = str(candidate.get("validity_status") or "NOT_RUN")
+    workflow_state = str(candidate.get("workflow_state") or "DRAFT")
+    immediate_hold_count = int(candidate.get("immediate_hold_count") or 0)
+    formal_approval = bool(candidate.get("formal_approval"))
+    case_state = {
+        "case_id": case_id,
+        "status": evidence_status,
+        "message": result.get("message") or result.get("error") or "",
+        "judge_status": str(candidate.get("judge_status") or judge_status),
+        "validity_status": validity_status,
+        "approval_state": workflow_state,
+        "immediate_hold_count": immediate_hold_count,
+        "formal_approval": formal_approval,
+    }
+    action = voc_case_next_action(case_state)
+    readiness = validity_human_review_readiness(
+        validity_status=validity_status,
+        workflow_state=workflow_state,
+        immediate_hold_count=immediate_hold_count,
+        formal_approval=formal_approval,
+    )
+    target = _manual_followup_action_target(run_id, case_id, action)
+
+    judge_score = candidate.get("judge_score", judge_result.get("total_score"))
+    validity_score = candidate.get("validity_score")
+    cards = [
+        {
+            "icon": "account_tree",
+            "label": "Agent 파이프라인",
+            "value": "완료" if pipeline_ok else "확인 필요",
+            "detail": f"증적 상태: {_voc_status_label(evidence_status)}",
+            "tone": "green" if pipeline_ok and evidence_status == "PASS" else ("orange" if pipeline_ok else "red"),
+        },
+        {
+            "icon": "rule",
+            "label": "독립 LLM 평가",
+            "value": _voc_status_label(case_state["judge_status"]),
+            "detail": f"{judge_score}점" if judge_score is not None else "평가 후 타당성 검증 가능",
+            "tone": "green" if case_state["judge_status"] == "PASS" else ("gray" if case_state["judge_status"] == "NOT_RUN" else "orange"),
+        },
+        {
+            "icon": "fact_check",
+            "label": "개선안 타당성 평가",
+            "value": _voc_status_label(validity_status),
+            "detail": f"{validity_score}점" if validity_score is not None else "타당성 평가 전",
+            "tone": "green" if validity_status == "AI_PASS" else ("gray" if validity_status == "NOT_RUN" else "orange"),
+        },
+        {
+            "icon": "verified",
+            "label": "QA·업무 승인",
+            "value": readiness["action_label"],
+            "detail": f"보류 규칙 {immediate_hold_count}건 · {_voc_status_label(workflow_state)}",
+            "tone": "green" if readiness["action"] in {"QA_REVIEW", "BUSINESS_APPROVAL", "FORMAL_APPROVED"} else "gray",
+        },
+    ]
+    return {
+        "visible": True,
+        "run_id": run_id,
+        "case_id": case_id,
+        "question": executed_case.get("question") or executed_case.get("name") or "-",
+        "action": action,
+        "action_code": action["code"],
+        "target": target,
+        "cards": cards,
+    }
+
+
+def _render_goal_followup_focus_anchor_once():
+    _render_goal_scroll_anchor(
+        "goal-manual-followup-scroll-anchor",
+        scroll_flag_key="goal_manual_followup_focus_once",
+        block="center",
+    )
+
+
+def _render_manual_followup_flow(selected_case_id: str):
+    model = _manual_followup_flow_model(st.session_state.get("goal_testcase_result"), selected_case_id)
+    if not model.get("visible"):
+        return
+
+    action = model["action"]
+    target = model["target"]
+    badge_tone = {
+        "green": "green",
+        "blue": "blue",
+        "orange": "orange",
+        "red": "red",
+        "gray": "gray",
+    }.get(str(action.get("tone") or "gray"), "gray")
+    _render_goal_followup_focus_anchor_once()
+    with st.container(border=True):
+        heading, state = st.columns([2.8, 1], gap="small", vertical_alignment="center")
+        with heading:
+            st.markdown(f"#### 다음 액션 흐름 · {model['case_id']}")
+            st.caption(
+                f"현재 선택한 Test Case의 최근 저장 Run 기준입니다. "
+                f"Run {model['run_id']} · {model['question']}"
+            )
+        with state:
+            st.markdown(f":{badge_tone}-badge[{action.get('label', '다음 액션 확인')}]", text_alignment="right")
+
+        columns = st.columns(4, gap="small")
+        for column, card in zip(columns, model["cards"], strict=False):
+            tone = {
+                "green": "green",
+                "blue": "blue",
+                "orange": "orange",
+                "red": "red",
+                "gray": "gray",
+            }.get(card["tone"], "gray")
+            with column.container(border=True, height=118):
+                st.caption(f":material/{card['icon']}: {card['label']}")
+                st.markdown(f":{tone}-badge[{card['value']}]")
+                st.caption(card["detail"])
+
+        action_col, detail_col = st.columns([0.9, 2.7], gap="medium", vertical_alignment="center")
+        with action_col:
+            if st.button(
+                target["button_label"],
+                type="primary" if target.get("enabled") else "secondary",
+                icon=":material/arrow_forward:",
+                disabled=not target.get("enabled"),
+                width="stretch",
+                key=f"goal_manual_next_action_{model['run_id']}_{model['case_id']}",
+            ):
+                _apply_history_next_action_target(target)
+                st.rerun()
+        with detail_col:
+            st.caption(target.get("detail", action.get("detail", "선택 대상의 다음 업무 단계로 이동합니다.")))
+
+
 def _render_goal_testcase_result(selected_case_id: str):
     test_execution = st.session_state.get("goal_testcase_result")
     executed_case_id = (test_execution or {}).get("case", {}).get("case_id")
@@ -3585,6 +3898,7 @@ def _render_goal_testcase_result(selected_case_id: str):
             border=True,
         )
         st.metric("다음 단계", "독립 LLM 평가", border=True)
+    _render_manual_followup_flow(selected_case_id)
     result_columns = st.columns(2, gap="medium")
     with result_columns[0].container(border=True):
         st.markdown("**1-1. VOC 요약**")
@@ -5180,6 +5494,7 @@ def _batch_preflight_display_state(preflight: dict) -> dict:
 
 def _render_batch_preflight_readiness(preflight: dict) -> None:
     state = _batch_preflight_display_state(preflight)
+    icon_label = _html_status_chip_label(str(state.get("icon") or ""))
     detail_items = "".join(
         f"<li>{escape(str(item))}</li>"
         for item in state.get("items", [])
@@ -5189,7 +5504,7 @@ def _render_batch_preflight_readiness(preflight: dict) -> None:
     st.markdown(
         f"""
         <section class="vqa-batch-preflight {state['tone']}">
-            <span class="material-symbols-rounded">{state['icon']}</span>
+            <span>{escape(icon_label)}</span>
             <div>
                 <strong>{escape(state["title"])}</strong>
                 <p>{escape(state["message"])}</p>
@@ -5208,11 +5523,14 @@ def _render_batch_preflight_readiness(preflight: dict) -> None:
         .vqa-batch-preflight.warn{{border-left-color:#b36a08;background:linear-gradient(135deg,#fff8ec,#fff)}}
         .vqa-batch-preflight.bad{{border-left-color:#d83f36;background:linear-gradient(135deg,#fff4f2,#fff)}}
         .vqa-batch-preflight.idle{{border-left-color:#8a98aa;background:linear-gradient(135deg,#f6f8fb,#fff)}}
-        .vqa-batch-preflight>span{{flex:0 0 28px;font-size:28px;color:#155a96;margin-top:1px}}
-        .vqa-batch-preflight.good>span{{color:#299049}}
-        .vqa-batch-preflight.warn>span{{color:#b36a08}}
-        .vqa-batch-preflight.bad>span{{color:#d83f36}}
-        .vqa-batch-preflight.idle>span{{color:#8a98aa}}
+        .vqa-batch-preflight>span{{
+            flex:0 0 38px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:900;color:#155a96;background:#e7f1fb;border:1px solid #bfd7ef;margin-top:1px;
+        }}
+        .vqa-batch-preflight.good>span{{color:#1f7f43;background:#edf8f0;border-color:#bfdfca}}
+        .vqa-batch-preflight.warn>span{{color:#9b5c07;background:#fff2dc;border-color:#e6c383}}
+        .vqa-batch-preflight.bad>span{{color:#bd3029;background:#fff0ee;border-color:#efbbb6}}
+        .vqa-batch-preflight.idle>span{{color:#6f7c8c;background:#eef1f4;border-color:#d3d9e0}}
         .vqa-batch-preflight strong{{display:block;color:#173f68;font-size:14px;line-height:1.2}}
         .vqa-batch-preflight p{{margin:4px 0 0;color:#40536d;font-size:12px;line-height:1.35}}
         .vqa-batch-preflight ul{{margin:6px 0 0;padding-left:16px;color:#40536d;font-size:11px;line-height:1.35}}
@@ -5224,6 +5542,9 @@ def _render_batch_preflight_readiness(preflight: dict) -> None:
 
 
 def render_batch_execution():
+    focus_notice = st.session_state.pop("voc_batch_focus_notice", None)
+    if focus_notice:
+        st.info(focus_notice, icon=":material/replay:")
     st.markdown("### 실행 대상 선택")
     st.caption(
         "기본은 순차 실행입니다. 실행 결과와 재시도 내역은 테스트케이스별 증적으로 즉시 저장됩니다."
@@ -5615,6 +5936,414 @@ def _history_score_rows(scores: dict | None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _history_float_value(value) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_judge_pass_threshold(rubric: dict | None) -> float:
+    rubric = rubric if isinstance(rubric, dict) else {}
+    decisions = rubric.get("automatic_decisions")
+    if isinstance(decisions, list):
+        for item in decisions:
+            if isinstance(item, dict) and str(item.get("decision", "")).upper() == "PASS":
+                threshold = _history_float_value(item.get("min_score"))
+                if threshold is not None:
+                    return threshold
+    return 80.0
+
+
+def _history_limited_items(values, *, limit: int = 2) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    items = [str(value).strip() for value in values if str(value or "").strip()]
+    if len(items) <= limit:
+        return items
+    return [*items[:limit], f"외 {len(items) - limit}건"]
+
+
+def _history_judge_review_blockers(judge: dict, rubric: dict | None) -> list[str]:
+    judge = judge if isinstance(judge, dict) else {}
+    rubric = rubric if isinstance(rubric, dict) else {}
+    decision = str(judge.get("decision") or "NOT_RUN").strip().upper() or "NOT_RUN"
+    threshold = _history_judge_pass_threshold(rubric)
+    blockers: list[str] = []
+
+    if decision == "NOT_RUN":
+        blockers.append("독립 LLM 평가 결과가 아직 없어 재평가가 아니라 최초 평가가 필요합니다.")
+        return blockers
+
+    error = str(judge.get("error") or "").strip()
+    if error:
+        blockers.append(f"이전 평가 오류: {_voc_display_term(error)}")
+
+    triggered = [
+        str(rule).strip()
+        for rule in (judge.get("immediate_fail_rules_triggered") or [])
+        if str(rule or "").strip()
+    ]
+    if triggered:
+        blockers.append("즉시 실패 규칙 감지: " + ", ".join(triggered[:3]))
+
+    if judge.get("independence_hold"):
+        reason = str(judge.get("independence_hold_reason") or "").strip()
+        blockers.append(
+            "독립성 보류: "
+            + _voc_display_term(reason or "평가 Provider/모델 독립성 기준으로 추가 확인이 필요합니다.")
+        )
+
+    score = _history_float_value(judge.get("total_score"))
+    if decision in {"REVIEW_REQUIRED", "FAIL"}:
+        if score is None:
+            blockers.append("총점이 저장되지 않아 독립 LLM 판정 근거를 확인할 수 없습니다.")
+        elif score < threshold:
+            blockers.append(f"총점 기준 미달: {score:g} / {threshold:g}점")
+
+    dimension_scores = judge.get("dimension_scores")
+    dimensions = rubric.get("dimensions")
+    if isinstance(dimension_scores, dict) and isinstance(dimensions, dict):
+        for key, spec in dimensions.items():
+            if not isinstance(spec, dict):
+                continue
+            floor = _history_float_value(spec.get("pass_floor"))
+            if floor is None:
+                continue
+            detail = dimension_scores.get(key)
+            score_value = (
+                _history_float_value(detail.get("score", detail.get("points", detail.get("value"))))
+                if isinstance(detail, dict)
+                else _history_float_value(detail)
+            )
+            label = str(spec.get("label") or HISTORY_SCORE_LABELS.get(str(key), str(key)))
+            if score_value is None:
+                blockers.append(f"세부 항목 미평가: {label} / 하한 {floor:g}점")
+            elif score_value < floor:
+                blockers.append(f"세부 항목 하한 미달: {label} {score_value:g} / {floor:g}점")
+
+    for risk in _history_limited_items(judge.get("risks")):
+        blockers.append(f"위험 지적: {_voc_display_term(risk)}")
+    for recommendation in _history_limited_items(judge.get("recommendations")):
+        blockers.append(f"보완 권고: {_voc_display_term(recommendation)}")
+
+    if not blockers and decision == "PASS":
+        blockers.append("PASS 상태입니다. 재평가는 Provider 교차 확인이나 Rubric 변경 영향 확인이 필요할 때만 실행합니다.")
+    elif not blockers:
+        blockers.append("저장된 평가 결과만으로 세부 원인을 식별하지 못했습니다. 원본 평가 JSON의 판정 근거를 확인하세요.")
+    return blockers[:8]
+
+
+def _history_judge_review_focus(
+    *,
+    decision: str,
+    rubric_changed: bool,
+    has_error: bool,
+    has_content_blockers: bool,
+) -> list[str]:
+    focus = []
+    if has_error:
+        focus.append("이전 오류가 사라지고 정상 평가 결과가 생성됐는지 확인")
+    if rubric_changed:
+        focus.append("변경된 Rubric에서 총점·세부 하한·판정이 어떻게 달라졌는지 확인")
+    if decision != "PASS":
+        focus.append("기존 검토 필요 원인이 해소되어 PASS로 전환됐는지 확인")
+    focus.append("독립성 보류가 남아 있으면 다른 Provider로 교차 평가")
+    if has_content_blockers:
+        focus.append("같은 원인이 남으면 재평가 반복이 아니라 개선안 보완 또는 RETEST 진행")
+    else:
+        focus.append("판정만 달라졌다면 Provider/모델별 평가 차이를 비교")
+    return focus
+
+
+def _history_judge_reevaluation_result_key(run_id: str, case_id: str) -> str:
+    return f"voc_history_judge_reevaluation_result::{run_id}::{case_id}"
+
+
+def _history_judge_reevaluation_job_key(run_id: str, case_id: str) -> str:
+    return f"voc_history_judge_reevaluation_job::{run_id}::{case_id}"
+
+
+def _history_judge_reevaluation_focus_key(run_id: str, case_id: str) -> str:
+    return f"voc_history_judge_reevaluation_focus::{run_id}::{case_id}"
+
+
+def _history_judge_reevaluation_error_key(run_id: str, case_id: str) -> str:
+    return f"voc_history_judge_reevaluation_error::{run_id}::{case_id}"
+
+
+def _history_dom_id(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-")
+    return safe or "target"
+
+
+def _history_judge_reevaluation_progress_model(job: dict | None) -> dict:
+    job = job if isinstance(job, dict) else {}
+    status = str(job.get("status") or "RUNNING")
+    progress = job.get("progress", {}) if isinstance(job.get("progress"), dict) else {}
+    raw_percent = progress.get("percent")
+    try:
+        percent = int(raw_percent)
+    except (TypeError, ValueError):
+        percent = 8
+    if job.get("done") and status == "COMPLETED":
+        percent = 100
+    elif job.get("done") or status == "ERROR":
+        percent = 100
+    else:
+        percent = min(max(percent, 5), 96)
+    stage = str(progress.get("stage") or "독립 LLM 재평가 진행 중")
+    detail = str(progress.get("detail") or "저장된 동일 Agent 파이프라인 결과를 독립 LLM으로 다시 평가합니다.")
+    if status == "ERROR":
+        stage = "독립 LLM 재평가 오류"
+        detail = str(job.get("error") or detail)
+    elif job.get("done") and status == "COMPLETED":
+        stage = "독립 LLM 재평가 완료"
+        detail = "재평가 결과를 불러와 결과 영역으로 이동합니다."
+    return {
+        "status": status,
+        "percent": percent,
+        "fraction": min(max(percent / 100, 0.0), 1.0),
+        "stage": stage,
+        "detail": detail,
+        "started_at": _history_table_timestamp(job.get("started_at")),
+        "updated_at": _history_table_timestamp(job.get("updated_at")),
+        "error": str(job.get("error") or ""),
+    }
+
+
+def _render_history_judge_reevaluation_progress(
+    run_id: str,
+    case_id: str,
+    job: dict | None,
+) -> None:
+    model = _history_judge_reevaluation_progress_model(job)
+    tone = "red" if model["status"] == "ERROR" else "blue"
+    with st.container(border=True):
+        heading, state = st.columns([2.5, 1], gap="small", vertical_alignment="center")
+        with heading:
+            st.markdown(f"#### 독립 LLM 재평가 진행 · {case_id}")
+            st.caption(model["detail"])
+        with state:
+            st.markdown(f":{tone}-badge[{model['stage']}]", text_alignment="right")
+        st.progress(
+            model["fraction"],
+            text=f"{model['percent']}% · {model['stage']}",
+        )
+        st.caption(
+            f"Run {run_id} · 시작 {model['started_at'] or '-'} · 갱신 {model['updated_at'] or '-'} · "
+            "현재 Streamlit 서버가 켜져 있으면 팝업을 닫아도 백그라운드 작업은 계속됩니다."
+        )
+
+
+@st.fragment(run_every="1s")
+def _live_history_judge_reevaluation(run_id: str, case_id: str) -> None:
+    job_key = _history_judge_reevaluation_job_key(run_id, case_id)
+    job_id = str(st.session_state.get(job_key) or "")
+    if not job_id:
+        return
+    job = background_job_snapshot(job_id)
+    if not job:
+        st.session_state.pop(job_key, None)
+        st.session_state[_history_judge_reevaluation_error_key(run_id, case_id)] = (
+            "독립 LLM 재평가 작업 상태를 찾을 수 없습니다. 다시 실행해 주세요."
+        )
+        st.rerun()
+        return
+
+    _render_history_judge_reevaluation_progress(run_id, case_id, job)
+    if not job.get("done"):
+        return
+
+    result_key = _history_judge_reevaluation_result_key(run_id, case_id)
+    if job.get("status") == "COMPLETED":
+        st.session_state[result_key] = job.get("result") or {}
+        st.session_state[f"voc_history_artifact_pending_{run_id}"] = "judge_result"
+        st.session_state[HISTORY_SELECTED_RUN_ID_KEY] = run_id
+        st.session_state[_history_judge_reevaluation_focus_key(run_id, case_id)] = True
+        _load_voc_history_rows.clear()
+        _load_validity_candidates.clear()
+    else:
+        st.session_state[_history_judge_reevaluation_error_key(run_id, case_id)] = (
+            job.get("error") or "독립 LLM 재평가 중 오류가 발생했습니다."
+        )
+    st.session_state.pop(job_key, None)
+    discard_background_job(job_id)
+    st.rerun()
+
+
+def _history_score_delta_label(previous_score, current_score) -> str:
+    before = _history_float_value(previous_score)
+    after = _history_float_value(current_score)
+    if before is None or after is None:
+        return "-"
+    delta = round(after - before, 2)
+    if delta > 0:
+        return f"+{delta:g}점 상승"
+    if delta < 0:
+        return f"{delta:g}점 하락"
+    return "점수 변화 없음"
+
+
+def _history_judge_reevaluation_result_model(
+    reevaluation_result: dict | None,
+    *,
+    current_judge_rubric: dict | None = None,
+) -> dict:
+    reevaluation_result = reevaluation_result if isinstance(reevaluation_result, dict) else {}
+    judge = reevaluation_result.get("judge_result", {})
+    if not isinstance(judge, dict):
+        judge = {}
+    history = judge.get("evaluation_history", [])
+    previous = history[-1] if isinstance(history, list) and history and isinstance(history[-1], dict) else {}
+    current_judge_rubric = current_judge_rubric or load_independent_judge_rubric()
+
+    before_decision = str(previous.get("decision") or "NOT_RUN").strip().upper() or "NOT_RUN"
+    after_decision = str(judge.get("decision") or "ERROR").strip().upper() or "ERROR"
+    before_score = previous.get("total_score")
+    after_score = judge.get("total_score")
+    decision_changed = before_decision != after_decision
+    score_delta = _history_score_delta_label(before_score, after_score)
+    blockers = _history_judge_review_blockers(judge, current_judge_rubric)
+    provider = _manual_provider_label(judge.get("provider"))
+    model = judge.get("model") or "-"
+
+    if after_decision == "PASS":
+        next_action = {
+            "tone": "green",
+            "label": "개선안 타당성 평가 실행",
+            "detail": "독립 LLM 평가가 PASS로 전환되었습니다. 타당성 검증 화면의 평가 설정에서 바로 평가를 실행하세요.",
+            "target": {
+                "enabled": True,
+                "page": VOC_VALIDITY_PAGE_NAME,
+                "run_id": reevaluation_result.get("run_id", ""),
+                "case_id": reevaluation_result.get("case_id", ""),
+                "action_code": "RUN_VALIDITY",
+                "button_label": "타당성 평가로 이동",
+            },
+        }
+    elif after_decision == "ERROR":
+        next_action = {
+            "tone": "red",
+            "label": "평가 오류 조치",
+            "detail": "Provider API 키, 모델명, 네트워크 상태를 확인한 뒤 다시 평가하세요.",
+            "target": {"enabled": False, "button_label": "오류 조치 후 재시도"},
+        }
+    else:
+        next_action = {
+            "tone": "orange",
+            "label": "검토 필요 원인 확인",
+            "detail": (
+                "판정이 여전히 검토 필요/실패이면 같은 입력 재평가를 반복하기보다 "
+                "아래 원인을 기준으로 개선안 보완 또는 RETEST 여부를 판단하세요."
+            ),
+            "target": {"enabled": False, "button_label": "원인 확인 후 보완 판단"},
+        }
+
+    return {
+        "run_id": reevaluation_result.get("run_id", ""),
+        "case_id": reevaluation_result.get("case_id", ""),
+        "before_decision": before_decision,
+        "before_label": _voc_status_label(before_decision),
+        "before_score": before_score,
+        "after_decision": after_decision,
+        "after_label": _voc_status_label(after_decision),
+        "after_score": after_score,
+        "decision_changed": decision_changed,
+        "decision_change_label": "판정 변경" if decision_changed else "판정 유지",
+        "score_delta": score_delta,
+        "provider": provider,
+        "model": model,
+        "evaluated_at": _history_table_timestamp(judge.get("evaluated_at")),
+        "blockers": blockers,
+        "next_action": next_action,
+    }
+
+
+def _render_history_judge_reevaluation_result(
+    run_id: str,
+    case_id: str,
+    reevaluation_result: dict | None,
+) -> None:
+    if not reevaluation_result:
+        return
+    _render_goal_scroll_anchor(
+        (
+            "history-judge-reevaluation-result-"
+            f"{_history_dom_id(run_id)}-{_history_dom_id(case_id)}"
+        ),
+        scroll_flag_key=_history_judge_reevaluation_focus_key(run_id, case_id),
+        block="start",
+    )
+    model = _history_judge_reevaluation_result_model(reevaluation_result)
+    action = model["next_action"]
+    action_tone = {
+        "green": "green",
+        "red": "red",
+        "orange": "orange",
+        "gray": "gray",
+    }.get(action.get("tone", "gray"), "gray")
+    result_key = _history_judge_reevaluation_result_key(run_id, case_id)
+    with st.container(border=True):
+        heading, state = st.columns([2.5, 1], gap="small", vertical_alignment="center")
+        with heading:
+            st.markdown(f"#### 독립 LLM 재평가 결과 · {case_id}")
+            st.caption(
+                f"{model['provider']} · {model['model']} · "
+                f"{model['evaluated_at'] or '평가 시각 미확인'}"
+            )
+        with state:
+            st.markdown(f":{action_tone}-badge[{action['label']}]", text_alignment="right")
+
+        columns = st.columns(4, gap="small")
+        card_payloads = [
+            ("history", "이전 판정", f"{model['before_label']} · {model['before_score'] if model['before_score'] is not None else '-'}점", "재평가 전 저장 결과"),
+            ("published_with_changes", "재평가 판정", f"{model['after_label']} · {model['after_score'] if model['after_score'] is not None else '-'}점", model["decision_change_label"]),
+            ("trending_up", "점수 변화", model["score_delta"], "같은 Agent 결과를 다시 채점한 변화"),
+            ("arrow_forward", "다음 액션", action["label"], action["detail"]),
+        ]
+        for column, (icon, label, value, detail_text) in zip(columns, card_payloads, strict=False):
+            with column.container(border=True, height=126):
+                st.caption(f":material/{icon}: {label}")
+                st.markdown(f"##### {value}")
+                st.caption(detail_text)
+
+        if model["after_decision"] != "PASS":
+            with st.container(border=True):
+                st.caption(":material/troubleshoot: 재평가 후에도 확인해야 할 원인")
+                for blocker in model["blockers"]:
+                    st.write(f"- {blocker}")
+
+        button_columns = st.columns([1.2, 1.2, 2.2], gap="small", vertical_alignment="center")
+        target = action.get("target", {})
+        with button_columns[0]:
+            if st.button(
+                target.get("button_label", "다음 액션으로 이동"),
+                icon=":material/arrow_forward:",
+                type="primary" if target.get("enabled") else "secondary",
+                disabled=not target.get("enabled"),
+                width="stretch",
+                key=f"voc_history_judge_result_next_{run_id}_{case_id}",
+            ):
+                st.session_state.pop(result_key, None)
+                _dismiss_history_detail_dialog()
+                _apply_history_next_action_target(target)
+                st.rerun()
+        with button_columns[1]:
+            if st.button(
+                "결과 확인 완료",
+                icon=":material/check_circle:",
+                width="stretch",
+                key=f"voc_history_judge_result_clear_{run_id}_{case_id}",
+            ):
+                st.session_state.pop(result_key, None)
+                st.rerun()
+        with button_columns[2]:
+            st.caption(action["detail"])
+
+
 def _render_history_judge_artifact(judge: dict) -> None:
     with st.container(horizontal=True):
         st.metric("유효 판정", _voc_status_label(judge.get("decision", "NOT_RUN")), border=True)
@@ -5701,6 +6430,155 @@ def _render_history_validity_artifact(validity: dict) -> None:
         ]
         st.markdown("#### :material/approval: QA·업무 승인 이력")
         st.dataframe(review_frame[visible], hide_index=True, width="stretch")
+
+
+def _history_judge_reevaluation_context_model(
+    case_id: str,
+    artifacts: dict,
+    detail: dict,
+    *,
+    current_judge_rubric: dict | None = None,
+) -> dict:
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+    detail = detail if isinstance(detail, dict) else {}
+    judge = artifacts.get("judge_result", {})
+    if not isinstance(judge, dict):
+        judge = {}
+    plan = detail.get("rubric_reevaluation_plan", {})
+    if not isinstance(plan, dict):
+        plan = {}
+    manifest = detail.get("manifest", {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    current_judge_rubric = current_judge_rubric or load_independent_judge_rubric()
+    stored_versions = manifest.get("rubric_versions", {})
+    if not isinstance(stored_versions, dict):
+        stored_versions = {}
+    stored_judge = stored_versions.get("independent_judge", {})
+    if not isinstance(stored_judge, dict):
+        stored_judge = {}
+
+    decision = str(judge.get("decision") or "NOT_RUN").strip().upper()
+    if not decision:
+        decision = "NOT_RUN"
+    reasons = []
+    plan_actions = [
+        action for action in (plan.get("actions") or [])
+        if isinstance(action, dict)
+        and action.get("method") == "JUDGE_REEVALUATION"
+        and (
+            not action.get("target_case_ids")
+            or str(case_id) in {str(item) for item in action.get("target_case_ids", [])}
+        )
+    ]
+    if plan_actions:
+        reasons.append("독립 LLM 평가 Rubric 기준 변경 대상입니다.")
+    if decision == "NOT_RUN":
+        reasons.append("저장된 독립 LLM 평가 결과가 없어 현재 기준 평가가 필요합니다.")
+    elif decision == "ERROR":
+        reasons.append("기존 독립 LLM 평가가 오류로 종료되어 재평가가 필요합니다.")
+    elif decision != "PASS":
+        reasons.append(f"기존 독립 LLM 판정이 {_voc_status_label(decision)} 상태입니다.")
+    if not reasons:
+        reasons.append("필수 재평가 대상은 아니며, Provider·모델 교차 확인이 필요할 때만 실행합니다.")
+
+    stored_version = stored_judge.get("version") or "-"
+    current_version = current_judge_rubric.get("version") or "-"
+    stored_hash = stored_judge.get("sha256") or ""
+    current_hash = current_judge_rubric.get("sha256") or current_judge_rubric.get("rubric_sha256") or ""
+    rubric_changed = (
+        stored_version != "-"
+        and current_version != "-"
+        and (
+            stored_version != current_version
+            or (bool(stored_hash) and bool(current_hash) and stored_hash != current_hash)
+        )
+    )
+    blockers = _history_judge_review_blockers(judge, current_judge_rubric)
+    has_error = bool(str(judge.get("error") or "").strip()) or decision == "ERROR"
+    has_content_blockers = any(
+        marker in item
+        for item in blockers
+        for marker in ("총점 기준 미달", "세부 항목", "위험 지적", "보완 권고", "즉시 실패")
+    )
+    review_focus = _history_judge_review_focus(
+        decision=decision,
+        rubric_changed=rubric_changed,
+        has_error=has_error,
+        has_content_blockers=has_content_blockers,
+    )
+    return {
+        "decision": decision,
+        "decision_label": _voc_status_label(decision),
+        "score": judge.get("total_score"),
+        "provider": judge.get("provider") or "-",
+        "model": judge.get("model") or "-",
+        "stored_rubric_version": stored_version,
+        "current_rubric_version": current_version,
+        "rubric_changed": rubric_changed,
+        "reasons": reasons,
+        "blockers": blockers,
+        "reuses": [
+            "저장된 Agent 파이프라인 결과",
+            "동일 VOC 질문·요약·개선안",
+            "저장된 Trace·Rule 증적",
+        ],
+        "not_changed": [
+            "Agent 개선안 내용",
+            "VOC 원본 데이터",
+            "타당성 보완 입력",
+        ],
+        "review_focus": review_focus,
+        "after": (
+            "PASS면 개선안 타당성 평가와 QA 검토 흐름으로 이어갈 수 있고, "
+            "검토 필요/실패면 Agent 개선안 보완 또는 RETEST를 검토합니다."
+        ),
+    }
+
+
+def _render_history_judge_reevaluation_context(
+    run_id: str,
+    case_id: str,
+    artifacts: dict,
+    detail: dict,
+) -> None:
+    context = _history_judge_reevaluation_context_model(case_id, artifacts, detail)
+    with st.container(border=True):
+        heading, state = st.columns([2.6, 1], gap="small", vertical_alignment="center")
+        with heading:
+            st.markdown("#### 독립 LLM 재평가 기준")
+            st.caption(
+                "보완 입력을 자동 생성하지 않습니다. 저장된 Agent 결과를 그대로 두고 현재 독립 LLM 평가 기준과 선택 Provider로 다시 판정합니다."
+            )
+        with state:
+            tone = "green" if context["decision"] == "PASS" else ("gray" if context["decision"] == "NOT_RUN" else "orange")
+            st.markdown(f":{tone}-badge[기존 판정 {context['decision_label']}]", text_alignment="right")
+            score = context["score"]
+            st.caption(f"{context['provider']} · {context['model']} · {score if score is not None else '-'}점")
+
+        columns = st.columns(3, gap="small")
+        with columns[0].container(border=True, height=220):
+            st.caption(":material/troubleshoot: 검토 필요 원인")
+            for blocker in context["blockers"]:
+                st.write(f"- {blocker}")
+            st.caption(
+                f"Judge Rubric {context['stored_rubric_version']} → {context['current_rubric_version']}"
+            )
+        with columns[1].container(border=True, height=220):
+            st.caption(":material/replay: 재평가의 의미")
+            for reason in context["reasons"]:
+                st.write(f"- {reason}")
+            st.caption("그대로 쓰는 입력")
+            for item in context["reuses"]:
+                st.write(f"- {item}")
+        with columns[2].container(border=True, height=220):
+            st.caption(":material/checklist: 재평가 후 볼 것")
+            for item in context["review_focus"]:
+                st.write(f"- {item}")
+            st.caption("자동 보완하지 않는 것")
+            for item in context["not_changed"]:
+                st.write(f"- {item}")
+            st.caption(context["after"])
 
 
 def _render_history_case_artifact(
@@ -5827,6 +6705,7 @@ def _render_voc_run_detail(run_id: str):
                 completed_case_ids,
                 key=f"voc_history_case_{run_id}",
             )
+            reevaluation_result_key = _history_judge_reevaluation_result_key(run_id, selected_case_id)
             artifacts = load_voc_case_history_detail(run_id, selected_case_id)
             artifact_names = [
                 name for name in
@@ -5834,10 +6713,17 @@ def _render_voc_run_detail(run_id: str):
                 if name in artifacts
             ]
             if artifact_names:
+                artifact_key = f"voc_history_artifact_{run_id}"
+                preferred_artifact_key = f"voc_history_artifact_pending_{run_id}"
+                preferred_artifact = st.session_state.pop(preferred_artifact_key, None)
+                if preferred_artifact in artifact_names:
+                    st.session_state[artifact_key] = preferred_artifact
+                if st.session_state.get(artifact_key) not in artifact_names:
+                    st.session_state[artifact_key] = artifact_names[0]
                 artifact_name = st.selectbox(
                     "증적 파일",
                     artifact_names,
-                    key=f"voc_history_artifact_{run_id}",
+                    key=artifact_key,
                     format_func=lambda value: HISTORY_ARTIFACT_LABELS.get(value, value),
                 )
                 _render_history_case_artifact(
@@ -5852,24 +6738,48 @@ def _render_voc_run_detail(run_id: str):
             execution = pipeline.get("execution", {})
             result = execution.get("result", {}) if isinstance(execution, dict) else {}
             if pipeline.get("mode") == "voc" and execution.get("ok") and result.get("ok"):
-                st.markdown("#### 동일 결과 독립 LLM 재평가")
+                reevaluation_job_key = _history_judge_reevaluation_job_key(run_id, selected_case_id)
+                reevaluation_running = bool(st.session_state.get(reevaluation_job_key))
+                reevaluation_error = st.session_state.pop(
+                    _history_judge_reevaluation_error_key(run_id, selected_case_id),
+                    None,
+                )
+                if reevaluation_error:
+                    st.error(reevaluation_error)
+                _live_history_judge_reevaluation(run_id, selected_case_id)
+                _render_history_judge_reevaluation_result(
+                    run_id,
+                    selected_case_id,
+                    st.session_state.get(reevaluation_result_key),
+                )
+                _render_history_judge_reevaluation_context(
+                    run_id,
+                    selected_case_id,
+                    artifacts,
+                    detail,
+                )
                 reevaluation_config = _judge_config_controls(
                     f"history_{run_id}_{selected_case_id}"
                 )
                 if st.button(
-                    "저장된 파이프라인 결과 재평가",
+                    "독립 LLM 재평가 진행 중" if reevaluation_running else "저장된 동일 결과 독립 LLM 재평가",
                     icon=":material/replay:",
-                    disabled=not reevaluation_config.get("enabled"),
+                    disabled=reevaluation_running or not reevaluation_config.get("enabled"),
                     key=f"reevaluate_{run_id}_{selected_case_id}",
                 ):
-                    with st.spinner("독립 LLM 평가가 저장된 동일 결과를 재평가하고 있습니다..."):
-                        reevaluated = reevaluate_voc_run_case(
-                            run_id,
-                            selected_case_id,
-                            reevaluation_config,
-                        )
-                    st.session_state.voc_judge_reevaluation_result = reevaluated
-                    _load_voc_history_rows.clear()
+                    st.session_state[reevaluation_job_key] = start_background_job(
+                        "history-judge-reevaluation",
+                        f"{run_id}::{selected_case_id}",
+                        _execute_history_judge_reevaluation,
+                        run_id,
+                        selected_case_id,
+                        reevaluation_config,
+                        progress={
+                            "percent": 6,
+                            "stage": "재평가 대기열 등록",
+                            "detail": "독립 LLM 재평가 작업을 백그라운드로 시작했습니다.",
+                        },
+                    )
                     st.rerun()
 
     evidence = download_voc_run_evidence(run_id)
@@ -6087,6 +6997,8 @@ HISTORY_DETAIL_DIALOG_RUN_ID_KEY = "voc_history_detail_dialog_run_id"
 HISTORY_RETEST_COMPARE_TARGET_KEY = "voc_history_retest_compare_target"
 VOC_QUALITY_MENU_NAME = "VOC 품질진단"
 VOC_VALIDITY_PAGE_NAME = "개선안 타당성 검증"
+VOC_HISTORY_PAGE_NAME = "수행 이력"
+VOC_BATCH_PAGE_NAME = "일괄 TC 수행"
 VOC_REPORT_PAGE_NAME = "품질 보고서"
 VOC_ACCEPTANCE_PAGE_NAME = "최종 인수·시연"
 VOC_HISTORY_NAVIGABLE_VALIDITY_ACTIONS = {
@@ -6232,8 +7144,77 @@ def _history_rubric_plan_label(status: str) -> str:
     return labels.get(str(status or ""), "계획 없음")
 
 
+def _history_rubric_plan_next_targets(run_id: str, plan: dict | None) -> list[dict]:
+    plan = plan if isinstance(plan, dict) else {}
+    targets: list[dict] = []
+    for action in plan.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        method = str(action.get("method") or "")
+        case_ids = [
+            str(case_id)
+            for case_id in (action.get("target_case_ids") or [])
+            if str(case_id).strip()
+        ]
+        first_case_id = case_ids[0] if case_ids else ""
+        target_count = int(action.get("target_count") or len(case_ids) or 0)
+        label = str(action.get("label") or "Rubric")
+        if method == "JUDGE_REEVALUATION":
+            targets.append(
+                {
+                    "enabled": bool(first_case_id),
+                    "page": "history_detail",
+                    "run_id": run_id,
+                    "case_id": first_case_id,
+                    "action_code": "RUBRIC_JUDGE_REEVALUATION",
+                    "button_label": "독립 LLM 재평가 열기",
+                    "title": "독립 LLM 기준 변경",
+                    "detail": (
+                        f"{target_count}건 대상입니다. 수행 이력 상세 팝업에서 저장된 Agent 파이프라인 결과를 "
+                        "보완 없이 그대로 사용해 현재 독립 LLM Rubric으로 다시 판정합니다."
+                    ),
+                    "icon": "rule",
+                }
+            )
+        elif method == "VALIDITY_REEVALUATION":
+            targets.append(
+                {
+                    "enabled": bool(first_case_id),
+                    "page": VOC_VALIDITY_PAGE_NAME,
+                    "run_id": run_id,
+                    "case_id": first_case_id,
+                    "action_code": "RUBRIC_VALIDITY_REEVALUATION",
+                    "button_label": "타당성 재평가로 이동",
+                    "title": "타당성 기준 변경",
+                    "detail": (
+                        f"{target_count}건 대상입니다. 저장된 개선안과 독립 LLM 평가 증적을 유지한 채 "
+                        "현재 타당성 Rubric 기준으로 다시 평가합니다."
+                    ),
+                    "icon": "fact_check",
+                }
+            )
+        elif method == "RETEST_REQUIRED":
+            targets.append(
+                {
+                    "enabled": True,
+                    "page": VOC_BATCH_PAGE_NAME,
+                    "run_id": run_id,
+                    "case_id": first_case_id,
+                    "action_code": "RUBRIC_RETEST_REQUIRED",
+                    "button_label": "RETEST 준비로 이동",
+                    "title": f"{label} 기준 변경",
+                    "detail": (
+                        f"{target_count}건 대상입니다. Agent 파이프라인 기준 변경은 기존 답변 재점수화보다 "
+                        "부모 Run을 둔 RETEST로 다시 실행하는 편이 안전합니다."
+                    ),
+                    "icon": "replay",
+                }
+            )
+    return targets
+
+
 def _save_history_rubric_reevaluation_plan(run_id: str) -> None:
-    with st.spinner("Rubric 재평가 계획을 저장하고 있습니다..."):
+    with st.spinner("Rubric 기준 영향 계획을 저장하고 있습니다..."):
         saved = save_voc_rubric_reevaluation_plan(run_id)
     st.session_state.voc_rubric_reevaluation_plan_result = saved.get("plan", {})
     _load_voc_history_rows.clear()
@@ -6256,8 +7237,8 @@ def _render_history_rubric_reevaluation_plan(
             vertical_alignment="center",
         )
         with heading:
-            st.markdown("#### Rubric 재평가 계획")
-            st.caption("원본 Agent 파이프라인 결과는 보존하고, 현재 Rubric 기준으로 어떤 평가만 다시 확인할지 정리합니다.")
+            st.markdown("#### Rubric 기준 영향 계획")
+            st.caption("원본 Agent 파이프라인 결과는 보존하고, 현재 Rubric 기준 변경으로 필요한 후속 실행만 정리합니다.")
         with state_col:
             if plan:
                 saved_at = _history_table_timestamp(plan.get("saved_at"))
@@ -6268,7 +7249,7 @@ def _render_history_rubric_reevaluation_plan(
                 st.caption("기준 변경 영향 확인 필요")
         with action_col:
             if st.button(
-                "계획 갱신" if plan else "계획 저장",
+                "기준 영향 계획 갱신" if plan else "기준 영향 계획 저장",
                 icon=":material/assignment:",
                 type="primary" if plan_required and not plan else "secondary",
                 disabled=not plan_required,
@@ -6306,8 +7287,27 @@ def _render_history_rubric_reevaluation_plan(
                         "대상": st.column_config.TextColumn(width=72),
                         "연결 화면": st.column_config.TextColumn(width=148),
                         "설명": st.column_config.TextColumn(width="large"),
-                    },
-                )
+                        },
+                    )
+                targets = _history_rubric_plan_next_targets(run_id, plan)
+                if targets:
+                    st.markdown("##### 기준 영향 계획 저장 후 다음 실행")
+                    target_columns = st.columns(min(3, len(targets)), gap="small")
+                    for index, target in enumerate(targets):
+                        column = target_columns[index % len(target_columns)]
+                        with column.container(border=True, height=148):
+                            st.caption(f":material/{target.get('icon', 'arrow_forward')}: {target.get('title', '다음 실행')}")
+                            st.markdown(f"**{target['button_label']}**")
+                            st.caption(target.get("detail", "계획에 따라 다음 화면으로 이동합니다."))
+                            if st.button(
+                                "열기",
+                                icon=":material/arrow_forward:",
+                                disabled=not target.get("enabled"),
+                                width="stretch",
+                                key=f"voc_history_rubric_target_{run_id}_{index}_{target.get('action_code')}",
+                            ):
+                                _apply_history_next_action_target(target)
+                                st.rerun()
             skipped = plan.get("skipped_cases") or []
             if skipped:
                 with st.expander(f"재평가 제외 Case {len(skipped)}건", expanded=False):
@@ -6440,8 +7440,11 @@ def _history_next_action_target(
             "run_id": run_id,
             "case_id": "",
             "action_code": "RUBRIC_REEVALUATE",
-            "button_label": "재평가 계획 갱신" if plan_status else "재평가 계획 저장",
-            "detail": "일반 수행 이력 상세가 아니라 선택 Run 카드의 Rubric 재평가 계획을 저장·갱신합니다.",
+            "button_label": "기준 영향 계획 갱신" if plan_status else "기준 영향 계획 저장",
+            "detail": (
+                "독립 LLM PASS 확보용 실행이 아니라, Run 저장 당시 Rubric과 현재 Rubric의 차이를 확인하고 "
+                "독립 LLM 재평가·타당성 재평가·RETEST 중 필요한 후속 실행을 정리합니다."
+            ),
         }
     if action_code in {"CHECK_PIPELINE_ERROR", "REVIEW_PIPELINE_RESULT", "RUN_JUDGE"}:
         return {
@@ -6469,16 +7472,22 @@ def _apply_history_next_action_target(target: dict) -> None:
         _save_history_rubric_reevaluation_plan(run_id)
         return
     if page == "history_detail":
+        st.session_state["current_menu"] = VOC_QUALITY_MENU_NAME
+        st.session_state["current_sub_menu"] = VOC_HISTORY_PAGE_NAME
+        st.session_state[HISTORY_SELECTED_RUN_ID_KEY] = run_id
+        if case_id:
+            st.session_state[f"voc_history_case_{run_id}"] = case_id
         _open_history_detail_dialog(run_id)
         return
     if page == VOC_VALIDITY_PAGE_NAME:
+        _load_validity_candidates.clear()
         st.session_state.current_menu = VOC_QUALITY_MENU_NAME
         st.session_state.current_sub_menu = VOC_VALIDITY_PAGE_NAME
         st.session_state.voc_validity_selected_key = f"{run_id}::{case_id}"
-        st.session_state.voc_validity_candidate_query = case_id or run_id
+        st.session_state.voc_validity_candidate_query = run_id or case_id
         st.session_state.voc_validity_run_type = "전체"
         st.session_state.voc_validity_candidate_status = {
-            "RUN_VALIDITY": "평가 전",
+            "RUN_VALIDITY": "전체",
             "QA_REVIEW": "QA 검토 가능",
             "BUSINESS_APPROVAL": "업무 승인 가능",
             "REPORT_READY": "정식 승인",
@@ -6486,10 +7495,22 @@ def _apply_history_next_action_target(target: dict) -> None:
         st.session_state.voc_validity_focus_action_code = action_code
         st.session_state.voc_validity_focus_target_key = f"{run_id}::{case_id}"
         st.session_state.voc_validity_focus_notice = (
-            f"수행 이력의 다음 액션에서 이동했습니다. 대상: {run_id} / {case_id}"
+            f"독립 LLM PASS 결과를 이어받았습니다. 대상 {run_id} / {case_id}의 "
+            "개선안 타당성 평가를 실행하세요."
+            if action_code == "RUN_VALIDITY"
+            else f"수행 이력의 다음 액션에서 이동했습니다. 대상: {run_id} / {case_id}"
         )
+        if action_code == "RUN_VALIDITY":
+            st.session_state.voc_validity_evaluation_focus_once = True
         st.session_state.pop("voc_validity_candidate_table", None)
         st.session_state.pop("voc_validity_dialog_opened_key", None)
+        return
+    if page == VOC_BATCH_PAGE_NAME:
+        st.session_state.current_menu = VOC_QUALITY_MENU_NAME
+        st.session_state.current_sub_menu = VOC_BATCH_PAGE_NAME
+        st.session_state.voc_batch_focus_notice = (
+            f"Rubric 기준 영향 확인 결과 RETEST가 권장되었습니다. 원본 Run: {run_id}"
+        )
         return
     if page == VOC_REPORT_PAGE_NAME:
         _go_to_voc_report(
@@ -6728,7 +7749,7 @@ def render_voc_history():
     if rubric_plan_result:
         changed = ", ".join(rubric_plan_result.get("changed_labels", [])) or "-"
         st.success(
-            f"Rubric 재평가 계획 저장 완료 · {_history_rubric_plan_label(rubric_plan_result.get('status'))} · 변경 범위 {changed}"
+            f"Rubric 기준 영향 계획 저장 완료 · {_history_rubric_plan_label(rubric_plan_result.get('status'))} · 변경 범위 {changed}"
         )
     if not history:
         st.info("저장된 VOC 실행 이력이 없습니다.")
@@ -6949,6 +7970,118 @@ def _load_validity_candidates():
 
 def _validity_candidate_key(candidate: dict) -> str:
     return f"{candidate.get('run_id', '')}::{candidate.get('case_id', '')}"
+
+
+def _apply_pending_validity_candidate_filters() -> None:
+    """Apply deferred validity filters before Streamlit widgets are instantiated."""
+    pending_to_widget = {
+        "voc_validity_pending_candidate_query": "voc_validity_candidate_query",
+        "voc_validity_pending_candidate_status": "voc_validity_candidate_status",
+        "voc_validity_pending_run_type": "voc_validity_run_type",
+    }
+    for pending_key, widget_key in pending_to_widget.items():
+        if pending_key in st.session_state:
+            st.session_state[widget_key] = st.session_state.pop(pending_key)
+
+
+def _queue_validity_candidate_focus(
+    candidate: dict,
+    action_code: str,
+    *,
+    notice: str = "",
+    scroll_to_approval: bool = False,
+) -> None:
+    """Keep the selected Run/Case visible on the next rerun without mutating live widgets."""
+    run_id = str(candidate.get("run_id") or "")
+    case_id = str(candidate.get("case_id") or "")
+    if run_id and case_id:
+        st.session_state.voc_validity_selected_key = f"{run_id}::{case_id}"
+        st.session_state.voc_validity_focus_target_key = f"{run_id}::{case_id}"
+    if run_id:
+        st.session_state.voc_validity_pending_candidate_query = run_id
+    elif case_id:
+        st.session_state.voc_validity_pending_candidate_query = case_id
+    st.session_state.voc_validity_pending_run_type = "전체"
+    status_filter = VALIDITY_STATUS_FILTER_BY_ACTION.get(action_code)
+    if status_filter:
+        st.session_state.voc_validity_pending_candidate_status = status_filter
+    if action_code:
+        st.session_state.voc_validity_focus_action_code = action_code
+    if notice:
+        st.session_state.voc_validity_focus_notice = notice
+    if action_code == "RUN_VALIDITY":
+        st.session_state.voc_validity_evaluation_focus_once = True
+    if scroll_to_approval:
+        st.session_state.voc_validity_approval_focus_once = True
+
+
+def _render_validity_approval_focus_anchor_once() -> None:
+    _render_goal_scroll_anchor(
+        "voc-validity-approval-scroll-anchor",
+        scroll_flag_key="voc_validity_approval_focus_once",
+        block="start",
+    )
+
+
+def _render_validity_evaluation_focus_anchor_once() -> None:
+    _render_goal_scroll_anchor(
+        "voc-validity-evaluation-scroll-anchor",
+        scroll_flag_key="voc_validity_evaluation_focus_once",
+        block="start",
+    )
+
+
+def _validity_post_evaluation_action_model(candidate: dict, result: dict | None) -> dict:
+    """Return the user-facing next action after the validity result is known."""
+    result = result or {}
+    result_has_hold_state = "immediate_hold_rules_triggered" in result
+    immediate_hold_count = (
+        len(_validity_immediate_holds(result))
+        if result_has_hold_state
+        else int(candidate.get("immediate_hold_count") or 0)
+    )
+    readiness = validity_human_review_readiness(
+        validity_status=result.get("decision", candidate.get("validity_status", "NOT_RUN")),
+        workflow_state=result.get("workflow_state", candidate.get("workflow_state", "DRAFT")),
+        immediate_hold_count=immediate_hold_count,
+        formal_approval=bool(result.get("formal_approval") or candidate.get("formal_approval")),
+    )
+    action = readiness["action"]
+    if action == "QA_REVIEW":
+        return {
+            "visible": True,
+            "action_code": action,
+            "title": "다음 단계 · QA 검토 저장",
+            "detail": "AI_PASS와 즉시 보류 0건이 확인됐습니다. 이제 QA 검토 의견을 저장하면 업무 승인 단계로 이어집니다.",
+            "button_label": "QA 검토 영역으로 이동",
+            "target": "approval",
+            "tone": "green",
+            "icon": "rate_review",
+        }
+    if action == "BUSINESS_APPROVAL":
+        return {
+            "visible": True,
+            "action_code": action,
+            "title": "다음 단계 · 업무 승인 저장",
+            "detail": "QA 검토가 완료됐습니다. 업무 관점의 최종 승인 여부를 저장하면 보고서와 최종 시연 대상이 됩니다.",
+            "button_label": "업무 승인 영역으로 이동",
+            "target": "approval",
+            "tone": "green",
+            "icon": "verified",
+        }
+    if action == "FORMAL_APPROVED":
+        return {
+            "visible": True,
+            "action_code": "REPORT_READY",
+            "title": "다음 단계 · 보고서/최종 시연",
+            "detail": "정식 승인 완료 상태입니다. 품질 보고서와 최종 인수·시연 화면에서 증적을 확인할 수 있습니다.",
+            "button_label": "품질 보고서로 이동",
+            "secondary_button_label": "최종 인수·시연으로 이동",
+            "target": "report",
+            "tone": "green",
+            "icon": "summarize",
+        }
+    return {"visible": False, "action_code": action, "readiness": readiness}
 
 
 def _approved_demo_cases(
@@ -7197,6 +8330,19 @@ def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> 
         validity_status = candidate.get("validity_status", "NOT_RUN")
         review_readiness = _candidate_review_readiness(candidate)
         next_action = candidate.get("next_action") or {}
+        judge_gate = _validity_judge_gate_model(candidate)
+        review_already_started = (
+            candidate.get("workflow_state") in {"QA_REVIEWED", "BUSINESS_APPROVED"}
+            or bool(candidate.get("formal_approval"))
+        )
+        if candidate.get("judge_status") and judge_gate["blocked"] and not review_already_started:
+            next_action_label = judge_gate["next_title"]
+        else:
+            next_action_label = (
+                next_action.get("label")
+                or candidate.get("review_action_label")
+                or review_readiness["action_label"]
+            )
         rows.append(
             {
                 "수행 일시": _dashboard_timestamp(candidate.get("started_at", "")),
@@ -7209,7 +8355,7 @@ def _validity_candidate_rows(candidates: list[dict], selected_key: str = "") -> 
                 "개선안 타당성": _voc_status_label(validity_status),
                 "타당성 점수": candidate.get("validity_score"),
                 "승인 단계": _voc_status_label(candidate.get("workflow_state", "DRAFT")),
-                "다음 조치": next_action.get("label") or candidate.get("review_action_label") or review_readiness["action_label"],
+                "다음 조치": next_action_label,
                 "정식 승인": "승인" if candidate.get("formal_approval") else "미승인",
             }
         )
@@ -7527,7 +8673,7 @@ def _render_validity_history_focus_action(candidate: dict) -> None:
         "gray": "gray",
     }.get(str(spec.get("tone") or "blue"), "blue")
     with st.container(border=True):
-        icon_col, text_col, action_col = st.columns([0.18, 2.6, 0.8], gap="small", vertical_alignment="center")
+        icon_col, text_col, action_col = st.columns([0.18, 2.45, 0.95], gap="small", vertical_alignment="center")
         with icon_col:
             st.markdown(f"### :material/{spec['icon']}:")
         with text_col:
@@ -7535,6 +8681,15 @@ def _render_validity_history_focus_action(candidate: dict) -> None:
             st.caption(spec["detail"])
         with action_col:
             st.markdown(f":{tone}-badge[{spec['label']}]", text_alignment="right")
+            if action_code == "RUN_VALIDITY":
+                if st.button(
+                    "평가 설정으로 이동",
+                    icon=":material/fact_check:",
+                    width="stretch",
+                    key=f"voc_validity_focus_to_evaluation_{_validity_candidate_key(candidate)}",
+                ):
+                    st.session_state.voc_validity_evaluation_focus_once = True
+                    st.rerun()
             if st.button(
                 "연결 안내 닫기",
                 icon=":material/close:",
@@ -7551,9 +8706,57 @@ VALIDITY_SUPPLEMENT_FIELDS = (
     ("schedule", "일정/마일스톤", "예: 2026-08-01 착수, 08-15 QA, 08-22 배포"),
     ("kpi", "정량 KPI", "예: 갱신 오류율 2.1%→0.5%, 주간 재문의율 15%↓"),
     ("priority", "우선순위", "예: P1 · 결제/구독 갱신 VOC 재발 방지"),
+    ("execution_plan", "실행계획/적용범위", "예: 앱 청구 상태 조회 API·화면 상태 표시 로직 수정 → QA → 배포"),
     ("evidence", "VOC·실행 Trace 근거", "예: VOC-001, 실행 Trace step 3/4, 고객 문의 유형"),
     ("risk", "리스크/우회방안", "예: 정책 변경 전 안내 배너와 상담 스크립트 병행"),
+    ("note", "검토 메모", "예: AI_PASS 근거 확인 완료 · QA 검토 시 확인할 사항"),
 )
+VALIDITY_SUPPLEMENT_FIELD_ORDER = tuple(field for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS)
+VALIDITY_EVALUATION_SUPPLEMENT_FIELD_KEYS = tuple(
+    field for field in VALIDITY_SUPPLEMENT_FIELD_ORDER
+    if field != "note"
+)
+VALIDITY_DIMENSION_SUPPLEMENT_FIELD_KEYS = {
+    "cause_linkage": ("evidence", "priority", "execution_plan"),
+    "evidence_traceability": ("evidence",),
+    "feasibility": ("execution_plan",),
+    "ownership_schedule_kpi": ("owner", "schedule", "kpi", "priority"),
+    "risk_security_compliance": ("risk",),
+}
+VALIDITY_HOLD_SUPPLEMENT_FIELD_KEYS = {
+    "missing_voc_or_trace_evidence": ("evidence",),
+    "unsafe_or_noncompliant_action": ("risk",),
+    "unresolved_high_or_critical_defect": ("risk", "execution_plan"),
+    "safety_regression_against_baseline": ("risk", "evidence"),
+}
+
+
+def _validity_supplement_field_spec(field: str) -> tuple[str, str, str]:
+    return next(
+        (
+            item for item in VALIDITY_SUPPLEMENT_FIELDS
+            if item[0] == field
+        ),
+        (field, field, ""),
+    )
+
+
+def _validity_ordered_supplement_fields(fields: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+    requested = {str(field) for field in fields if str(field or "").strip()}
+    return [field for field in VALIDITY_SUPPLEMENT_FIELD_ORDER if field in requested]
+
+
+def _validity_filled_supplement_field_keys(
+    supplement: dict | None,
+    *,
+    include_note: bool = True,
+) -> list[str]:
+    supplement = supplement if isinstance(supplement, dict) else {}
+    return [
+        field for field in VALIDITY_SUPPLEMENT_FIELD_ORDER
+        if (include_note or field != "note")
+        and str(supplement.get(field) or "").strip()
+    ]
 
 
 def _validity_key_base(run_id: str, case_id: str, key_scope: str = "") -> str:
@@ -7588,14 +8791,20 @@ def _validity_iso_datetime(value: str | None) -> datetime | None:
 def _validity_supplement_applied_to_result(artifacts: dict, result: dict | None) -> bool:
     result = result or {}
     supplement = artifacts.get("validity_supplement", {})
-    if not isinstance(supplement, dict) or supplement.get("is_empty", True):
+    if not isinstance(supplement, dict):
+        return True
+    evaluation_fields = [
+        field for field in VALIDITY_EVALUATION_SUPPLEMENT_FIELD_KEYS
+        if str(supplement.get(field) or "").strip()
+    ]
+    if not evaluation_fields:
         return True
     if not result or not result.get("supplemental_evidence_applied"):
         return False
     applied = result.get("supplemental_evidence", {})
     if not isinstance(applied, dict):
         return False
-    for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS:
+    for field in VALIDITY_EVALUATION_SUPPLEMENT_FIELD_KEYS:
         if str(supplement.get(field) or "").strip() != str(applied.get(field) or "").strip():
             return False
     supplement_time = _validity_iso_datetime(supplement.get("updated_at"))
@@ -7618,6 +8827,131 @@ def _validity_score_gap_text(result: dict | None, rubric: dict) -> str:
     return f"AI_PASS까지 {gap:g}점 부족"
 
 
+def _sync_validity_candidate_from_artifacts(candidate: dict, artifacts: dict | None) -> dict:
+    """화면 후보 요약값을 실제 Run/Case 증적 파일 기준으로 보정합니다."""
+    synced = dict(candidate or {})
+    artifacts = artifacts or {}
+    judge_result = artifacts.get("judge_result", {})
+    if isinstance(judge_result, dict) and judge_result:
+        judge_decision = str(judge_result.get("decision") or "").strip().upper()
+        if judge_decision:
+            synced["judge_status"] = judge_decision
+        if "total_score" in judge_result:
+            synced["judge_score"] = judge_result.get("total_score")
+        synced["judge_provider"] = judge_result.get("provider") or synced.get("judge_provider")
+        synced["judge_model"] = judge_result.get("model") or synced.get("judge_model")
+
+    validity_result = artifacts.get("validity_result", {})
+    if isinstance(validity_result, dict) and validity_result:
+        validity_decision = str(validity_result.get("decision") or "").strip().upper()
+        if validity_decision:
+            synced["validity_status"] = validity_decision
+        if "total_score" in validity_result:
+            synced["validity_score"] = validity_result.get("total_score")
+        synced["workflow_state"] = validity_result.get(
+            "workflow_state",
+            synced.get("workflow_state", "DRAFT"),
+        )
+        synced["formal_approval"] = bool(validity_result.get("formal_approval"))
+        immediate_holds = validity_result.get("immediate_hold_rules_triggered") or []
+        if isinstance(immediate_holds, str):
+            immediate_hold_count = 1 if immediate_holds.strip() else 0
+        else:
+            try:
+                immediate_hold_count = len(immediate_holds)
+            except TypeError:
+                immediate_hold_count = int(bool(immediate_holds))
+        synced["immediate_hold_count"] = immediate_hold_count
+        readiness = validity_human_review_readiness(
+            validity_status=synced.get("validity_status", "NOT_RUN"),
+            workflow_state=synced.get("workflow_state", "DRAFT"),
+            immediate_hold_count=immediate_hold_count,
+            formal_approval=bool(synced.get("formal_approval")),
+        )
+        synced["qa_review_ready"] = readiness["can_qa_review"]
+        synced["business_review_ready"] = readiness["can_business_approve"]
+        synced["review_action"] = readiness["action"]
+        synced["review_action_label"] = readiness["action_label"]
+        synced["deployment_decision"] = readiness["deployment_decision"]
+        synced["next_action"] = {
+            "code": readiness["action"],
+            "label": readiness["action_label"],
+            "menu": "개선안 타당성 검증",
+            "detail": "선택한 Run·Case의 타당성/QA 승인 단계에서 이어서 처리합니다.",
+        }
+    return synced
+
+
+def _validity_judge_gate_model(candidate: dict, artifacts: dict | None = None) -> dict:
+    artifacts = artifacts or {}
+    judge_result = artifacts.get("judge_result", {})
+    if not isinstance(judge_result, dict):
+        judge_result = {}
+
+    raw_decision = (
+        judge_result.get("decision")
+        or candidate.get("judge_status")
+        or "NOT_RUN"
+    )
+    decision = str(raw_decision or "NOT_RUN").strip().upper()
+    if not decision or decision == "-":
+        decision = "NOT_RUN"
+
+    score = judge_result.get("total_score", candidate.get("judge_score"))
+    provider = judge_result.get("provider") or candidate.get("judge_provider") or "-"
+    model = judge_result.get("model") or candidate.get("judge_model") or "-"
+    label = _voc_status_label(decision)
+    passed = decision == "PASS"
+
+    if passed:
+        tone = "green"
+        current = "독립 LLM 평가 PASS"
+        next_title = "타당성 평가 진행 가능"
+        next_detail = "동일 개선안에 대한 독립 LLM 평가가 PASS이므로 보완 입력과 타당성 평가를 진행할 수 있습니다."
+    elif decision == "NOT_RUN":
+        tone = "orange"
+        current = "독립 LLM 평가 미수행"
+        next_title = "독립 LLM 평가 먼저 실행"
+        next_detail = "타당성 평가 전에 수동 TC 수행 또는 수행 이력에서 독립 LLM 평가를 먼저 완료하세요."
+    elif decision == "ERROR":
+        tone = "red"
+        current = "독립 LLM 평가 오류"
+        next_title = "독립 LLM 평가 오류 조치"
+        next_detail = "Provider API 키와 모델 설정을 확인한 뒤 독립 LLM 평가를 다시 실행하세요."
+    else:
+        tone = "orange"
+        current = f"독립 LLM 평가 {label}"
+        next_title = "독립 LLM 평가 PASS 필요"
+        next_detail = (
+            "현재 개선안은 독립 LLM 평가를 통과하지 못했습니다. "
+            "타당성 보완 입력이나 재평가를 반복해도 QA 검토로 넘어가지 않으므로 "
+            "Agent 개선안 보완, 독립 LLM 재평가 또는 RETEST를 먼저 진행하세요."
+        )
+
+    detail_parts = [f"판정 {label}"]
+    if score is not None:
+        detail_parts.append(f"점수 {score}점")
+    if provider != "-":
+        detail_parts.append(str(provider))
+    if model != "-":
+        detail_parts.append(str(model))
+
+    return {
+        "passed": passed,
+        "blocked": not passed,
+        "decision": decision,
+        "label": label,
+        "score": score,
+        "provider": provider,
+        "model": model,
+        "tone": tone,
+        "current": current,
+        "next_title": next_title,
+        "next_detail": next_detail,
+        "summary": " · ".join(detail_parts),
+    }
+
+
 def _validity_workflow_status_model(
     candidate: dict,
     artifacts: dict,
@@ -7625,6 +8959,7 @@ def _validity_workflow_status_model(
     rubric: dict,
 ) -> dict:
     result = result or {}
+    judge_gate = _validity_judge_gate_model(candidate, artifacts)
     supplement_rows = _validity_supplement_fields(artifacts.get("validity_supplement", {}))
     supplement_applied = _validity_supplement_applied_to_result(artifacts, result)
     reeval_needed = bool(supplement_rows) and bool(result) and not supplement_applied
@@ -7636,7 +8971,17 @@ def _validity_workflow_status_model(
         formal_approval=bool(result.get("formal_approval") or candidate.get("formal_approval")),
     )
     action = readiness["action"]
-    if not result:
+    review_already_started = (
+        readiness["workflow_state"] in {"QA_REVIEWED", "BUSINESS_APPROVED"}
+        or readiness["formal_approval"]
+    )
+    if judge_gate["blocked"] and not review_already_started:
+        current = "독립 LLM 평가 보완 필요"
+        tone = judge_gate["tone"]
+        next_title = judge_gate["next_title"]
+        next_detail = judge_gate["next_detail"]
+        active_step = "judge"
+    elif not result:
         current = "개선안 타당성 평가 전"
         tone = "gray"
         next_title = "개선안 타당성 평가 실행"
@@ -7680,20 +9025,30 @@ def _validity_workflow_status_model(
         active_step = "evaluate"
 
     stage_specs = [
-        ("supplement", "1. 보완 입력", "부족 근거·담당·일정·KPI를 입력"),
-        ("evaluate", "2. 재평가", "보완 내용을 반영해 개선안 타당성 평가"),
-        ("qa", "3. QA 검토", "AI_PASS 및 보류 0건이면 QA 검토"),
-        ("business", "4. 업무 승인", "QA 승인 후 최종 업무 승인"),
+        ("judge", "1. 독립 LLM 평가", "PASS일 때만 타당성 평가 가능"),
+        ("supplement", "2. 보완 입력", "부족 근거·담당·일정·KPI를 입력"),
+        ("evaluate", "3. 타당성 평가", "보완 내용을 반영해 개선안 타당성 평가"),
+        ("qa", "4. QA 검토", "AI_PASS 및 보류 0건이면 QA 검토"),
+        ("business", "5. 업무 승인", "QA 승인 후 최종 업무 승인"),
     ]
+    supplement_not_required = (
+        str(result.get("decision") or "").upper() == "AI_PASS"
+        and not _validity_immediate_holds(result)
+    )
     completed = {
-        "supplement": bool(supplement_rows),
+        "judge": judge_gate["passed"],
+        "supplement": bool(supplement_rows) or supplement_not_required,
         "evaluate": bool(result) and not reeval_needed,
         "qa": readiness["workflow_state"] in {"QA_REVIEWED", "BUSINESS_APPROVED"} or readiness["formal_approval"],
         "business": readiness["workflow_state"] == "BUSINESS_APPROVED" or readiness["formal_approval"],
     }
     stages = []
     for key, label, detail in stage_specs:
-        if completed[key]:
+        if judge_gate["blocked"] and key != "judge":
+            status = "잠금"
+            stage_tone = "gray"
+            icon = "lock"
+        elif completed[key]:
             status = "완료"
             stage_tone = "green"
             icon = "check_circle"
@@ -7720,9 +9075,14 @@ def _validity_workflow_status_model(
         "tone": tone,
         "next_title": next_title,
         "next_detail": next_detail,
+        "active_step": active_step,
+        "action_code": action,
+        "readiness": readiness,
         "stages": stages,
         "score_text": _validity_score_gap_text(result, rubric),
         "gate_summary": gate["summary"],
+        "judge_summary": judge_gate["summary"],
+        "judge_gate": judge_gate,
         "supplement_count": len(supplement_rows),
         "reeval_needed": reeval_needed,
     }
@@ -7745,12 +9105,12 @@ def _render_validity_workflow_status(
     with st.container(border=True):
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
-            st.markdown("#### 보완 → 재평가 → QA 검토 흐름")
+            st.markdown("#### 독립 LLM 평가 → 타당성 평가 → QA 검토 흐름")
             st.caption("선택한 Run·Case가 지금 어느 단계인지와 다음에 눌러야 할 버튼을 고정해서 보여줍니다.")
         with state:
             st.markdown(f":{badge_color}-badge[{model['current']}]", text_alignment="right")
 
-        columns = st.columns(4, gap="small")
+        columns = st.columns(len(model["stages"]), gap="small")
         for column, stage in zip(columns, model["stages"], strict=False):
             stage_color = {
                 "green": "green",
@@ -7768,15 +9128,530 @@ def _render_validity_workflow_status(
         with next_col:
             st.markdown(f"**다음 액션 · {model['next_title']}**")
             st.caption(model["next_detail"])
+            action_model = _validity_post_evaluation_action_model(candidate, result)
+            if action_model.get("visible"):
+                key_base = _validity_key_base(
+                    str(candidate.get("run_id") or ""),
+                    str(candidate.get("case_id") or ""),
+                    f"workflow_{action_model['action_code']}",
+                )
+                if action_model.get("target") == "approval":
+                    if st.button(
+                        action_model["button_label"],
+                        icon=f":material/{action_model['icon']}:",
+                        type="primary",
+                        width="stretch",
+                        key=f"validity_next_action_{key_base}",
+                    ):
+                        _queue_validity_candidate_focus(
+                            candidate,
+                            str(action_model["action_code"]),
+                            notice=(
+                                f"{candidate.get('case_id', '-')} · {action_model['title']} 단계로 이동합니다. "
+                                "아래 QA 검토·업무 승인 영역에서 저장하세요."
+                            ),
+                            scroll_to_approval=True,
+                        )
+                        st.rerun()
+                elif action_model.get("target") == "report":
+                    report_col, acceptance_col = st.columns(2, gap="small")
+                    with report_col:
+                        if st.button(
+                            action_model["button_label"],
+                            icon=":material/summarize:",
+                            width="stretch",
+                            key=f"validity_next_report_{key_base}",
+                        ):
+                            _go_to_voc_report(
+                                str(candidate.get("run_id") or ""),
+                                str(candidate.get("case_id") or ""),
+                            )
+                            st.rerun()
+                    with acceptance_col:
+                        if st.button(
+                            action_model.get("secondary_button_label", "최종 인수·시연으로 이동"),
+                            icon=":material/approval:",
+                            width="stretch",
+                            key=f"validity_next_acceptance_{key_base}",
+                        ):
+                            _go_to_voc_acceptance(
+                                str(candidate.get("run_id") or ""),
+                                str(candidate.get("case_id") or ""),
+                            )
+                            st.rerun()
+            elif (
+                model.get("active_step") == "evaluate"
+                and not model.get("judge_gate", {}).get("blocked")
+            ):
+                key_base = _validity_key_base(
+                    str(candidate.get("run_id") or ""),
+                    str(candidate.get("case_id") or ""),
+                    "workflow_evaluate",
+                )
+                if st.button(
+                    "타당성 평가 설정으로 이동",
+                    icon=":material/fact_check:",
+                    type="primary",
+                    width="stretch",
+                    key=f"validity_next_evaluate_{key_base}",
+                ):
+                    st.session_state.voc_validity_evaluation_focus_once = True
+                    st.rerun()
         with score_col:
             st.metric("점수 기준", model["score_text"], border=True)
         with gate_col:
             st.metric("QA Gate", model["gate_summary"], border=True)
 
 
+def _render_validity_judge_prerequisite_notice(candidate: dict, artifacts: dict) -> None:
+    judge_gate = _validity_judge_gate_model(candidate, artifacts)
+    if not judge_gate["blocked"]:
+        return
+    supplement_rows = _validity_supplement_fields(artifacts.get("validity_supplement", {}))
+    with st.container(border=True):
+        title_col, status_col = st.columns([2.5, 1], gap="small", vertical_alignment="center")
+        with title_col:
+            st.markdown("#### 독립 LLM 평가 선행 필요")
+            st.caption(judge_gate["next_detail"])
+        with status_col:
+            st.markdown(f":{judge_gate['tone']}-badge[{judge_gate['current']}]", text_alignment="right")
+            st.caption(judge_gate["summary"])
+        if supplement_rows:
+            st.caption(
+                f"이미 입력한 타당성 보완 정보 {len(supplement_rows)}건은 보존되어 있으며, "
+                "독립 LLM 평가가 PASS된 뒤 타당성 평가 입력으로 반영됩니다."
+            )
+
+
+def _validity_rework_records(rubric: dict, result: dict | None) -> list[dict]:
+    rows = _validity_rework_items(rubric, result)
+    return rows.to_dict("records") if not rows.empty else []
+
+
+def _validity_required_supplement_fields(
+    rubric: dict,
+    result: dict | None,
+    rework_records: list[dict],
+) -> list[str]:
+    result = result or {}
+    dimensions = rubric.get("dimensions", {}) if isinstance(rubric.get("dimensions"), dict) else {}
+    fields: list[str] = []
+    mandatory_records = [record for record in rework_records if bool(record.get("_필수보완"))]
+    target_records = mandatory_records or rework_records
+    for record in target_records:
+        dimension_key = str(record.get("_항목키") or "").strip()
+        if not dimension_key:
+            label = str(record.get("평가 항목") or "")
+            dimension_key = next(
+                (
+                    key for key, spec in dimensions.items()
+                    if str(spec.get("label") or key) == label
+                ),
+                "",
+            )
+        fields.extend(VALIDITY_DIMENSION_SUPPLEMENT_FIELD_KEYS.get(dimension_key, ()))
+    for rule in _validity_immediate_holds(result):
+        fields.extend(VALIDITY_HOLD_SUPPLEMENT_FIELD_KEYS.get(str(rule), ()))
+    return _validity_ordered_supplement_fields(fields)
+
+
+def _validity_pass_basis_items(result: dict | None, rubric: dict) -> list[dict]:
+    result = result or {}
+    rule = _validity_ai_pass_rule(rubric)
+    pass_floor = float(rule.get("min_score", 80) or 80)
+    total_score = _validity_score_value(result.get("total_score"))
+    holds = _validity_immediate_holds(result)
+    items = [
+        {
+            "icon": "score",
+            "label": "총점 기준",
+            "value": "-" if total_score is None else f"{total_score:g} / 100점",
+            "detail": f"AI_PASS 기준 {pass_floor:g}점",
+            "tone": "green" if total_score is not None and total_score >= pass_floor else "orange",
+        },
+        {
+            "icon": "rule",
+            "label": "항목별 기준",
+            "value": "충족" if result.get("all_pass_floors_met") else "확인 필요",
+            "detail": "각 평가 항목의 통과 하한 확인",
+            "tone": "green" if result.get("all_pass_floors_met") else "orange",
+        },
+        {
+            "icon": "block",
+            "label": "즉시 보류",
+            "value": "0건" if not holds else f"{len(holds)}건",
+            "detail": "보류 규칙이 없어야 QA 검토 가능",
+            "tone": "green" if not holds else "red",
+        },
+    ]
+    scores = result.get("dimension_scores", {}) if isinstance(result.get("dimension_scores"), dict) else {}
+    passed_dimensions = []
+    for key, spec in rubric.get("dimensions", {}).items():
+        score_detail = scores.get(key, {}) if isinstance(scores.get(key), dict) else {}
+        score = _validity_score_value(score_detail.get("score"))
+        pass_floor_value = _validity_score_value(spec.get("pass_floor"))
+        if score is not None and pass_floor_value is not None and score >= pass_floor_value:
+            passed_dimensions.append(str(spec.get("label") or key))
+    if passed_dimensions:
+        items.append(
+            {
+                "icon": "fact_check",
+                "label": "통과 항목",
+                "value": f"{len(passed_dimensions)}개",
+                "detail": ", ".join(passed_dimensions[:2]) + (" 외" if len(passed_dimensions) > 2 else ""),
+                "tone": "green",
+            }
+        )
+    return items
+
+
+def _validity_supplement_context_model(
+    candidate: dict,
+    artifacts: dict,
+    result: dict | None,
+    rubric: dict | None,
+) -> dict:
+    result = result or {}
+    rubric = rubric or {}
+    supplement = artifacts.get("validity_supplement", {})
+    if not isinstance(supplement, dict):
+        supplement = {}
+    filled_fields = _validity_filled_supplement_field_keys(supplement)
+    filled_evaluation_fields = _validity_filled_supplement_field_keys(supplement, include_note=False)
+    decision = str(result.get("decision") or candidate.get("validity_status") or "NOT_RUN").strip().upper()
+    rework_records = _validity_rework_records(rubric, result) if result else []
+    required_fields = _validity_required_supplement_fields(rubric, result, rework_records) if result else []
+    required_fields = _validity_ordered_supplement_fields([*required_fields, *filled_evaluation_fields])
+    supplement_applied = _validity_supplement_applied_to_result(artifacts, result)
+
+    if not result:
+        return {
+            "phase": "pre_evaluation",
+            "title": "사전 보완 입력",
+            "caption": "최초 평가는 보완 없이 먼저 실행해도 됩니다. 이미 알고 있는 담당·일정·근거가 있을 때만 입력하세요.",
+            "badge": "선택 사항",
+            "tone": "gray",
+            "field_keys": list(VALIDITY_EVALUATION_SUPPLEMENT_FIELD_KEYS),
+            "expanded": bool(filled_evaluation_fields),
+            "rework_records": [],
+            "pass_basis": [],
+            "save_label": "사전 보완 입력 저장",
+            "draft_label": "비어 있는 항목 초안 채우기",
+            "empty_message": "사전 보완 입력은 선택 사항입니다. 먼저 평가를 실행하면 부족 항목이 자동으로 표시됩니다.",
+        }
+
+    if decision == "AI_PASS" and not _validity_immediate_holds(result):
+        return {
+            "phase": "pass_review",
+            "title": "AI_PASS 근거 확인",
+            "caption": "점수를 올리기 위한 보완이 아니라, QA 검토자가 왜 통과 가능한지 확인하는 메모를 남기는 단계입니다.",
+            "badge": "확인 메모",
+            "tone": "green",
+            "field_keys": ["note"],
+            "expanded": True,
+            "rework_records": [],
+            "pass_basis": _validity_pass_basis_items(result, rubric),
+            "save_label": "확인 메모 저장",
+            "draft_label": "확인 메모 초안 채우기",
+            "empty_message": "AI_PASS 상태입니다. QA 검토 전 통과 근거 확인 메모만 남기면 됩니다.",
+        }
+
+    if filled_evaluation_fields and not supplement_applied:
+        title = "보완 입력 반영 대기"
+        caption = "저장된 보완 입력이 현재 타당성 평가 결과에 아직 반영되지 않았습니다. 저장 내용을 확인한 뒤 재평가하세요."
+        badge = "재평가 필요"
+        tone = "orange"
+        phase = "pending_reevaluation"
+    else:
+        title = "부족 항목 보완 입력"
+        caption = "평가 결과에서 부족한 항목에 필요한 입력란만 표시합니다. 비어 있는 값은 초안 채우기로 시작할 수 있습니다."
+        badge = "보완 필요" if rework_records else "확인 필요"
+        tone = "red" if rework_records else "orange"
+        phase = "rework"
+
+    field_keys = required_fields or list(VALIDITY_EVALUATION_SUPPLEMENT_FIELD_KEYS)
+    return {
+        "phase": phase,
+        "title": title,
+        "caption": caption,
+        "badge": badge,
+        "tone": tone,
+        "field_keys": field_keys,
+        "expanded": True,
+        "rework_records": rework_records,
+        "pass_basis": [],
+        "save_label": "보완 입력 저장",
+        "draft_label": "필요 항목 초안 채우기",
+        "empty_message": "부족 항목을 기준으로 필요한 보완 정보를 입력하세요.",
+    }
+
+
+def _validity_trace_id(artifacts: dict) -> str:
+    trace = artifacts.get("trace", {}) if isinstance(artifacts.get("trace"), dict) else {}
+    return str(trace.get("trace_id") or "").strip()
+
+
+def _validity_draft_dates() -> dict[str, str]:
+    base = datetime.now().date()
+    return {
+        "start": (base + timedelta(days=1)).isoformat(),
+        "cause_done": (base + timedelta(days=8)).isoformat(),
+        "fix_done": (base + timedelta(days=15)).isoformat(),
+        "qa_done": (base + timedelta(days=22)).isoformat(),
+        "deploy": (base + timedelta(days=30)).isoformat(),
+    }
+
+
+def _validity_case_subject(candidate: dict) -> str:
+    question = str(candidate.get("question") or "").strip()
+    if not question:
+        return "VOC 대상 업무"
+    if "앱" in question or "모바일" in question:
+        return "모바일 앱 VOC 처리"
+    if "보험" in question or "갱신" in question:
+        return "보험 갱신 VOC 처리"
+    return "선택 VOC 처리"
+
+
+def _validity_autofill_value(
+    field: str,
+    candidate: dict,
+    artifacts: dict,
+    result: dict | None,
+    rubric: dict,
+    context: dict,
+) -> str:
+    result = result or {}
+    trace_id = _validity_trace_id(artifacts)
+    run_id = candidate.get("run_id", "-")
+    case_id = candidate.get("case_id", "-")
+    question = candidate.get("question") or "-"
+    score = result.get("total_score", "-")
+    decision = _voc_status_label(result.get("decision", "평가 전"))
+    subject = _validity_case_subject(candidate)
+    dates = _validity_draft_dates()
+    if field == "owner":
+        return "\n".join(
+            [
+                "담당/오너 확인",
+                f"  - 주관 조직 : {subject} 담당 조직",
+                "  - 개발 담당 : IT개발팀 담당자 확인 필요",
+                "  - 업무 담당 : 상품/서비스 운영 담당자 확인 필요",
+                "  - QA 검토 주체 : QA 담당자 확인 필요",
+                "  - 업무 승인 주체 : 상품/서비스 오너 확인 필요",
+            ]
+        )
+    if field == "schedule":
+        return "\n".join(
+            [
+                "일정 확인",
+                f"  - 착수일 : {dates['start']}",
+                f"  - 원인 분석 완료일 : {dates['cause_done']}",
+                f"  - 수정 완료일 : {dates['fix_done']}",
+                f"  - QA 검증일 : {dates['qa_done']}",
+                f"  - 배포 목표일 : {dates['deploy']}",
+            ]
+        )
+    if field == "kpi":
+        return "\n".join(
+            [
+                "정량 KPI 확인",
+                "  - 동일 VOC 재문의율 : 현재 확인 필요 → 목표 20% 감소",
+                "  - 오류/실패율 : 현재 확인 필요 → 목표 0.5% 이하",
+                "  - 평균 처리시간 : 현재 확인 필요 → 목표 30% 단축",
+                "  - 고객 재문의 건수 : 현재 확인 필요 → 목표 주간 3건 이하",
+                "  - 측정 주기 : 배포 후 4주간 주 1회 확인",
+                "  - 완료 기준 : 목표 KPI 2개 이상 충족 및 중대 결함 0건",
+            ]
+        )
+    if field == "priority":
+        return "\n".join(
+            [
+                "우선순위 확인",
+                "  - 우선순위 : P1",
+                "  - 판단 기준 : 고객 영향도 높음 / 재발 가능성 있음 / 배포 영향 중간",
+                "  - 우선 보완 대상 : 통과 기준 미달 항목 먼저 조치",
+                "  - 후속 보완 대상 : 보완 권장 항목은 QA 검토 전 확인",
+            ]
+        )
+    if field == "execution_plan":
+        return "\n".join(
+            [
+                "실행계획/적용범위 확인",
+                f"  - 적용 범위 : {subject} 관련 화면/API/업무 절차",
+                "  - 변경 대상 : 상태 표시 로직, 오류 메시지, 재시도/자동저장 처리, 운영 모니터링 기준",
+                "  - 수행 단계 :",
+                "    1. VOC·Trace 근거와 재현 조건 확인",
+                "    2. 원인 분석 및 변경 대상 확정",
+                "    3. 화면/API/업무 절차 수정",
+                "    4. QA 검증 및 회귀 테스트 수행",
+                "    5. 배포 후 KPI 모니터링",
+                "  - 완료 기준 : QA 검증 PASS, 중대 결함 0건, 목표 KPI 충족",
+            ]
+        )
+    if field == "evidence":
+        evidence_parts = [f"Run {run_id}", f"Case {case_id}"]
+        if trace_id:
+            evidence_parts.append(f"Trace {trace_id}")
+        evidence_parts.append(f"질문: {question}")
+        return "\n".join(
+            [
+                "VOC·실행 Trace 근거 확인",
+                f"  - Run ID : {run_id}",
+                f"  - Case ID : {case_id}",
+                f"  - Trace ID : {trace_id or '확인 필요'}",
+                f"  - 사용자 질문 : {question}",
+                "  - 추가 VOC ID : 확인 필요",
+                f"  - 기준 근거 : {' · '.join(evidence_parts)}",
+            ]
+        )
+    if field == "risk":
+        return "\n".join(
+            [
+                "리스크/우회방안 확인",
+                "  - 고객 영향 리스크 : 오류 재발 시 고객 안내 지연 가능성 확인",
+                "  - 운영 리스크 : 장애 재발, 상담 전환 증가, 처리 지연 가능성 확인",
+                "  - 보안·규정 리스크 : 개인정보 저장/마스킹/접근통제 영향 확인",
+                "  - 임시 우회 방안 : 상담 스크립트, 안내 배너, 수동 처리 절차 준비",
+                "  - 롤백 기준 : 배포 후 중대 결함 발생 시 즉시 이전 정책으로 복구",
+            ]
+        )
+    if field == "note":
+        if context.get("phase") == "pass_review":
+            holds = _validity_immediate_holds(result)
+            return "\n".join(
+                [
+                    "AI_PASS 근거 확인",
+                    f"  - 개선안 타당성 점수 : {score}/100점",
+                    f"  - 판정 : {decision}",
+                    f"  - 즉시 보류 규칙 : {len(holds)}건",
+                    "  - QA 검토 전 확인 : VOC·Trace 근거, 담당, 일정, KPI 확인 완료",
+                ]
+            )
+        return "\n".join(
+            [
+                "검토 메모",
+                "  - 보완 입력 출처 : 담당자 확인 필요",
+                "  - 추가 확인 필요 사항 : 확인 필요",
+                "  - 재평가 전 확인 : 필수 보완 항목 입력 완료 여부 확인",
+            ]
+        )
+    return ""
+
+
+def _render_validity_rework_need_cards(context: dict) -> None:
+    records = context.get("rework_records") or []
+    if not records:
+        return
+    st.caption("아래 부족 항목을 기준으로 입력란을 자동 구성했습니다.")
+    columns = st.columns(min(3, len(records)), gap="small")
+    for index, record in enumerate(records):
+        column = columns[index % len(columns)]
+        score = record.get("현재 점수")
+        max_points = record.get("최고점")
+        with column.container(border=True, height=140):
+            st.caption(f":material/report: {record.get('평가 항목', '-')}")
+            st.markdown(
+                f"**{'-' if score is None else f'{score:g}'} / "
+                f"{'-' if max_points is None else f'{max_points:g}'}점**"
+            )
+            st.caption(f"{record.get('상태', '-')} · {record.get('보완 지시', '-')}")
+
+
+def _render_validity_pass_basis_cards(context: dict) -> None:
+    basis = context.get("pass_basis") or []
+    if not basis:
+        return
+    columns = st.columns(min(4, len(basis)), gap="small")
+    for column, item in zip(columns, basis, strict=False):
+        tone = {
+            "green": "green",
+            "orange": "orange",
+            "red": "red",
+            "gray": "gray",
+        }.get(item.get("tone", "gray"), "gray")
+        with column.container(border=True, height=122):
+            st.caption(f":material/{item.get('icon', 'fact_check')}: {item.get('label', '-')}")
+            st.markdown(f":{tone}-badge[{item.get('value', '-')}]")
+            st.caption(item.get("detail", "-"))
+
+
+def _render_validity_supplement_form_body(
+    candidate: dict,
+    artifacts: dict,
+    current: dict,
+    context: dict,
+    rubric: dict,
+    *,
+    key_scope: str = "",
+) -> dict | None:
+    run_id = candidate["run_id"]
+    case_id = candidate["case_id"]
+    field_keys = context.get("field_keys") or []
+    for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS:
+        key = _validity_supplement_key(run_id, case_id, field, key_scope)
+        if key not in st.session_state:
+            st.session_state[key] = str(current.get(field) or "")
+
+    if field_keys:
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            if st.button(
+                context.get("draft_label", "초안 채우기"),
+                icon=":material/auto_fix_high:",
+                width="content",
+                key=f"validity_supplement_draft_{_validity_key_base(run_id, case_id, key_scope)}",
+            ):
+                for field in field_keys:
+                    key = _validity_supplement_key(run_id, case_id, field, key_scope)
+                    if not str(st.session_state.get(key) or "").strip():
+                        st.session_state[key] = _validity_autofill_value(
+                            field,
+                            candidate,
+                            artifacts,
+                            artifacts.get("validity_result", {}),
+                            rubric,
+                            context,
+                        )
+                st.toast("비어 있는 입력란에 초안을 채웠습니다. 확인 후 저장하세요.", icon=":material/edit:")
+
+    with st.form(f"validity_supplement_form_{_validity_key_base(run_id, case_id, key_scope)}", border=False):
+        field_specs = [_validity_supplement_field_spec(field) for field in field_keys]
+        if not field_specs:
+            st.caption(context.get("empty_message", "입력할 보완 항목이 없습니다."))
+        for start in range(0, len(field_specs), 3):
+            row_specs = field_specs[start:start + 3]
+            columns = st.columns(len(row_specs), gap="small") if len(row_specs) > 1 else [st.container()]
+            for column, (field, label, placeholder) in zip(columns, row_specs, strict=False):
+                with column:
+                    field_label = "QA 확인 메모" if field == "note" and context.get("phase") == "pass_review" else label
+                    st.text_area(
+                        field_label,
+                        placeholder=placeholder,
+                        key=_validity_supplement_key(run_id, case_id, field, key_scope),
+                        height=104 if field in {"note", "execution_plan"} else 88,
+                    )
+        submitted = st.form_submit_button(
+            context.get("save_label", "보완 입력 저장"),
+            type="primary",
+            icon=":material/save:",
+            width="stretch",
+        )
+    if not submitted:
+        return None
+    return {
+        field: st.session_state.get(
+            _validity_supplement_key(run_id, case_id, field, key_scope),
+            "",
+        )
+        for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS
+    }
+
+
 def _render_validity_supplement_editor(
     candidate: dict,
     artifacts: dict,
+    result: dict | None = None,
+    rubric: dict | None = None,
     *,
     key_scope: str = "",
 ) -> dict:
@@ -7786,68 +9661,80 @@ def _render_validity_supplement_editor(
     run_id = candidate["run_id"]
     case_id = candidate["case_id"]
     filled_rows = _validity_supplement_fields(current)
+    rubric = rubric or load_improvement_validity_rubric()
+    result = result or artifacts.get("validity_result", {})
+    context = _validity_supplement_context_model(candidate, artifacts, result, rubric)
+    badge_color = {
+        "green": "green",
+        "blue": "blue",
+        "orange": "orange",
+        "red": "red",
+        "gray": "gray",
+    }.get(context.get("tone", "gray"), "gray")
 
     with st.container(border=True):
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
-            st.markdown("#### 개선안 타당성 평가 보완 입력")
-            st.caption("Agent 개선안에 부족한 담당·일정·KPI 근거를 저장하면 다음 개선안 타당성 평가에 함께 반영됩니다.")
+            st.markdown(f"#### {context['title']}")
+            st.caption(context["caption"])
         with state:
-            if filled_rows:
-                st.markdown(f":blue-badge[보완 입력 {len(filled_rows)}건]", text_alignment="right")
-            else:
-                st.markdown(":gray-badge[보완 입력 없음]", text_alignment="right")
-
-        for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS:
-            key = _validity_supplement_key(run_id, case_id, field, key_scope)
-            if key not in st.session_state:
-                st.session_state[key] = str(current.get(field) or "")
-
-        with st.form(f"validity_supplement_form_{_validity_key_base(run_id, case_id, key_scope)}", border=False):
-            top_columns = st.columns(3, gap="small")
-            for column, (field, label, placeholder) in zip(top_columns, VALIDITY_SUPPLEMENT_FIELDS[:3], strict=False):
-                with column:
-                    st.text_area(
-                        label,
-                        placeholder=placeholder,
-                        key=_validity_supplement_key(run_id, case_id, field, key_scope),
-                        height=82,
-                    )
-            bottom_columns = st.columns(3, gap="small")
-            for column, (field, label, placeholder) in zip(bottom_columns, VALIDITY_SUPPLEMENT_FIELDS[3:], strict=False):
-                with column:
-                    st.text_area(
-                        label,
-                        placeholder=placeholder,
-                        key=_validity_supplement_key(run_id, case_id, field, key_scope),
-                        height=82,
-                    )
-            submitted = st.form_submit_button(
-                "보완 입력 저장",
-                type="primary",
-                icon=":material/save:",
-                width="stretch",
+            filled_count = len(filled_rows)
+            count_text = f" · 저장 {filled_count}건" if filled_count else ""
+            st.markdown(
+                f":{badge_color}-badge[{context['badge']}{count_text}]",
+                text_alignment="right",
             )
 
-        if submitted:
-            payload = {
-                field: st.session_state.get(
-                    _validity_supplement_key(run_id, case_id, field, key_scope),
-                    "",
+        _render_validity_rework_need_cards(context)
+        _render_validity_pass_basis_cards(context)
+
+        if context["phase"] == "pre_evaluation":
+            with st.expander(
+                "입력 열기",
+                expanded=context["expanded"],
+                icon=":material/edit_note:",
+            ):
+                payload = _render_validity_supplement_form_body(
+                    candidate,
+                    artifacts,
+                    current,
+                    context,
+                    rubric,
+                    key_scope=key_scope,
                 )
-                for field, _label, _placeholder in VALIDITY_SUPPLEMENT_FIELDS
-            }
+        else:
+            payload = _render_validity_supplement_form_body(
+                candidate,
+                artifacts,
+                current,
+                context,
+                rubric,
+                key_scope=key_scope,
+            )
+
+        if payload is not None:
             if not any(str(value or "").strip() for value in payload.values()):
-                st.toast("저장할 보완 입력을 먼저 입력하세요.", icon=":material/info:")
+                st.toast("저장할 입력을 먼저 작성하세요.", icon=":material/info:")
             else:
                 try:
                     saved = save_voc_validity_supplement(run_id, case_id, payload)
                     artifacts["validity_supplement"] = saved.get("validity_supplement", {})
                     _load_validity_candidates.clear()
-                    st.session_state.voc_validity_focus_notice = (
-                        "보완 입력을 저장했습니다. 아래 평가 설정에서 재평가를 실행하면 QA 검토 가능 여부가 다시 계산됩니다."
-                    )
-                    st.session_state.voc_validity_notice = "개선안 타당성 평가 보완 입력을 저장했습니다. 다음 개선안 타당성 평가에 반영됩니다."
+                    if context["phase"] == "pass_review":
+                        st.session_state.voc_validity_focus_notice = (
+                            "AI_PASS 근거 확인 메모를 저장했습니다. QA 검토 단계에서 참고할 수 있습니다."
+                        )
+                        st.session_state.voc_validity_notice = "AI_PASS 근거 확인 메모를 저장했습니다."
+                    elif context["phase"] == "pre_evaluation":
+                        st.session_state.voc_validity_focus_notice = (
+                            "사전 보완 입력을 저장했습니다. 최초 개선안 타당성 평가에 함께 반영됩니다."
+                        )
+                        st.session_state.voc_validity_notice = "사전 보완 입력을 저장했습니다."
+                    else:
+                        st.session_state.voc_validity_focus_notice = (
+                            "보완 입력을 저장했습니다. 아래 평가 설정에서 재평가를 실행하면 QA 검토 가능 여부가 다시 계산됩니다."
+                        )
+                        st.session_state.voc_validity_notice = "개선안 타당성 평가 보완 입력을 저장했습니다. 다음 개선안 타당성 평가에 반영됩니다."
                     st.rerun()
                 except Exception as exc:
                     st.error(f"보완 입력 저장 실패: {type(exc).__name__}: {exc}")
@@ -7864,7 +9751,7 @@ def _render_validity_supplement_editor(
                 },
             )
         else:
-            st.caption("보완 입력이 없으면 개선안 타당성 평가는 원본 Agent 파이프라인 최종 개선안만 기준으로 수행됩니다.")
+            st.caption(context["empty_message"])
 
     return artifacts
 
@@ -8387,6 +10274,42 @@ VALIDITY_REWORK_ACTIONS = {
     "risk_security_compliance": "장애·보안·법규·고객 안내 리스크와 우회 방안을 함께 제시하세요.",
 }
 
+VALIDITY_REWORK_INPUT_GUIDES = {
+    "cause_linkage": (
+        ("VOC 원인", "고객 불만 문장과 근본 원인을 1:1로 연결"),
+        ("개선 조치", "각 원인별로 적용할 정책·화면·프로세스 변경 대상 작성"),
+        ("우선순위", "고객 영향도와 재발 가능성 기준으로 P1/P2/P3 지정"),
+    ),
+    "evidence_traceability": (
+        ("VOC·Trace 근거", "VOC ID, Run ID, Trace 단계, 검색 근거를 항목별로 작성"),
+        ("근거 부족", "확인되지 않은 내용은 추정하지 말고 확인 필요로 분리"),
+    ),
+    "feasibility": (
+        ("적용 범위", "화면·API·업무 절차·데이터 중 어디를 바꿀지 명시"),
+        ("변경 대상", "수정 대상 시스템, 정책, 조직, 산출물을 구체화"),
+        ("수행 방법", "분석 → 설계 → 구현 → QA → 배포 순서로 작성"),
+        ("완료 기준", "어떤 증적과 테스트로 완료를 판단할지 작성"),
+    ),
+    "ownership_schedule_kpi": (
+        ("담당", "주관 조직, 협업 조직, QA 검토 주체 지정"),
+        ("일정", "착수일, 중간 마일스톤, QA일, 배포 목표일을 날짜로 작성"),
+        ("KPI", "오류율·재문의율·처리시간 등 개선 전/후 목표값 작성"),
+        ("검증 기준", "측정 방법, 확인 주기, 완료 판정 기준 작성"),
+    ),
+    "risk_security_compliance": (
+        ("운영 리스크", "장애 재발, 고객 안내, 우회 처리 방안 작성"),
+        ("보안·규정", "개인정보·접근통제·보관기간·규정 영향 작성"),
+        ("롤백", "문제 발생 시 되돌릴 방법과 임시 대응 기준 작성"),
+    ),
+}
+
+
+def _clip_text(value, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "-"
+    return text if len(text) <= limit else f"{text[: max(0, limit - 1)].rstrip()}…"
+
 
 def _validity_score_value(value) -> float | None:
     if value is None:
@@ -8401,7 +10324,7 @@ def _validity_rework_items(rubric: dict, result: dict | None) -> pd.DataFrame:
     result = result or {}
     scores = result.get("dimension_scores", {}) if isinstance(result.get("dimension_scores"), dict) else {}
     rows = []
-    for key, spec in rubric.get("dimensions", {}).items():
+    for order, (key, spec) in enumerate(rubric.get("dimensions", {}).items()):
         score_detail = scores.get(key, {}) if isinstance(scores.get(key), dict) else {}
         max_points = float(spec.get("max_points", 0) or 0)
         pass_floor = float(spec.get("pass_floor", 0) or 0)
@@ -8420,7 +10343,12 @@ def _validity_rework_items(rubric: dict, result: dict | None) -> pd.DataFrame:
             status = "보완 권장"
         rows.append(
             {
+                "_항목키": str(key),
+                "_필수보완": is_floor_miss,
+                "_점수비율": ratio if ratio is not None else -1,
+                "_정렬순서": order,
                 "평가 항목": spec.get("label", key),
+                "구분": "필수 보완" if is_floor_miss else "보완 권장",
                 "현재 점수": score,
                 "통과 기준": pass_floor,
                 "최고점": max_points,
@@ -8433,7 +10361,56 @@ def _validity_rework_items(rubric: dict, result: dict | None) -> pd.DataFrame:
                 ),
             }
         )
-    return pd.DataFrame(rows)
+    rows.sort(
+        key=lambda item: (
+            0 if item["_필수보완"] else 1,
+            -float(item.get("부족 점수") or 0),
+            float(item.get("_점수비율") if item.get("_점수비율") is not None else 999),
+            int(item.get("_정렬순서") or 0),
+        )
+    )
+    for index, row in enumerate(rows, start=1):
+        row["우선순위"] = index
+    columns = [
+        "_항목키",
+        "_필수보완",
+        "_점수비율",
+        "_정렬순서",
+        "우선순위",
+        "구분",
+        "평가 항목",
+        "현재 점수",
+        "통과 기준",
+        "최고점",
+        "부족 점수",
+        "상태",
+        "현재 미흡 근거",
+        "보완 지시",
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _validity_rework_field_guidance(dimension_key: str) -> str:
+    guides = VALIDITY_REWORK_INPUT_GUIDES.get(str(dimension_key), ())
+    if not guides:
+        return "평가 근거에서 부족하다고 지적된 내용을 실행 가능한 입력값으로 구체화"
+    return " / ".join(f"{label}: {guide}" for label, guide in guides)
+
+
+def _validity_rework_input_guide_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return pd.DataFrame(columns=["우선순위", "구분", "평가 항목", "작성할 보완 정보"])
+    guide_rows = []
+    for item in rows.to_dict("records"):
+        guide_rows.append(
+            {
+                "우선순위": item.get("우선순위"),
+                "구분": item.get("구분"),
+                "평가 항목": item.get("평가 항목"),
+                "작성할 보완 정보": _validity_rework_field_guidance(str(item.get("_항목키") or "")),
+            }
+        )
+    return pd.DataFrame(guide_rows)
 
 
 def _validity_rework_instruction(candidate: dict, artifacts: dict, result: dict, rubric: dict) -> str:
@@ -8464,13 +10441,16 @@ def _validity_rework_instruction(candidate: dict, artifacts: dict, result: dict,
     if rows.empty:
         lines.append("- 통과 기준 미달 항목은 없지만, QA 검토자가 바로 확인할 수 있도록 근거·담당·일정·KPI를 더 명확히 정리하세요.")
     else:
+        lines.append("- 필수 보완은 QA 검토 단계로 진행하기 위해 먼저 해소해야 하는 항목입니다.")
+        lines.append("- 보완 권장은 통과 가능성을 높이는 참고 항목이며, 재시험 전달 시에는 필수 보완 중심으로 압축됩니다.")
         for index, item in enumerate(rows.to_dict("records"), start=1):
             score = "-" if item["현재 점수"] is None else f"{item['현재 점수']:g}"
             lines.append(
-                f"{index}. {item['평가 항목']}: 현재 {score}/{item['최고점']:g}점, "
+                f"{index}. [{item['구분']}] {item['평가 항목']}: 현재 {score}/{item['최고점']:g}점, "
                 f"통과 기준 {item['통과 기준']:g}점, 부족 {item['부족 점수']:g}점"
             )
             lines.append(f"   - 보완 지시: {item['보완 지시']}")
+            lines.append(f"   - 작성 가이드: {_validity_rework_field_guidance(str(item.get('_항목키') or ''))}")
             if item["현재 미흡 근거"] != "-":
                 lines.append(f"   - 현재 미흡 근거: {item['현재 미흡 근거']}")
 
@@ -8497,6 +10477,56 @@ def _validity_rework_instruction(candidate: dict, artifacts: dict, result: dict,
     return "\n".join(lines)
 
 
+def _validity_retest_instruction_payload(candidate: dict, artifacts: dict, result: dict, rubric: dict) -> str:
+    rows = _validity_rework_items(rubric, result)
+    holds = _validity_immediate_holds(result)
+    required_rows = rows[rows["_필수보완"]] if not rows.empty and "_필수보완" in rows else pd.DataFrame()
+    target_rows = required_rows if not required_rows.empty else rows
+    execution = artifacts.get("pipeline_result", {}).get("execution", {})
+    question = candidate.get("question") or execution.get("question") or "-"
+    target_label = "통과 기준 미달 항목" if not required_rows.empty else "보완 권장 항목"
+
+    lines = [
+        f"Run/Case: {candidate.get('run_id', '-')} / {candidate.get('case_id', '-')}",
+        f"원 질문: {_clip_text(question, 180)}",
+        "목표: 개선안 타당성 평가에서 AI_PASS, 즉시 보류 0건, QA 검토 가능 상태가 되도록 최종 개선안을 보완하세요.",
+        f"재시험 대상: {target_label} {len(target_rows)}건 중심. 이미 충족한 항목 설명은 반복하지 말고 부족 항목만 보강하세요.",
+    ]
+
+    if not target_rows.empty:
+        lines.append("필수 보완 지시:")
+        for item in target_rows.to_dict("records"):
+            score = "-" if item["현재 점수"] is None else f"{item['현재 점수']:g}"
+            lines.append(
+                f"{item.get('우선순위')}. {item['평가 항목']} "
+                f"(현재 {score}/{item['최고점']:g}, 기준 {item['통과 기준']:g}, 부족 {item['부족 점수']:g})"
+            )
+            lines.append(f"- 보완: {item['보완 지시']}")
+            lines.append(f"- 작성: {_validity_rework_field_guidance(str(item.get('_항목키') or ''))}")
+            reason = _clip_text(item.get("현재 미흡 근거"), 220)
+            if reason != "-":
+                lines.append(f"- 미흡 근거: {reason}")
+    else:
+        lines.append("필수 보완 지시: 점수 미달 항목은 없으므로 담당·일정·KPI와 근거 확인성을 더 명확히 하세요.")
+
+    if holds:
+        lines.append("즉시 보류 해소:")
+        for rule in holds:
+            lines.append(f"- {_validity_hold_rule_label(rule)} 해소 근거와 조치안을 반드시 포함")
+
+    lines.extend(
+        [
+            "출력 형식:",
+            "1) 적용 범위와 변경 대상",
+            "2) 단계별 실행계획",
+            "3) 담당·일정·마일스톤",
+            "4) 정량 KPI와 완료 기준",
+            "5) VOC·Trace 근거와 리스크 대응",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _render_validity_rework_guide(
     candidate: dict,
     artifacts: dict,
@@ -8511,30 +10541,38 @@ def _render_validity_rework_guide(
     rows = _validity_rework_items(rubric, result)
     holds = _validity_immediate_holds(result)
     default_instruction = _validity_rework_instruction(candidate, artifacts, result, rubric)
+    default_retest_instruction = _validity_retest_instruction_payload(candidate, artifacts, result, rubric)
     key_base = _validity_key_base(candidate["run_id"], candidate["case_id"], key_scope)
     default_key = f"validity_rework_default_{key_base}"
     instruction_key = f"validity_rework_instruction_{key_base}"
+    retest_default_key = f"validity_retest_default_{key_base}"
+    retest_instruction_key = f"validity_retest_instruction_{key_base}"
     if st.session_state.get(default_key) != default_instruction:
         st.session_state[default_key] = default_instruction
         st.session_state[instruction_key] = default_instruction
+    if st.session_state.get(retest_default_key) != default_retest_instruction:
+        st.session_state[retest_default_key] = default_retest_instruction
+        st.session_state[retest_instruction_key] = default_retest_instruction
 
     with st.container(border=True):
         heading, state = st.columns([2.6, 1], vertical_alignment="center")
         with heading:
             st.markdown("#### QA 검토 전 보완 가이드")
-            st.caption("개선안 타당성 평가 결과를 바탕으로 미달 항목과 재시험 지시문을 자동 구성합니다.")
+            st.caption("필수 보완 항목을 먼저 정렬하고, 재시험에는 압축 지시문만 전달합니다.")
         with state:
             badge = ":green-badge[QA 검토 가능]" if gate["ready"] else ":red-badge[보완 후 재시험]"
             st.markdown(badge, text_alignment="right")
 
-        guide_cards = st.columns(4, gap="small")
+        required_count = int(rows["_필수보완"].sum()) if not rows.empty and "_필수보완" in rows else 0
+        recommended_count = max(len(rows) - required_count, 0)
         card_payloads = [
             (":material/rule:", "현재 판정", _voc_status_label(result.get("decision", "NOT_RUN"))),
             (":material/score:", "개선안 타당성 점수", f"{result.get('total_score', '-')} / 100점"),
-            (":material/edit_note:", "보완 항목", f"{len(rows)}건"),
+            (":material/priority_high:", "필수 보완", f"{required_count}건"),
+            (":material/edit_note:", "보완 권장", f"{recommended_count}건"),
             (":material/block:", "즉시 보류", f"{len(holds)}건"),
         ]
-        for column, (icon, label, value) in zip(guide_cards, card_payloads, strict=False):
+        for column, (icon, label, value) in zip(st.columns(5, gap="small"), card_payloads, strict=False):
             with column.container(border=True, height="stretch"):
                 st.markdown(f"{icon} **{label}**")
                 st.markdown(f"##### {value}")
@@ -8542,12 +10580,18 @@ def _render_validity_rework_guide(
         if rows.empty:
             st.success("통과 기준 미달 항목은 없습니다. QA 검토 전 근거·담당·일정·KPI만 한 번 더 확인하세요.")
         else:
+            display_rows = rows.drop(
+                columns=["_항목키", "_필수보완", "_점수비율", "_정렬순서"],
+                errors="ignore",
+            )
             st.dataframe(
-                rows,
+                display_rows,
                 hide_index=True,
                 width="stretch",
                 height=min(260, 74 + len(rows) * 42),
                 column_config={
+                    "우선순위": st.column_config.NumberColumn(format="%d", width="small"),
+                    "구분": st.column_config.TextColumn(width="small"),
                     "평가 항목": st.column_config.TextColumn(width="medium", pinned=True),
                     "현재 점수": st.column_config.NumberColumn(format="%g점", width="small"),
                     "통과 기준": st.column_config.NumberColumn(format="%g점", width="small"),
@@ -8559,12 +10603,39 @@ def _render_validity_rework_guide(
                 },
             )
 
-        instruction = st.text_area(
-            "보완 지시문",
-            key=instruction_key,
-            height=220,
-            help="필요하면 이 지시문을 수정한 뒤 재시험을 실행하세요. 지시문은 재시험 Run 메타데이터와 실행 질문에 함께 저장됩니다.",
+            input_guide = _validity_rework_input_guide_rows(rows)
+            st.markdown("##### 실제 보완 작성 가이드")
+            st.dataframe(
+                input_guide,
+                hide_index=True,
+                width="stretch",
+                height=min(220, 72 + len(input_guide) * 44),
+                column_config={
+                    "우선순위": st.column_config.NumberColumn(format="%d", width="small"),
+                    "구분": st.column_config.TextColumn(width="small"),
+                    "평가 항목": st.column_config.TextColumn(width="medium", pinned=True),
+                    "작성할 보완 정보": st.column_config.TextColumn(width="large"),
+                },
+            )
+
+        with st.expander("상세 보완 가이드 보기", expanded=False, icon=":material/article:"):
+            st.text_area(
+                "사용자 확인용 상세 가이드",
+                key=instruction_key,
+                height=220,
+                help="사람이 확인하기 위한 상세 가이드입니다. 기존 요약과 평가 근거를 함께 보여주며 재시험에는 그대로 전달하지 않습니다.",
+            )
+
+        retest_instruction = st.text_area(
+            "재시험 전달 지시문",
+            key=retest_instruction_key,
+            height=168,
+            help="재시험 Agent 파이프라인에 실제 전달되는 압축 지시문입니다. 통과 기준 미달 항목 중심으로 자동 구성됩니다.",
         )
+        st.caption(
+            "재시험에는 위 압축 지시문만 전달합니다. 상세 평가 결과·기존 개선안 전문은 화면 확인용으로 분리해 중복 전달을 줄입니다."
+        )
+        instruction = retest_instruction
         active_state = _active_batch_run_state()
         active_run_id = active_state["run_id"]
         active = active_state["active"]
@@ -8609,6 +10680,7 @@ def _render_validity_auto_evaluation_controls(
     run_id = candidate["run_id"]
     case_id = candidate["case_id"]
     key_base = _validity_key_base(run_id, case_id, key_scope)
+    _render_validity_evaluation_focus_anchor_once()
     with st.container(border=True):
         heading, supplement_state = st.columns([2.4, 1], vertical_alignment="center")
         with heading:
@@ -8621,12 +10693,18 @@ def _render_validity_auto_evaluation_controls(
                 else ":gray-badge[보완 입력 미입력]"
             )
             st.markdown(badge, text_alignment="right")
+        judge_gate = _validity_judge_gate_model(candidate, artifacts)
         config = _validity_config_controls(f"{key_base}_validity_auto")
+        if judge_gate["blocked"]:
+            st.caption(
+                f"독립 LLM 평가 상태: {judge_gate['summary']} · "
+                "PASS 후 개선안 타당성 평가를 실행할 수 있습니다."
+            )
         if st.button(
-            "선택 대상 개선안 타당성 평가 실행",
+            "선택 대상 개선안 타당성 평가 실행" if not judge_gate["blocked"] else "독립 LLM PASS 후 타당성 평가 가능",
             type="primary",
             icon=":material/fact_check:",
-            disabled=not config["credential_configured"],
+            disabled=not config["credential_configured"] or judge_gate["blocked"],
             width="stretch",
             key=f"validity_auto_evaluate_{key_base}",
         ):
@@ -8648,7 +10726,7 @@ def _render_validity_auto_evaluation_controls(
                     f"3. 평가 기준 구성: Rubric {validity_rubric.get('version', '-')} · "
                     f"{len(validity_rubric.get('dimensions', {}))}개 항목 · 100점 기준을 적용합니다."
                 )
-                st.write(f"4. 독립 LLM 평가 요청: {config['provider']} / {config['model']}")
+                st.write(f"4. 타당성 평가 LLM 요청: {config['provider']} / {config['model']}")
                 evaluated = evaluate_voc_improvement_validity(run_id, case_id, config)
                 validity = evaluated.get("validity_result", {})
                 artifacts["validity_result"] = validity
@@ -8687,9 +10765,28 @@ def _render_validity_auto_evaluation_controls(
                 )
             else:
                 gate = _validity_qa_gate_model(candidate, validity)
-                st.session_state.voc_validity_notice = (
-                    f"개선안 타당성 평가를 저장했습니다. 현재 상태: {gate['summary']}"
+                readiness = validity_human_review_readiness(
+                    validity_status=validity.get("decision", candidate.get("validity_status", "NOT_RUN")),
+                    workflow_state=validity.get("workflow_state", candidate.get("workflow_state", "DRAFT")),
+                    immediate_hold_count=len(_validity_immediate_holds(validity)),
+                    formal_approval=bool(validity.get("formal_approval") or candidate.get("formal_approval")),
                 )
+                action_code = str(readiness.get("action") or "")
+                if action_code in {"QA_REVIEW", "BUSINESS_APPROVAL", "FORMAL_APPROVED"}:
+                    _queue_validity_candidate_focus(
+                        candidate,
+                        action_code,
+                        notice=(
+                            f"개선안 타당성 평가가 {gate['summary']} 상태로 저장됐습니다. "
+                            f"다음 액션은 {readiness['action_label']}입니다."
+                        ),
+                        scroll_to_approval=action_code in {"QA_REVIEW", "BUSINESS_APPROVAL"},
+                    )
+                    st.session_state.voc_validity_notice = "개선안 타당성 평가를 저장했습니다."
+                else:
+                    st.session_state.voc_validity_notice = (
+                        f"개선안 타당성 평가를 저장했습니다. 현재 상태: {gate['summary']}"
+                    )
             st.rerun()
     return validity
 
@@ -8844,7 +10941,13 @@ def _render_validity_candidate_dialog(candidate: dict):
     with tab_validity:
         st.markdown("### 개선안 타당성 평가 및 보완")
         _render_validity_workflow_status(candidate, artifacts, validity, validity_rubric)
-        artifacts = _render_validity_supplement_editor(candidate, artifacts, key_scope="dialog")
+        artifacts = _render_validity_supplement_editor(
+            candidate,
+            artifacts,
+            result=validity,
+            rubric=validity_rubric,
+            key_scope="dialog",
+        )
         validity = _render_validity_auto_evaluation_controls(
             candidate,
             artifacts,
@@ -8958,6 +11061,12 @@ VALIDITY_FOCUS_ACTION_LABELS = {
         "detail": "아직 승인되지 않은 Case를 선택해 평가·보완·승인을 이어갑니다.",
         "icon": "pending_actions",
         "tone": "orange",
+    },
+    "REPORT_READY": {
+        "label": "보고서/최종 시연",
+        "detail": "업무 승인 완료 증적을 품질 보고서와 최종 인수·시연 화면으로 연결합니다.",
+        "icon": "summarize",
+        "tone": "green",
     },
 }
 
@@ -9153,6 +11262,7 @@ def _render_human_validity_review(
     *,
     key_scope: str = "",
 ):
+    _render_validity_approval_focus_anchor_once()
     _render_validity_approval_workflow(result)
     state = result.get("workflow_state", "DRAFT")
     if result.get("decision") != "AI_PASS" or result.get("immediate_hold_rules_triggered"):
@@ -9217,7 +11327,40 @@ def _render_human_validity_review(
         _load_voc_history_rows.clear()
         st.session_state.pop("voc_validity_focus_action_code", None)
         st.session_state.pop("voc_validity_focus_target_key", None)
-        st.session_state.voc_validity_notice = f"{heading} 결과를 저장했습니다. 최신 승인 단계가 갱신되었습니다."
+        candidate_ref = {"run_id": run_id, "case_id": case_id}
+        if submitted_decision == "APPROVE" and role == "QA":
+            _queue_validity_candidate_focus(
+                candidate_ref,
+                "BUSINESS_APPROVAL",
+                notice=(
+                    f"{case_id} QA 검토가 완료됐습니다. "
+                    "다음 액션은 업무 승인 저장입니다."
+                ),
+                scroll_to_approval=True,
+            )
+            st.session_state.voc_validity_notice = "QA 검토 결과를 저장했습니다."
+        elif submitted_decision == "APPROVE" and role == "BUSINESS":
+            _queue_validity_candidate_focus(
+                candidate_ref,
+                "REPORT_READY",
+                notice=(
+                    f"{case_id} 업무 승인이 완료됐습니다. "
+                    "품질 보고서와 최종 인수·시연 화면에서 증적을 확인할 수 있습니다."
+                ),
+            )
+            st.session_state.voc_validity_notice = "업무 승인 결과를 저장했습니다."
+        elif submitted_decision == "REVISION_REQUIRED":
+            _queue_validity_candidate_focus(
+                candidate_ref,
+                "REWORK_AND_RETEST",
+                notice=(
+                    f"{case_id} 보완 요청이 저장됐습니다. "
+                    "보완 입력 후 개선안 타당성 평가를 다시 실행하세요."
+                ),
+            )
+            st.session_state.voc_validity_notice = f"{heading} 결과를 저장했습니다."
+        else:
+            st.session_state.voc_validity_notice = f"{heading} 결과를 저장했습니다. 최신 승인 단계가 갱신되었습니다."
         st.rerun()
 
 
@@ -9311,6 +11454,7 @@ def _render_improvement_ab(candidates: list[dict], baseline: dict, artifacts: di
 
 
 def render_improvement_validity():
+    _apply_pending_validity_candidate_filters()
     notice = st.session_state.pop("voc_validity_notice", None)
     if notice:
         st.success(notice)
@@ -9466,12 +11610,22 @@ def render_improvement_validity():
         if _validity_candidate_key(item) == st.session_state.voc_validity_selected_key
     )
     artifacts = load_voc_case_history_detail(selected["run_id"], selected["case_id"])
+    selected = _sync_validity_candidate_from_artifacts(selected, artifacts)
     validity = artifacts.get("validity_result", {})
     validity_rubric = load_improvement_validity_rubric()
     _render_validity_history_focus_action(selected)
     _render_validity_selection_basis(selected, artifacts)
     _render_validity_workflow_status(selected, artifacts, validity, validity_rubric)
-    artifacts = _render_validity_supplement_editor(selected, artifacts)
+    judge_gate = _validity_judge_gate_model(selected, artifacts)
+    if judge_gate["blocked"]:
+        _render_validity_judge_prerequisite_notice(selected, artifacts)
+    else:
+        artifacts = _render_validity_supplement_editor(
+            selected,
+            artifacts,
+            result=validity,
+            rubric=validity_rubric,
+        )
     if not validity:
         _render_validity_dimension_scorecard(validity_rubric, validity)
 

@@ -512,6 +512,7 @@ VALIDITY_SUPPLEMENT_FIELDS = (
     ("schedule", "일정/마일스톤"),
     ("kpi", "정량 KPI"),
     ("priority", "우선순위"),
+    ("execution_plan", "실행계획/적용범위"),
     ("evidence", "VOC·실행 Trace 근거"),
     ("risk", "리스크/우회방안"),
     ("note", "검토 메모"),

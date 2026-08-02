@@ -537,6 +537,85 @@ def test_validity_approval_workflow_model_moves_from_qa_to_business_approval():
     assert model["stages"][2]["status"] == "현재 단계"
 
 
+def test_validity_post_evaluation_action_model_guides_ai_pass_to_qa_review():
+    candidate = {
+        "run_id": "RUN-01",
+        "case_id": "TC-01",
+        "validity_status": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+    }
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "AI_REVIEWED",
+        "immediate_hold_rules_triggered": [],
+        "formal_approval": False,
+    }
+
+    model = voc_quality_view._validity_post_evaluation_action_model(candidate, result)
+
+    assert model["visible"] is True
+    assert model["action_code"] == "QA_REVIEW"
+    assert model["button_label"] == "QA 검토 영역으로 이동"
+    assert model["target"] == "approval"
+
+
+def test_validity_post_evaluation_action_model_routes_completed_approval_to_report():
+    candidate = {
+        "run_id": "RUN-01",
+        "case_id": "TC-01",
+        "validity_status": "AI_PASS",
+        "workflow_state": "BUSINESS_APPROVED",
+        "formal_approval": True,
+    }
+    result = {
+        "decision": "AI_PASS",
+        "workflow_state": "BUSINESS_APPROVED",
+        "immediate_hold_rules_triggered": [],
+        "formal_approval": True,
+    }
+
+    model = voc_quality_view._validity_post_evaluation_action_model(candidate, result)
+
+    assert model["visible"] is True
+    assert model["action_code"] == "REPORT_READY"
+    assert model["button_label"] == "품질 보고서로 이동"
+    assert model["secondary_button_label"] == "최종 인수·시연으로 이동"
+
+
+def test_validity_candidate_focus_is_deferred_for_streamlit_widget_safety(monkeypatch):
+    class FakeSessionState(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    state = FakeSessionState()
+    monkeypatch.setattr(voc_quality_view.st, "session_state", state)
+
+    voc_quality_view._queue_validity_candidate_focus(
+        {"run_id": "RUN-01", "case_id": "TC-01"},
+        "QA_REVIEW",
+        notice="QA 검토로 이동",
+        scroll_to_approval=True,
+    )
+
+    assert state["voc_validity_selected_key"] == "RUN-01::TC-01"
+    assert state["voc_validity_pending_candidate_query"] == "RUN-01"
+    assert state["voc_validity_pending_candidate_status"] == "QA 검토 가능"
+    assert state["voc_validity_approval_focus_once"] is True
+
+    voc_quality_view._apply_pending_validity_candidate_filters()
+
+    assert state["voc_validity_candidate_query"] == "RUN-01"
+    assert state["voc_validity_candidate_status"] == "QA 검토 가능"
+    assert state["voc_validity_run_type"] == "전체"
+    assert "voc_validity_pending_candidate_status" not in state
+
+
 def test_validity_dimension_rows_show_scores_and_korean_criteria():
     rubric = {
         "version": "1.0",
@@ -606,9 +685,213 @@ def test_ai_pass_failure_model_separates_four_failure_types():
     assert categories["score"]["value"] == "77 / 80점"
     assert categories["floors"]["failed"] is True
     assert "VOC·실행 Trace 근거 추적성" in categories["floors"]["details"][0]
-    assert categories["holds"]["details"] == ["독립 LLM 평가 미수행·오류"]
+    assert categories["holds"]["details"] == ["독립 LLM 평가 미통과 또는 미수행"]
     assert categories["evidence"]["failed"] is True
     assert any("Trace ID" in detail for detail in categories["evidence"]["details"])
+
+
+def test_validity_workflow_blocks_revaluation_until_judge_passes():
+    rubric = {
+        "dimensions": {},
+        "automatic_decisions": [
+            {"decision": "AI_PASS", "min_score": 80, "requires_all_pass_floors": True}
+        ],
+    }
+    candidate = {
+        "run_id": "RUN-BLOCKED",
+        "case_id": "TC-01",
+        "judge_status": "REVIEW_REQUIRED",
+        "judge_score": 76,
+        "validity_status": "NOT_RUN",
+        "workflow_state": "DRAFT",
+    }
+    artifacts = {
+        "judge_result": {
+            "decision": "REVIEW_REQUIRED",
+            "total_score": 76,
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+        },
+        "validity_supplement": {
+            "owner": "QA 담당자",
+            "schedule": "다음 배포 전",
+            "is_empty": False,
+        },
+    }
+
+    model = voc_quality_view._validity_workflow_status_model(
+        candidate,
+        artifacts,
+        {},
+        rubric,
+    )
+
+    assert model["current"] == "독립 LLM 평가 보완 필요"
+    assert model["next_title"] == "독립 LLM 평가 PASS 필요"
+    assert model["judge_gate"]["blocked"] is True
+    assert model["stages"][0]["label"] == "1. 독립 LLM 평가"
+    assert model["stages"][0]["status"] == "현재 단계"
+    assert all(stage["status"] == "잠금" for stage in model["stages"][1:])
+
+
+def test_validity_supplement_context_before_evaluation_is_optional_and_collapsed():
+    context = voc_quality_view._validity_supplement_context_model(
+        {"run_id": "RUN-1", "case_id": "TC-01", "validity_status": "NOT_RUN"},
+        {},
+        {},
+        {"dimensions": {}},
+    )
+
+    assert context["phase"] == "pre_evaluation"
+    assert context["badge"] == "선택 사항"
+    assert context["expanded"] is False
+    assert "execution_plan" in context["field_keys"]
+    assert "note" not in context["field_keys"]
+
+
+def test_validity_supplement_context_targets_only_failed_dimensions():
+    rubric = {
+        "dimensions": {
+            "ownership_schedule_kpi": {
+                "label": "담당·일정·KPI 구체성",
+                "max_points": 13,
+                "pass_floor": 9,
+            }
+        }
+    }
+    result = {
+        "decision": "REVISION_REQUIRED",
+        "total_score": 71,
+        "dimension_scores": {
+            "ownership_schedule_kpi": {
+                "score": 5,
+                "reason": "담당 조직과 KPI가 구체적이지 않습니다.",
+            }
+        },
+    }
+
+    context = voc_quality_view._validity_supplement_context_model(
+        {"run_id": "RUN-1", "case_id": "TC-01", "validity_status": "REVISION_REQUIRED"},
+        {},
+        result,
+        rubric,
+    )
+
+    assert context["phase"] == "rework"
+    assert context["title"] == "부족 항목 보완 입력"
+    assert context["field_keys"] == ["owner", "schedule", "kpi", "priority"]
+    assert context["rework_records"][0]["평가 항목"] == "담당·일정·KPI 구체성"
+
+
+def test_validity_supplement_context_uses_required_misses_before_recommendations():
+    rubric = {
+        "dimensions": {
+            "evidence_traceability": {
+                "label": "VOC·Trace 근거 추적성",
+                "max_points": 22,
+                "pass_floor": 14,
+            },
+            "feasibility": {
+                "label": "업무·기술 실행 가능성",
+                "max_points": 18,
+                "pass_floor": 13,
+            },
+            "ownership_schedule_kpi": {
+                "label": "담당·일정·KPI 구체성",
+                "max_points": 13,
+                "pass_floor": 9,
+            },
+        }
+    }
+    result = {
+        "decision": "REVISION_REQUIRED",
+        "total_score": 67,
+        "dimension_scores": {
+            "evidence_traceability": {"score": 15, "reason": "기준은 통과했지만 근거 보강 권장"},
+            "feasibility": {"score": 12, "reason": "구현 상세가 부족함"},
+            "ownership_schedule_kpi": {"score": 8, "reason": "담당, 일정, KPI가 부족함"},
+        },
+    }
+
+    context = voc_quality_view._validity_supplement_context_model(
+        {"run_id": "RUN-1", "case_id": "TC-01", "validity_status": "REVISION_REQUIRED"},
+        {},
+        result,
+        rubric,
+    )
+
+    assert context["field_keys"] == ["owner", "schedule", "kpi", "priority", "execution_plan"]
+    assert "evidence" not in context["field_keys"]
+    assert context["rework_records"][0]["구분"] == "필수 보완"
+    assert any(record["구분"] == "보완 권장" for record in context["rework_records"])
+
+
+def test_validity_autofill_value_schedule_is_structured_for_editing():
+    draft = voc_quality_view._validity_autofill_value(
+        "schedule",
+        {"run_id": "RUN-1", "case_id": "TC-01", "question": "모바일 앱 갱신 오류"},
+        {},
+        {"decision": "REVISION_REQUIRED", "total_score": 67},
+        {"dimensions": {}},
+        {"phase": "rework"},
+    )
+
+    assert draft.startswith("일정 확인")
+    assert "  - 착수일 : " in draft
+    assert "  - 원인 분석 완료일 : " in draft
+    assert "  - 수정 완료일 : " in draft
+    assert "  - QA 검증일 : " in draft
+    assert "  - 배포 목표일 : " in draft
+    assert "날짜로 입력하세요" not in draft
+
+
+def test_validity_supplement_context_pass_uses_note_only():
+    rubric = {
+        "dimensions": {
+            "cause_linkage": {
+                "label": "불만 원인과 개선안 연결",
+                "max_points": 22,
+                "pass_floor": 16,
+            }
+        },
+        "automatic_decisions": [
+            {"decision": "AI_PASS", "min_score": 80, "requires_all_pass_floors": True}
+        ],
+    }
+    result = {
+        "decision": "AI_PASS",
+        "total_score": 86,
+        "all_pass_floors_met": True,
+        "immediate_hold_rules_triggered": [],
+        "dimension_scores": {
+            "cause_linkage": {"score": 18, "reason": "원인과 개선안 연결 충족"}
+        },
+    }
+
+    context = voc_quality_view._validity_supplement_context_model(
+        {"run_id": "RUN-1", "case_id": "TC-01", "validity_status": "AI_PASS"},
+        {},
+        result,
+        rubric,
+    )
+
+    assert context["phase"] == "pass_review"
+    assert context["title"] == "AI_PASS 근거 확인"
+    assert context["field_keys"] == ["note"]
+    assert context["pass_basis"][0]["label"] == "총점 기준"
+
+
+def test_validity_supplement_note_does_not_force_reevaluation():
+    result = {"decision": "AI_PASS", "total_score": 86}
+
+    assert voc_quality_view._validity_supplement_applied_to_result(
+        {"validity_supplement": {"note": "QA 확인 메모", "is_empty": False}},
+        result,
+    ) is True
+    assert voc_quality_view._validity_supplement_applied_to_result(
+        {"validity_supplement": {"owner": "모바일앱개발팀", "is_empty": False}},
+        result,
+    ) is False
 
 
 def test_ai_pass_failure_model_reports_all_conditions_met():
@@ -760,9 +1043,70 @@ def test_validity_rework_guide_targets_floor_misses_and_generates_instruction():
     rows = voc_quality_view._validity_rework_items(rubric, result)
     instruction = voc_quality_view._validity_rework_instruction(candidate, artifacts, result, rubric)
 
-    assert rows["평가 항목"].tolist() == ["불만 원인과 개선안 연결", "담당·일정·KPI"]
-    assert rows.loc[0, "부족 점수"] == 1
+    assert rows["평가 항목"].tolist() == ["담당·일정·KPI", "불만 원인과 개선안 연결"]
+    assert rows["구분"].tolist() == ["필수 보완", "필수 보완"]
+    assert rows.loc[0, "부족 점수"] == 2
+    assert rows.loc[0, "우선순위"] == 1
     assert "우선순위 2~4 개선안이 누락됨" in instruction
+    assert "[필수 보완] 담당·일정·KPI" in instruction
     assert "VOC ID" in instruction
     assert "정량 KPI" in instruction
     assert "원본 Run" in instruction
+
+
+def test_validity_retest_instruction_payload_uses_compact_required_items_only():
+    rubric = {
+        "dimensions": {
+            "cause_linkage": {
+                "label": "불만 원인과 개선안 연결",
+                "max_points": 20,
+                "pass_floor": 18,
+            },
+            "ownership_schedule_kpi": {
+                "label": "담당·일정·KPI",
+                "max_points": 15,
+                "pass_floor": 11,
+            },
+            "risk_security_compliance": {
+                "label": "리스크·보안·법규",
+                "max_points": 25,
+                "pass_floor": 10,
+            },
+        }
+    }
+    result = {
+        "decision": "REVISION_REQUIRED",
+        "workflow_state": "REVISION_REQUIRED",
+        "total_score": 72,
+        "dimension_scores": {
+            "cause_linkage": {"score": 18, "reason": "기준은 충족했으나 상세 근거가 약함"},
+            "ownership_schedule_kpi": {"score": 8, "reason": "담당, 일정, KPI가 수치로 제시되지 않음"},
+            "risk_security_compliance": {"score": 20, "reason": "충분함"},
+        },
+        "recommendations": ["기존 최종 개선안 전문을 다시 확인하세요."],
+        "immediate_hold_rules_triggered": [],
+    }
+    candidate = {
+        "run_id": "RUN-20260731-190448-131470-859f",
+        "case_id": "TC-01",
+        "question": "보험 갱신 오류",
+    }
+    artifacts = {
+        "pipeline_result": {
+            "execution": {
+                "result": {
+                    "summary": "요약 전문",
+                    "policy": "기존 최종 개선안 전문",
+                }
+            }
+        }
+    }
+
+    payload = voc_quality_view._validity_retest_instruction_payload(candidate, artifacts, result, rubric)
+
+    assert "통과 기준 미달 항목 1건" in payload
+    assert "담당·일정·KPI" in payload
+    assert "착수일" in payload or "마일스톤" in payload
+    assert "기존 최종 개선안 전문" not in payload
+    assert "기준은 충족했으나 상세 근거가 약함" not in payload
+    assert len(payload) < 1400
