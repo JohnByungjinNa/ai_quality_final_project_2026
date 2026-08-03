@@ -1,4 +1,5 @@
 import pandas as pd
+from streamlit.testing.v1 import AppTest
 
 from dashboard.pages_top import jira_view
 from dashboard.services import jira_client
@@ -99,3 +100,21 @@ def test_jira_visual_class_helpers_match_jira_like_badges():
     assert jira_view._jira_priority_class("High") == "high"
     assert jira_view._jira_priority_class("Low") == "low"
     assert jira_view._jira_issue_type_icon("버그") == "●"
+
+
+def test_jira_create_form_opens_in_dialog_from_compact_action():
+    app = AppTest.from_file("tests/fixtures/jira_create_dialog_app.py", default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert not app.text_input
+    open_button = next(button for button in app.button if button.label == "Jira 이슈 등록")
+
+    open_button.click().run()
+
+    assert not app.exception
+    assert {widget.label for widget in app.text_input} == {"요약", "Case ID", "Run ID", "라벨"}
+    assert any(widget.label == "설명" for widget in app.text_area)
+    create_buttons = [button for button in app.button if button.label == "Jira 이슈 등록"]
+    assert any(button.disabled for button in create_buttons)

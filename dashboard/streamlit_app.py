@@ -1,6 +1,8 @@
+import base64
 import os
 import threading
 import time
+from pathlib import Path
 
 import streamlit as st
 
@@ -28,6 +30,9 @@ from services.service_control import cleanup_prometheus_temporary_config, stop_r
 
 
 MIN_STREAMLIT_VERSION = (1, 59, 0)
+AWS_CUBE_MASK_DATA = base64.b64encode(
+    (Path(__file__).resolve().parent / "assets" / "providers" / "aws-console-cube.svg").read_bytes()
+).decode("ascii")
 
 
 def _version_tuple(value):
@@ -239,7 +244,7 @@ st.markdown(f"""
         display: flex;
         align-items: center;
         justify-content: flex-end;
-        gap: 14px;
+        gap: 11px;
         white-space: nowrap;
     }}
     .topbar-bell {{
@@ -264,7 +269,6 @@ st.markdown(f"""
         color: #ffffff;
         font-weight: 500;
     }}
-
     /* 메뉴 버튼들을 '탭'처럼 보이도록 스타일 재정의 */
     .st-key-topbar .stButton > button {{
         border: none !important;
@@ -293,6 +297,70 @@ st.markdown(f"""
     }}
     .st-key-topbar .stButton > button:focus:not(:active) {{
         color: #ffffff !important;
+    }}
+
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"] {{
+        position: relative !important;
+        width: 42px !important;
+        min-width: 42px !important;
+        height: 32px !important;
+        min-height: 32px !important;
+        padding: 0 !important;
+        border: 0 !important;
+        border-radius: 7px !important;
+        background: transparent !important;
+        color: transparent !important;
+        font-size: 0 !important;
+        line-height: 1 !important;
+        box-shadow: none !important;
+        overflow: hidden !important;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"] span[data-testid="stIconMaterial"] {{
+        display: none !important;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"] p {{
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        margin: 0 !important;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"] p img {{
+        display: none !important;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"]::after {{
+        display: none !important;
+        content: none !important;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"]::before {{
+        content: "";
+        display: block;
+        width: 27px;
+        height: 27px;
+        margin: 0 auto;
+        background-color: #94a3b8;
+        -webkit-mask: url("data:image/svg+xml;base64,{AWS_CUBE_MASK_DATA}") center / contain no-repeat;
+        mask: url("data:image/svg+xml;base64,{AWS_CUBE_MASK_DATA}") center / contain no-repeat;
+    }}
+    .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"]:hover {{
+        background: rgba(255,255,255,0.08) !important;
+    }}
+    .st-key-topbar .st-key-topbar_aws_action_connected button[data-testid="stPopoverButton"]::before {{
+        background-color: #4ade80;
+    }}
+    .st-key-topbar .st-key-topbar_aws_action_login_required button[data-testid="stPopoverButton"]::before,
+    .st-key-topbar .st-key-topbar_aws_action_pending button[data-testid="stPopoverButton"]::before,
+    .st-key-topbar .st-key-topbar_aws_action_setup button[data-testid="stPopoverButton"]::before {{
+        background-color: #94a3b8;
+    }}
+    .st-key-topbar .st-key-topbar_aws_action_error button[data-testid="stPopoverButton"]::before {{
+        background-color: #f87171;
+    }}
+    @media (max-width: 1450px) {{
+        .topbar-right {{ gap: 8px; }}
+        .st-key-topbar [class*="st-key-topbar_aws_action_"] button[data-testid="stPopoverButton"] {{
+            width: 38px !important;
+            min-width: 38px !important;
+        }}
     }}
 
     .st-key-topbar .st-key-streamlit_shutdown_button button {{

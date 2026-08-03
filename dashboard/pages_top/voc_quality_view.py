@@ -17,6 +17,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from components.integration_status import load_integration_status, render_integration_status
 from components.quality_report_template import build_voc_quality_report_html
 from core.paths import JIRA_REGISTERED_ISSUES_FILE
 from core.storage import load_json_file, save_json_file
@@ -1958,7 +1959,6 @@ def _render_contextual_jira_action_menu(
     question: str = "",
     extra_detail: str = "",
     key: str,
-    dialog_mode: bool = False,
 ) -> None:
     """Register a Jira issue from a selected table row context."""
     safe_key = _jira_context_key(key)
@@ -1996,31 +1996,14 @@ def _render_contextual_jira_action_menu(
         if diagnostic.get("priority") in JIRA_CONTEXT_PRIORITIES
         else JIRA_CONTEXT_PRIORITIES[0]
     )
-    if dialog_mode:
-        open_key = f"voc_context_jira_panel_open_{safe_key}"
-        is_open = bool(st.session_state.get(open_key, False))
-        if st.button(
-            JIRA_ACTION_POPOVER_LABEL if not is_open else "Jira 닫기",
-            icon=":material/bug_report:" if not is_open else ":material/close:",
-            type="secondary",
-            width="content",
-            key=f"voc_context_action_panel_{safe_key}",
-            help="선택한 표 Row를 Jira 이슈로 등록합니다.",
-        ):
-            st.session_state[open_key] = not is_open
-            st.rerun()
-        if not st.session_state.get(open_key, False):
-            return
-        action_container = st.container(border=True, width=430, gap="small")
-    else:
-        action_container = st.popover(
-            JIRA_ACTION_POPOVER_LABEL,
-            icon=":material/bug_report:",
-            type="secondary",
-            width="content",
-            key=f"voc_context_action_{safe_key}",
-            help="선택한 표 Row를 Jira 이슈로 등록합니다.",
-        )
+    action_container = st.popover(
+        JIRA_ACTION_POPOVER_LABEL,
+        icon=":material/bug_report:",
+        type="secondary",
+        width="content",
+        key=f"voc_context_action_{safe_key}",
+        help="선택한 표 Row를 Jira 이슈로 등록합니다.",
+    )
     with action_container:
         st.html(
             """
@@ -3892,6 +3875,7 @@ def _render_voc_dashboard_styles() -> None:
         """
         <style>
         .vqd-status-row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:2px 0 10px;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif}
+        .vqd-integration-row{grid-template-columns:repeat(4,minmax(0,1fr))}
         .vqd-status-card{height:96px;border:1px solid #c8d9ee;border-top:4px solid #7b8797;border-radius:8px;background:linear-gradient(145deg,#fff,#f8fbff);display:grid;grid-template-columns:38px 1fr;grid-template-rows:auto auto 1fr;column-gap:10px;padding:10px 12px;box-sizing:border-box;box-shadow:0 3px 10px rgba(22,78,128,.05);min-width:0}
         .vqd-status-icon{grid-row:1/4;width:36px;align-self:center;color:#7b8797}.vqd-status-icon svg{width:100%;height:auto}.vqd-status-label{font-size:11px;font-weight:700;color:#40536d}.vqd-status-card strong{font-size:21px;line-height:1.15;color:#073b72;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.vqd-status-card small{font-size:9px;color:#728095;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:end}
         .vqd-status-card.good{border-top-color:#299049}.vqd-status-card.good .vqd-status-icon,.vqd-status-card.good strong{color:#299049}
@@ -3920,8 +3904,8 @@ def _render_voc_dashboard_styles() -> None:
         .vqd-agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.vqd-agent-card{display:grid;grid-template-columns:34px 1fr auto;grid-template-rows:auto auto;gap:2px 9px;align-items:center;min-height:72px;padding:9px 10px;border:1px solid #d4e1ef;border-left:4px solid #7b8797;border-radius:7px;background:linear-gradient(145deg,#fff,#f8fbff);box-sizing:border-box}.vqd-agent-card.good{border-left-color:#299049}.vqd-agent-card.bad{border-left-color:#d83f36}.vqd-agent-icon{grid-row:1/3;width:31px;color:#7b8797;display:flex}.vqd-agent-card.good .vqd-agent-icon{color:#299049}.vqd-agent-card.bad .vqd-agent-icon{color:#d83f36}.vqd-agent-icon svg{width:100%;height:auto}.vqd-agent-card b{display:block;font-size:11px;color:#173f68}.vqd-agent-card small{display:block;font-size:9px;color:#718096}.vqd-agent-state{font-size:10px;font-weight:800;color:#7b8797}.vqd-agent-card.good .vqd-agent-state{color:#299049}.vqd-agent-card.bad .vqd-agent-state{color:#d83f36}.vqd-agent-card em{grid-column:2/4;font-size:9px;font-style:normal;color:#8795a8}
         div[data-testid="stForm"]{margin-bottom:0!important}div[data-testid="stForm"] [data-testid="stWidgetLabel"] p{font-size:10px!important;color:#40536d!important}div[data-testid="stForm"] [data-testid="stVerticalBlock"]{gap:.15rem!important}
         div[data-testid="stHeadingWithActionElements"] h1{font-size:29px!important;color:#0c3768!important;letter-spacing:-1px!important}div[data-testid="stHeadingWithActionElements"] h3{font-size:17px!important;color:#173f68!important}
-        @media(max-width:1100px){.vqd-status-row{grid-template-columns:repeat(3,1fr)}.vqd-action-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.vqd-connection-panel{grid-template-columns:38px 130px 1fr}.vqd-connection-panel p{grid-column:2/4}}
-        @media(max-width:720px){.vqd-status-row,.vqd-action-card-grid{grid-template-columns:repeat(2,1fr)}.vqd-connection-panel{grid-template-columns:34px 1fr}.vqd-connection-options,.vqd-connection-panel p{grid-column:1/3}.vqd-connection-panel p small{white-space:normal}.vqd-agent-grid{grid-template-columns:1fr}}
+        @media(max-width:1100px){.vqd-status-row,.vqd-integration-row{grid-template-columns:repeat(2,1fr)}.vqd-action-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.vqd-connection-panel{grid-template-columns:38px 130px 1fr}.vqd-connection-panel p{grid-column:2/4}}
+        @media(max-width:720px){.vqd-status-row,.vqd-integration-row,.vqd-action-card-grid{grid-template-columns:repeat(2,1fr)}.vqd-connection-panel{grid-template-columns:34px 1fr}.vqd-connection-options,.vqd-connection-panel p{grid-column:1/3}.vqd-connection-panel p small{white-space:normal}.vqd-agent-grid{grid-template-columns:1fr}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -3969,6 +3953,7 @@ def render_dashboard():
 
     if submitted or refresh_requested:
         _load_voc_dashboard_snapshot.clear()
+        load_integration_status.clear()
 
     start_date, end_date = _dashboard_date_range(selected_range, today)
     if start_date > end_date:
@@ -4042,6 +4027,7 @@ def render_dashboard():
     ]
     st.markdown(f"<div class='vqd-status-row'>{''.join(cards)}</div>", unsafe_allow_html=True)
     st.markdown(_dashboard_a2a_status_panel(a2a), unsafe_allow_html=True)
+    render_integration_status(load_integration_status(), context="voc")
 
     overview_columns = st.columns(2, gap="medium")
     with overview_columns[0].container(border=True, height=VOC_OVERVIEW_PANEL_HEIGHT):
@@ -8949,7 +8935,6 @@ def _render_history_detail_dialog(run_id: str) -> None:
             f"{_jira_context_run_detail_extra(run_id)}"
         ),
         key=f"history_dialog_{run_id}",
-        dialog_mode=True,
     )
     _render_voc_run_detail(run_id)
 
@@ -13404,7 +13389,6 @@ def _render_validity_candidate_dialog(candidate: dict):
             f"승인 단계: {_voc_status_label(candidate.get('workflow_state', 'DRAFT'))}"
         ),
         key=f"validity_dialog_{_validity_candidate_key(candidate)}",
-        dialog_mode=True,
     )
 
     st.markdown(
@@ -17402,55 +17386,31 @@ def render_acceptance():
         "응답시간은 수행 이력의 Run·Case 시작/종료 시각으로 확인합니다."
     )
 
-    peer_column, professor_column = st.columns(2)
-    with peer_column.container(border=True, height="stretch"):
-        st.markdown("**동료평가 80점 증적 준비**")
-        st.dataframe(
-            pd.DataFrame(snapshot["evaluation_checklist"]["peer_80"]),
-            hide_index=True,
-            width="stretch",
-        )
-    with professor_column.container(border=True, height="stretch"):
-        st.markdown("**교수평가 20점 증적 준비**")
-        st.dataframe(
-            pd.DataFrame(snapshot["evaluation_checklist"]["professor_20"]),
-            hide_index=True,
-            width="stretch",
-        )
-    st.caption(snapshot["evaluation_checklist"]["notice"])
-
     st.markdown("### 잔여 위험과 운영 권고")
     if snapshot["remaining_risks"]:
         st.dataframe(pd.DataFrame(snapshot["remaining_risks"]), hide_index=True, width="stretch")
     else:
         st.success("저장 증적 기준으로 식별된 잔여 위험이 없습니다.")
 
-    st.markdown("### 시연 순서")
-    st.write(" → ".join(snapshot["presentation_flow"]))
-    st.info(
-        "자동 판정은 사용자 최종 승인을 대신하지 않습니다. 시연·UAT 후 잔여 위험 수용 여부와 배포 가능 여부를 승인해야 합니다.",
-        icon=":material/approval:",
-    )
-
     if st.button(
-        "Step 10 인수 증적 생성",
+        "최종 판정 증적 저장",
         type="primary",
         icon=":material/fact_check:",
         key=f"generate_voc_acceptance_{run_id}_{baseline_run_id}",
     ):
         st.session_state.voc_acceptance_evidence = generate_voc_acceptance_evidence(snapshot)
-        st.success("JSON·Markdown 인수 증적을 Run evidence 경로에 저장했습니다.")
+        st.success("최종 판정 JSON·Markdown 증적을 Run evidence 경로에 저장했습니다.")
     generated = st.session_state.get("voc_acceptance_evidence")
     if generated and generated.get("snapshot", {}).get("run_id") == run_id:
         st.caption(f"저장 위치: {Path(generated['paths']['json']).parent}")
         with st.container(horizontal=True):
             st.download_button(
-                "인수 JSON 다운로드", generated["contents"]["json"],
+                "판정 JSON 다운로드", generated["contents"]["json"],
                 file_name="step10_acceptance.json", mime="application/json",
                 icon=":material/download:",
             )
             st.download_button(
-                "인수 Markdown 다운로드", generated["contents"]["markdown"],
+                "판정 Markdown 다운로드", generated["contents"]["markdown"],
                 file_name="step10_acceptance.md", mime="text/markdown",
                 icon=":material/download:",
             )

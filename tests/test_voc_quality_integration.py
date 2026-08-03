@@ -258,6 +258,9 @@ def test_voc_dashboard_renders_operational_quality_summary():
     assert "Agent 가동" in dashboard_markup
     assert "최신 Run 품질" in dashboard_markup
     assert "조치 필요" in dashboard_markup
+    assert "실행·증적 연동 준비도" in dashboard_markup
+    assert "vqd-status-row vqd-integration-row" in dashboard_markup
+    assert "독립 LLM 평가와 AWS 증적 저장에 필요한 연결 상태" not in dashboard_markup
     assert "조치 필요 현황" in dashboard_markup
     assert "평가 필요" in dashboard_markup
     assert "보완·재시험 필요" in dashboard_markup

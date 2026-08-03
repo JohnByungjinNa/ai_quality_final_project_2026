@@ -403,6 +403,15 @@ def test_validity_candidate_detail_dialog_renders_execution_evidence():
     assert not any(button.label == "보완 지시 기반 재시험 실행" for button in app.button)
 
 
+def test_contextual_jira_action_uses_popover_inside_detail_dialogs():
+    source = inspect.getsource(voc_quality_view._render_contextual_jira_action_menu)
+
+    assert "st.popover(" in source
+    assert "dialog_mode" not in source
+    assert "voc_context_jira_panel_open" not in source
+    assert "st.container(border=True, width=430" not in source
+
+
 def test_validity_candidate_detail_dialog_uses_stateful_table_selection():
     render_source = inspect.getsource(voc_quality_view.render_improvement_validity)
     dialog_source = inspect.getsource(voc_quality_view._render_validity_candidate_dialog)

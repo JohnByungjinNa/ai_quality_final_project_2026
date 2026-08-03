@@ -280,6 +280,8 @@ def test_streamlit_overview_page_renders_without_exceptions():
     assert app.title[0].value == "AI QA 모니터링 대시보드"
     html = "\n".join(str(item.value) for item in app.markdown)
     assert "aqd-kpi-row" in html
+    assert 'class="aqd-kpi-row aqd-integration-row"' in html
+    assert html.count("class='aqd-kpi") >= 10
     assert "data-tooltip=" in html
     assert "현재 표시: 92.5점" in html
     assert "evaluated=true인 1~5점 항목의 평균 × 20" in html

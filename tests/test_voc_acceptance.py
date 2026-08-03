@@ -141,6 +141,7 @@ def test_acceptance_gate_holds_unproven_release(monkeypatch):
         "voc_pipeline", "fault_execution", "judge", "validity", "defects"
     }
     assert snapshot["quantitative"]["cost_krw"] == "NOT_AVAILABLE"
+    assert "evaluation_checklist" not in snapshot
     assert voc_acceptance_service.latest_full_run_id() == "RUN-20260716-000000-000000-aaaa"
 
 
@@ -159,6 +160,7 @@ def test_acceptance_is_ready_for_uat_only_when_every_gate_passes(monkeypatch):
     assert snapshot["release_report_decision"] == "FORMAL_APPROVED"
     assert snapshot["gate_summary"] == {"pass": 11, "hold": 0, "total": 11}
     assert snapshot["user_signoff"] == "PENDING"
+    assert "presentation_flow" not in snapshot
     gates = {item["gate_id"]: item for item in snapshot["gates"]}
     assert gates["voc_pipeline"]["evidence"].startswith("PASS 18/18")
     assert gates["fault_execution"]["status"] == "PASS"
@@ -186,7 +188,6 @@ def test_acceptance_evidence_writes_json_and_markdown(monkeypatch, tmp_path):
         "gate_summary": {"pass": 1, "hold": 1, "total": 2},
         "gates": [{"status": "HOLD", "label": "35 PASS", "evidence": "1/35"}],
         "remaining_risks": [{"level": "HIGH", "risk": "미통과", "action": "재시험"}],
-        "presentation_flow": ["목적", "배포 판정"],
     }
 
     generated = voc_acceptance_service.generate_acceptance_evidence(snapshot)
@@ -194,8 +195,25 @@ def test_acceptance_evidence_writes_json_and_markdown(monkeypatch, tmp_path):
     assert Path(generated["paths"]["json"]).is_file()
     assert Path(generated["paths"]["markdown"]).is_file()
     assert json.loads(generated["contents"]["json"])["decision"] == "HOLD"
-    assert "사용자 최종 승인을 대신하지 않습니다" in generated["contents"]["markdown"]
+    assert "선택 Run의 자동 게이트 판정 스냅샷" in generated["contents"]["markdown"]
+    assert "## 발표 순서" not in generated["contents"]["markdown"]
     assert len(generated["sha256"]["json"]) == 64
+
+
+def test_acceptance_page_excludes_legacy_80_20_evidence_sections():
+    source = Path("dashboard/pages_top/voc_quality_view.py").read_text(encoding="utf-8")
+
+    assert "동료평가 80점 증적 준비" not in source
+    assert "교수평가 20점 증적 준비" not in source
+
+
+def test_acceptance_page_uses_current_evidence_action_label():
+    source = Path("dashboard/pages_top/voc_quality_view.py").read_text(encoding="utf-8")
+
+    assert "### 시연 순서" not in source
+    assert "자동 판정은 사용자 최종 승인을 대신하지 않습니다" not in source
+    assert "Step 10 인수 증적 생성" not in source
+    assert "최종 판정 증적 저장" in source
 
 
 def test_acceptance_page_renders_without_exceptions():
@@ -220,5 +238,7 @@ def test_acceptance_page_renders_without_exceptions():
     assert "TC-16 RETEST 반영 흐름" in visible_text
     assert "RUN-20260802-114121-660669-e482" in visible_text
     assert "FORMAL_APPROVED" in visible_text
+    assert "동료평가 80점 증적 준비" not in visible_text
+    assert "교수평가 20점 증적 준비" not in visible_text
     assert any(button.label == "품질 보고서에서 확인" for button in app.button)
     assert any(button.label == "RETEST 이력 보기" for button in app.button)

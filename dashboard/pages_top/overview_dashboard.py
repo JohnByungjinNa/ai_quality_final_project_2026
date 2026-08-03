@@ -4,6 +4,7 @@ from html import escape
 import altair as alt
 import streamlit as st
 
+from components.integration_status import load_integration_status, render_integration_status
 from services.overview_dashboard import build_overview
 from services.qa_observer_client import (
     QAObserverClientError,
@@ -169,6 +170,7 @@ def _render_live_dashboard(
 
     _render_status(view["status"], summary, view["collection"], load_error or options_error, base_url)
     _render_safety_action(view["safety_incidents"])
+    render_integration_status(load_integration_status(), context="overview")
     _render_kpis(summary, view)
     _render_primary_panels(view)
     _render_secondary_panels(view)
@@ -211,6 +213,7 @@ def _render_status(status, summary, collection, error, base_url):
         if st.button("갱신", icon=":material/refresh:", key="qa_overview_refresh", help="수집기 상태와 집계 데이터를 다시 조회합니다.", width="stretch"):
             _load_filter_options.clear()
             _load_dashboard_bundle.clear()
+            load_integration_status.clear()
             st.rerun()
 
 
@@ -563,6 +566,7 @@ def _render_page_styles():
         .aqd-status-icon{width:22px;color:var(--status-color);display:flex}.aqd-status-icon svg{width:100%;height:auto}.aqd-status b{color:var(--status-color);font-size:12px}.aqd-status span{font-size:12px;color:#40536d}.aqd-status small{font-size:10px;color:#718096;white-space:nowrap}
         .aqd-safety-action{display:flex;align-items:center;gap:12px;min-height:39px;border:1px solid #f4b5af;border-left:4px solid #d83f36;border-radius:7px;background:#fff8f7;padding:7px 12px;box-sizing:border-box}.aqd-safety-action b{font-size:12px;color:#c42f28}.aqd-safety-action span{font-size:11px;color:#53657c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .aqd-kpi-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:0 0 10px}
+        .aqd-integration-row{grid-template-columns:repeat(4,minmax(0,1fr))}
         .aqd-kpi{height:91px;border:1px solid #c8d9ee;border-radius:7px;background:linear-gradient(145deg,#fff,#f8fbff);display:flex;align-items:center;gap:10px;padding:11px 12px;box-shadow:0 3px 10px rgba(22,78,128,.05);min-width:0;position:relative;cursor:help}
         .aqd-kpi-icon{width:36px;min-width:36px;color:#0e4a80}.aqd-kpi-icon svg{width:100%;height:auto}.aqd-kpi>div:last-child{min-width:0}.aqd-kpi span{display:block;color:#40536d;font-size:11px;font-weight:700}.aqd-kpi strong{display:block;color:#073b72;font-size:22px;line-height:1.12;margin:4px 0 2px;white-space:nowrap}.aqd-kpi small{display:block;color:#728095;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.aqd-kpi.good .aqd-kpi-icon,.aqd-kpi.good strong{color:#299049}.aqd-kpi.warn .aqd-kpi-icon,.aqd-kpi.warn strong{color:#b36a08}.aqd-kpi.bad .aqd-kpi-icon,.aqd-kpi.bad strong{color:#d83f36}
         .aqd-kpi-label i{display:inline;margin-left:4px;color:#718096;font-size:10px;font-style:normal}.aqd-kpi:focus-visible{outline:2px solid #2563eb;outline-offset:2px;z-index:31}.aqd-kpi:hover{z-index:30}
@@ -571,8 +575,8 @@ def _render_page_styles():
         .aqd-rag-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.aqd-rag-grid article{height:73px;border:1px solid #d4e1ef;border-radius:7px;background:linear-gradient(145deg,#fff,#f8fbff);display:grid;grid-template-columns:28px 1fr;grid-template-rows:auto 1fr;column-gap:8px;padding:9px 10px;box-sizing:border-box}.aqd-rag-grid i{grid-row:1/3;width:27px;color:#155a96;align-self:center}.aqd-rag-grid svg{width:100%;height:auto}.aqd-rag-grid span{font-size:10px;color:#40536d}.aqd-rag-grid strong{font-size:18px;color:#073b72;line-height:1.2;white-space:nowrap}
         div[data-testid="stForm"]{margin-bottom:0!important}div[data-testid="stForm"] [data-testid="stWidgetLabel"] p{font-size:10px!important;color:#40536d!important}div[data-testid="stForm"] [data-testid="stVerticalBlock"]{gap:.15rem!important}
         div[data-testid="stHeadingWithActionElements"] h1{font-size:29px!important;color:#0c3768!important;letter-spacing:-1px!important}div[data-testid="stHeadingWithActionElements"] h3{font-size:17px!important;color:#173f68!important}
-        @media(max-width:1100px){.aqd-kpi-row{grid-template-columns:repeat(3,1fr)}.aqd-status{grid-template-columns:24px auto 1fr}.aqd-status small{grid-column:2/4}}
-        @media(max-width:720px){.aqd-kpi-row{grid-template-columns:repeat(2,1fr)}.aqd-rag-grid{grid-template-columns:1fr}}
+        @media(max-width:1100px){.aqd-kpi-row,.aqd-integration-row{grid-template-columns:repeat(2,1fr)}.aqd-status{grid-template-columns:24px auto 1fr}.aqd-status small{grid-column:2/4}}
+        @media(max-width:720px){.aqd-kpi-row,.aqd-integration-row{grid-template-columns:repeat(2,1fr)}.aqd-rag-grid{grid-template-columns:1fr}}
         </style>
         """,
         unsafe_allow_html=True,

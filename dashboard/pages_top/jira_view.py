@@ -317,30 +317,79 @@ def _render_jira_create_page() -> None:
     _render_environment_notice(snapshot)
 
     issue_types = _load_issue_type_names(snapshot["ready"])
-    default_type = issue_types[0] if issue_types else "작업"
+    latest_result = st.session_state.pop("jira_create_notice", None)
+    if isinstance(latest_result, dict):
+        st.toast(
+            f"Jira 이슈 {latest_result.get('issue_key', '-')}를 등록했습니다.",
+            icon=":material/check_circle:",
+        )
+        if latest_result.get("issue_url"):
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                st.caption(f"최근 등록 · {latest_result.get('issue_key', '-')}")
+                st.link_button(
+                    "Jira에서 열기",
+                    latest_result["issue_url"],
+                    icon=":material/open_in_new:",
+                )
 
-    st.html("<section class='jira-create-title'><strong>Create issue</strong><span>Project KAN</span></section>")
-    with st.form("jira_issue_create_form", border=True):
-        top_cols = st.columns([2.6, 0.9, 0.9], gap="small")
-        with top_cols[0]:
-            summary = st.text_input(
-                "요약",
-                placeholder="[VOC] TC-16 근거 부족 보완 필요",
-                max_chars=255,
-            )
-        with top_cols[1]:
+    with st.container(border=True, horizontal=True, vertical_alignment="center"):
+        with st.container(gap=None):
+            st.markdown("#### Jira 이슈 등록")
+            st.caption("필요할 때만 등록 창을 열어 현재 화면의 공간을 작게 유지합니다.")
+        with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
+            with st.popover("작성 예시", icon=":material/lightbulb:", width="content"):
+                _render_jira_create_examples()
+            if st.button(
+                "Jira 이슈 등록",
+                icon=":material/add_task:",
+                type="primary",
+                width="content",
+                key="open_jira_issue_create_dialog",
+            ):
+                _render_jira_create_dialog(snapshot, issue_types)
+
+
+def _render_jira_create_examples() -> None:
+    st.markdown(
+        """
+        - **결함**: `[VOC] TC-16 관련 VOC 근거 부족으로 답변 보류`
+        - **개선 요청**: `[VOC] 타당성 평가 보완 입력 UX 개선`
+        - **작업**: `[시연] 최종 인수·시연 화면 문구 정리`
+        """
+    )
+
+
+@st.dialog(
+    "Jira 이슈 등록",
+    width="medium",
+    icon=":material/add_task:",
+    on_dismiss="rerun",
+)
+def _render_jira_create_dialog(snapshot: dict, issue_types: list[str]) -> None:
+    project_key = snapshot.get("project_key") or "KAN"
+    st.caption(f"Project {project_key} · 결함, 개선 요청 또는 작업 항목을 등록합니다.")
+    _render_environment_notice(snapshot)
+
+    with st.form("jira_issue_create_dialog_form", border=False):
+        summary = st.text_input(
+            "요약",
+            placeholder="[VOC] TC-16 근거 부족 보완 필요",
+            max_chars=255,
+        )
+
+        issue_cols = st.columns(2, gap="small")
+        with issue_cols[0]:
             issue_type = st.selectbox("이슈 유형", issue_types or DEFAULT_ISSUE_TYPES, index=0)
-        with top_cols[2]:
+        with issue_cols[1]:
             priority = st.selectbox("우선순위", [""] + DEFAULT_PRIORITIES, index=0)
 
-        meta_cols = st.columns([1, 1, 1], gap="small")
-        with meta_cols[0]:
+        reference_cols = st.columns(2, gap="small")
+        with reference_cols[0]:
             case_id = st.text_input("Case ID", placeholder="TC-16")
-        with meta_cols[1]:
+        with reference_cols[1]:
             run_id = st.text_input("Run ID", placeholder="RUN-...")
-        with meta_cols[2]:
-            labels_text = st.text_input("라벨", value="voc-quality,qa", placeholder="쉼표로 구분")
 
+        labels_text = st.text_input("라벨", value="voc-quality,qa", placeholder="쉼표로 구분")
         description = st.text_area(
             "설명",
             height=180,
@@ -353,61 +402,52 @@ def _render_jira_create_page() -> None:
                 "- "
             ),
         )
-
         submitted = st.form_submit_button(
             "Jira 이슈 등록",
             icon=":material/add_task:",
             type="primary",
-            disabled=not snapshot["ready"],
+            disabled=not snapshot.get("ready", False),
             width="stretch",
         )
 
-    if submitted:
-        labels = _split_labels(labels_text)
-        if case_id.strip():
-            labels.append(case_id.strip().replace(" ", "-"))
-        full_description = _compose_issue_description(
-            description=description,
-            case_id=case_id,
-            run_id=run_id,
-        )
-        with st.spinner("Jira 이슈를 등록하는 중입니다..."):
-            try:
-                created = create_jira_issue(
-                    summary=summary,
-                    description=full_description,
-                    issue_type=issue_type,
-                    priority=priority,
-                    labels=labels,
-                )
-            except (JiraConfigurationError, JiraIssueCreateError) as exc:
-                st.error(str(exc), icon=":material/error:")
-                return
+    if not submitted:
+        return
 
-        history_item = {
-            "created_at": created.get("created_at", datetime.now().isoformat(timespec="seconds")),
-            "issue_key": created.get("key", "-"),
-            "issue_url": created.get("url", ""),
-            "summary": summary,
-            "issue_type": issue_type,
-            "priority": priority or "-",
-            "case_id": case_id,
-            "run_id": run_id,
-        }
-        st.session_state.jira_registered_issues.insert(0, history_item)
-        save_json_file(JIRA_REGISTERED_ISSUES_FILE, st.session_state.jira_registered_issues)
-        st.success(f"Jira 이슈 {created.get('key', '-')}를 등록했습니다.", icon=":material/check_circle:")
-        if created.get("url"):
-            st.link_button("Jira에서 열기", created["url"], icon=":material/open_in_new:")
+    labels = _split_labels(labels_text)
+    if case_id.strip():
+        labels.append(case_id.strip().replace(" ", "-"))
+    full_description = _compose_issue_description(
+        description=description,
+        case_id=case_id,
+        run_id=run_id,
+    )
+    with st.spinner("Jira 이슈를 등록하는 중입니다..."):
+        try:
+            created = create_jira_issue(
+                summary=summary,
+                description=full_description,
+                issue_type=issue_type,
+                priority=priority,
+                labels=labels,
+            )
+        except (JiraConfigurationError, JiraIssueCreateError) as exc:
+            st.error(str(exc), icon=":material/error:")
+            return
 
-    with st.expander("빠른 등록 예시", expanded=False, icon=":material/lightbulb:"):
-        st.markdown(
-            """
-            - **결함**: `[VOC] TC-16 관련 VOC 근거 부족으로 답변 보류`
-            - **개선 요청**: `[VOC] 타당성 평가 보완 입력 UX 개선`
-            - **작업**: `[시연] 최종 인수·시연 화면 문구 정리`
-            """
-        )
+    history_item = {
+        "created_at": created.get("created_at", datetime.now().isoformat(timespec="seconds")),
+        "issue_key": created.get("key", "-"),
+        "issue_url": created.get("url", ""),
+        "summary": summary,
+        "issue_type": issue_type,
+        "priority": priority or "-",
+        "case_id": case_id,
+        "run_id": run_id,
+    }
+    st.session_state.jira_registered_issues.insert(0, history_item)
+    save_json_file(JIRA_REGISTERED_ISSUES_FILE, st.session_state.jira_registered_issues)
+    st.session_state["jira_create_notice"] = history_item
+    st.rerun()
 
 
 def _render_jira_history_page() -> None:
@@ -710,11 +750,6 @@ def _render_jira_css() -> None:
         }
         .jira-empty-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:#deebff;color:#0052cc;font-size:22px;margin-bottom:8px}
         .jira-empty-list strong{color:#172b4d;font-size:18px}.jira-empty-list p{margin:5px 0 0;color:#5e6c84;font-size:12px}
-        .jira-create-title{
-            display:flex;align-items:center;justify-content:space-between;margin:6px 0 8px;padding:10px 12px;
-            border:1px solid #dfe1e6;border-radius:8px;background:#fff;font-family:'Segoe UI','Malgun Gothic',sans-serif;
-        }
-        .jira-create-title strong{color:#172b4d;font-size:16px}.jira-create-title span{color:#6b778c;font-size:11px;font-weight:800}
         .jira-hero{
             display:grid;grid-template-columns:44px 1fr auto;gap:14px;align-items:center;
             min-height:86px;margin:0 0 12px;padding:15px 16px;border:1px solid #c8d9ee;

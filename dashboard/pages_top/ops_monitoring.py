@@ -15,6 +15,7 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+from components.integration_status import load_integration_status, render_integration_status
 from components.performance_design import (
     render_page_hero,
     render_performance_design_styles,
@@ -69,6 +70,7 @@ def render_ops_monitoring_snapshot():
         snapshot = collect_ops_snapshot()
 
     render_major_feature_status(snapshot)
+    render_integration_status(load_integration_status(), context="ops")
     render_live_network_performance()
     render_top_pages(snapshot)
     render_golden_signals(snapshot)
@@ -205,6 +207,7 @@ def render_refresh_control():
             st.caption(f"현재 설정: {refresh_seconds}초마다 자동 갱신")
         elif st.button("수동 새로고침", width="stretch"):
             collect_ops_snapshot.clear()
+            load_integration_status.clear()
             st.rerun()
 
     return {

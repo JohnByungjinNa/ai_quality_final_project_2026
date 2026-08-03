@@ -89,54 +89,6 @@ def _workflow_coverage(run_id: str, report: dict) -> list[dict]:
     ]
 
 
-def _evaluation_checklist(report: dict) -> dict:
-    run = report["run"]
-    counts = run["counts"]
-    evaluation = report["evaluation"]
-    release_scope = report.get("release_scope", {})
-    executable_count = int(release_scope.get("executable_count") or 35)
-    voc_count = int(release_scope.get("voc_count") or executable_count)
-    fault_count = int(release_scope.get("fault_count") or 0)
-    judge_required_count = int(release_scope.get("judge_required_count") or voc_count)
-    pending_count = int(release_scope.get("pending_count") or 0)
-    peer = [
-        ("프로젝트 목적 이해도", True, "README 목적·배포 게이트"),
-        ("고객 불만 분석의 적절성", evaluation["trace_cases"] > 0, f"실행 Trace Case {evaluation['trace_cases']}건"),
-        ("정책 개선안의 타당성", evaluation["validity_evaluated"] > 0, f"개선안 타당성 평가 {evaluation['validity_evaluated']}건"),
-        ("멀티 에이전트 역할 설명", evaluation["trace_cases"] > 0, "6개 Agent 실행 Trace·역할 문서"),
-        ("내부 품질진단의 충실성", release_scope.get("full_catalog_selected"), f"전체 {run['selected_count']}건 · 실행 가능 {executable_count}건 · 후속 {pending_count}건"),
-        ("독립 LLM 평가 설명", evaluation["judge_evaluated"] > 0, f"독립 LLM 평가 {evaluation['judge_evaluated']}건"),
-        ("테스트 결과의 객관성", release_scope.get("release_scope_ready"), f"VOC 개선 {voc_count}건 PASS · 장애 검증 {fault_count}건 실행 확인"),
-        ("장애 및 결함관리 내용", bool(report["defects"]), f"결함·후보 {len(report['defects'])}건"),
-        ("발표 구성 및 전달력", bool(report.get("report_id")), "품질 보고서·시연 순서"),
-        ("팀 협업 및 질의응답", evaluation["validity_counts"].get("BUSINESS_APPROVED", 0) > 0, "QA·업무 승인 감사 기록"),
-    ]
-    professor = [
-        ("요구사항·품질 계약", True, "35건 Catalog·Rubric·증적 계약"),
-        ("멀티 에이전트 구조·정확성", evaluation["trace_cases"] > 0, "Agent 실행 Trace와 최종 산출물"),
-        ("독립 LLM 평가·객관성", release_scope.get("judge_pass_ready"), f"VOC 개선 Case 독립 LLM PASS {release_scope.get('executable_judge_counts', {}).get('PASS', 0)}/{judge_required_count}"),
-        ("장애·보안·운영성", report.get("release_decision") == "FORMAL_APPROVED", "차단 결함 0건 · 잔여 위험 공개"),
-        ("증적·배포 게이트", report["release_decision"] == "FORMAL_APPROVED", "보고서 무결성·최종 판정"),
-    ]
-
-    def rows(items: list[tuple[str, bool, str]], maximum: int) -> list[dict]:
-        return [
-            {
-                "item": item,
-                "max_points": maximum,
-                "evidence_status": "READY" if ready else "PARTIAL",
-                "evidence": evidence,
-            }
-            for item, ready, evidence in items
-        ]
-
-    return {
-        "notice": "평가 점수를 자동 부여하지 않고 증적 준비 상태만 표시합니다.",
-        "peer_80": rows(peer, 8),
-        "professor_20": rows(professor, 4),
-    }
-
-
 def build_acceptance_snapshot(
     run_id: str,
     baseline_run_id: str = "",
@@ -211,7 +163,6 @@ def build_acceptance_snapshot(
         "gate_summary": {"pass": passed, "hold": len(gates) - passed, "total": len(gates)},
         "gates": gates,
         "workflow_coverage": _workflow_coverage(run_id, report),
-        "evaluation_checklist": _evaluation_checklist(report),
         "quantitative": {
             "case_counts": counts,
             "failure_rate_percent": round((max(executable_count, 1) - release_scope.get("executable_counts", {}).get("PASS", 0)) / max(executable_count, 1) * 100, 1),
@@ -236,11 +187,6 @@ def build_acceptance_snapshot(
             "validity_required_count": validity_required_count,
             "release_scope_ready": bool(release_scope.get("release_scope_ready")),
         },
-        "presentation_flow": [
-            "프로젝트 목적", "6개 Agent", "수동·일괄 수행", "Agent 파이프라인 실행 Trace",
-            "독립 LLM 평가", "개선안 타당성 평가", "장애·결함", "연결 재시험·A/B",
-            "품질 보고서", "배포 판정",
-        ],
         "verification": verification,
     }
 
@@ -280,11 +226,7 @@ def generate_acceptance_evidence(snapshot: dict) -> dict:
         f"- [{item['level']}] {item['risk']} → {item['action']}"
         for item in snapshot["remaining_risks"]
     )
-    lines.extend([
-        "", "## 발표 순서", "",
-        " → ".join(snapshot["presentation_flow"]),
-        "", "이 문서는 자동 판정 증적이며 사용자 최종 승인을 대신하지 않습니다. 최종 서명은 별도로 남겨야 합니다.", "",
-    ])
+    lines.extend(["", "이 문서는 선택 Run의 자동 게이트 판정 스냅샷입니다.", ""])
     markdown_text = "\n".join(lines)
     json_path = target / "step10_acceptance.json"
     markdown_path = target / "step10_acceptance.md"

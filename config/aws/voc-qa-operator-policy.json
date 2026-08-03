@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadProjectBucketConfiguration",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketPolicyStatus",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetBucketTagging"
+      ],
+      "Resource": "arn:aws:s3:::voc-qa-evidence-johnna-20693005"
+    },
+    {
+      "Sid": "ListProjectEvidence",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions"
+      ],
+      "Resource": "arn:aws:s3:::voc-qa-evidence-johnna-20693005",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "voc-quality-runs",
+            "voc-quality-runs/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadWriteProjectEvidenceWithoutDelete",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::voc-qa-evidence-johnna-20693005/voc-quality-runs/*"
+    },
+    {
+      "Sid": "ReadAuditEvents",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:DescribeTrails",
+        "cloudtrail:GetTrailStatus",
+        "cloudtrail:LookupEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadBudgets",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "*"
+    }
+  ]
+}
