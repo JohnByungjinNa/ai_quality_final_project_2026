@@ -1,7 +1,7 @@
 {
-  "at": "2026-07-30T08:11:10.396Z",
+  "at": "2026-08-04T04:28:37.141Z",
   "state": "completed",
-  "commandId": 1,
-  "action": "preview_recording_scenario",
+  "commandId": 2,
+  "action": "full_approval_rehearsal",
   "url": "http://localhost:8501/"
 }

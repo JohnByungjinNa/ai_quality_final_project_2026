@@ -1,5 +1,8 @@
 {
-  "id": 1,
-  "action": "preview_recording_scenario",
-  "holdMs": 18000
+  "id": 2,
+  "action": "full_approval_rehearsal",
+  "reviewer": "시연 담당자",
+  "overviewHoldMs": 9000,
+  "pipelineTimeoutMs": 240000,
+  "validityTimeoutMs": 180000
 }

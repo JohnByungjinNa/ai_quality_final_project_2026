@@ -4,7 +4,12 @@ from html import escape
 
 import streamlit as st
 
-from services.integration_status_service import collect_integration_status
+from services.integration_status_service import (
+    collect_integration_status,
+    list_uploadable_evidence_runs,
+    load_evidence_manifest,
+    upload_and_verify_run_evidence,
+)
 
 
 OPS_CARD_ICONS = {
@@ -142,6 +147,118 @@ def _render_overview_integration_cards(metrics) -> None:
     )
 
 
+def render_aws_evidence_management(
+    snapshot: dict,
+    *,
+    preferred_run_id: str = "",
+    key_prefix: str = "acceptance",
+) -> None:
+    aws = snapshot.get("aws") or {}
+    uploadable_runs = list_uploadable_evidence_runs()
+    preferred_run_id = str(preferred_run_id or "")
+    default_index = uploadable_runs.index(preferred_run_id) if preferred_run_id in uploadable_runs else 0
+
+    with st.container(border=True, key=f"{key_prefix}_aws_evidence_actions"):
+        heading, target, upload_action, file_action = st.columns(
+            [1.55, 3.4, 1.65, 1.55],
+            vertical_alignment="bottom",
+        )
+        with heading:
+            st.markdown("##### :material/cloud_upload: AWS 증적 관리")
+            st.caption("최종 인수 증적 2개만 암호화 업로드")
+        with target:
+            selected_run = st.selectbox(
+                "업로드 대상 Run",
+                uploadable_runs,
+                index=default_index if uploadable_runs else None,
+                placeholder="먼저 최종 인수 증적을 생성하세요",
+                key=f"{key_prefix}_aws_evidence_run",
+                disabled=not uploadable_runs,
+            )
+        with upload_action:
+            upload_clicked = st.button(
+                "S3 증적 업로드",
+                icon=":material/cloud_upload:",
+                type="primary",
+                width="stretch",
+                key=f"{key_prefix}_aws_upload_evidence",
+                disabled=not uploadable_runs or not aws.get("authenticated"),
+                help="선택 Run의 JSON·Markdown 인수 증적을 S3에 업로드한 뒤 원격 SHA-256을 검증합니다.",
+            )
+        with file_action:
+            with st.popover(
+                "업로드 파일 확인",
+                icon=":material/folder_open:",
+                width="stretch",
+                key=f"{key_prefix}_aws_files",
+            ):
+                _render_uploaded_file_information(str(selected_run or ""))
+
+        if not aws.get("authenticated"):
+            st.caption(":material/info: 상단 AWS 메뉴에서 임시 로그인 후 업로드할 수 있습니다.")
+        if preferred_run_id and preferred_run_id not in uploadable_runs:
+            st.caption(
+                f":material/info: 현재 인수 Run `{preferred_run_id}`은 `최종 판정 증적 저장` 후 업로드 대상에 표시됩니다."
+            )
+
+        if upload_clicked and selected_run:
+            with st.spinner("S3 업로드 및 원격 무결성 검증 중...", show_time=True):
+                result = upload_and_verify_run_evidence(str(selected_run))
+            st.session_state[f"{key_prefix}_aws_upload_result"] = result
+            load_integration_status.clear()
+            st.rerun()
+
+        result = st.session_state.get(f"{key_prefix}_aws_upload_result")
+        if isinstance(result, dict):
+            message = str(result.get("message") or "")
+            if result.get("ok"):
+                st.success(message, icon=":material/verified:")
+            elif result.get("uploaded"):
+                st.warning(message, icon=":material/warning:")
+            else:
+                st.error(message, icon=":material/error:")
+
+
+def _render_uploaded_file_information(run_id: str) -> None:
+    if not run_id:
+        st.info("업로드 이력이 없습니다.")
+        return
+    try:
+        manifest = load_evidence_manifest(run_id)
+    except (OSError, ValueError):
+        st.info("선택 Run의 업로드 매니페스트가 아직 없습니다.")
+        return
+
+    st.markdown(f"**{manifest['run_id']}**")
+    st.caption(
+        f"S3 경로 `{manifest['prefix']}` · 생성 {manifest['generated_at_utc'] or '-'} · "
+        f"파일 {manifest['file_count']}개"
+    )
+    rows = [
+        {
+            "파일명": item["name"],
+            "크기(Byte)": item["size_bytes"],
+            "S3 객체 키": item["key"],
+            "SHA-256": item["sha256"],
+        }
+        for item in manifest["files"]
+    ]
+    if rows:
+        st.dataframe(
+            rows,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "파일명": st.column_config.TextColumn(width="medium"),
+                "크기(Byte)": st.column_config.NumberColumn(format="%d"),
+                "S3 객체 키": st.column_config.TextColumn(width="large"),
+                "SHA-256": st.column_config.TextColumn(width="large"),
+            },
+        )
+    else:
+        st.warning("매니페스트에 업로드 파일 정보가 없습니다.")
+
+
 def _overview_integration_card_html(label: str, value: str, detail: str) -> str:
     icon_name = {
         "최근 VOC Run": "fact_check",
@@ -242,8 +359,13 @@ def _decision_label(value: str | None) -> str:
     return {
         "PASS": "배포 가능",
         "APPROVED": "승인 완료",
+        "FORMAL_QUALITY_APPROVED": "정식 품질 승인",
+        "HUMAN_REVIEW_REQUIRED": "QA 검토 필요",
+        "BUSINESS_REVIEW_REQUIRED": "업무 검토 필요",
+        "REMAINING_CASE_REVIEW_REQUIRED": "잔여 Case 검토 필요",
         "REVISION_REQUIRED": "보완 필요",
         "REJECTED": "배포 불가",
+        "NOT_EVALUATED": "평가 전",
         "NOT_VERIFIED": "미판정",
     }.get(str(value or "NOT_VERIFIED").upper(), str(value or "미판정"))
 

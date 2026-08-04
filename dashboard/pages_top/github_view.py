@@ -42,6 +42,12 @@ GITHUB_TABS = [
 ]
 
 
+@st.cache_data(ttl=900, max_entries=1, show_spinner=False)
+def _load_repository_home():
+    """Reuse the local repository snapshot during a presentation session."""
+    return collect_repository_home(refresh_remote=False)
+
+
 def render_github_page(sub_menu):
     _render_github_css()
     snapshot = collect_git_environment()
@@ -218,7 +224,9 @@ def render_environment_setup(snapshot):
 
 
 def render_repository_status():
-    snapshot = collect_repository_home()
+    # 원격 fetch는 사용자가 명시적으로 요청할 때만 수행한다. 단순 화면 진입에서
+    # 네트워크를 기다리지 않아도 저장소의 로컬 상태와 마지막 원격 기준은 표시할 수 있다.
+    snapshot = _load_repository_home()
     if not snapshot["git_installed"]:
         st.error("Git이 설치되어 있지 않습니다. 환경 설정 메뉴에서 설치 안내를 확인하세요.")
         return
@@ -252,7 +260,7 @@ def render_repository_status():
 
 
 def render_project_sync_page():
-    snapshot = collect_repository_home()
+    snapshot = _load_repository_home()
     if not snapshot["git_installed"]:
         st.error("Git이 설치되어 있지 않습니다. 환경 설정 메뉴에서 설치 안내를 확인하세요.")
         return
@@ -512,6 +520,7 @@ def _render_actions_tab(snapshot):
         action_cols = st.columns([0.9, 1.1, 1.1, 1.1, 1.35, 1.1], gap="small")
         with action_cols[0]:
             if st.button("새로고침", width="stretch", icon=":material/refresh:"):
+                _load_repository_home.clear()
                 st.rerun()
         with action_cols[1]:
             if st.button("Get 정보", width="stretch", icon=":material/cloud_download:", disabled=not snapshot["remote_url"]):
@@ -757,6 +766,7 @@ def _render_sync_preflight_panel(snapshot, *, remote_ready):
                 width="stretch",
                 key="github_sync_preflight_refresh",
             ):
+                _load_repository_home.clear()
                 st.rerun()
 
         metric_cols = st.columns(5, gap="small")
@@ -1111,6 +1121,7 @@ def _run_and_rerun(handler, label="Git 작업을 수행하는 중입니다..."):
             state="complete" if result.get("ok") else "error",
         )
         st.session_state.github_action_result = result
+    _load_repository_home.clear()
     st.rerun()
 
 

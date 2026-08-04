@@ -13,6 +13,10 @@ from core.paths import PROJECT_DIR, VOC_QUALITY_RUNS_DIR
 
 AWS_PROFILE = "JohnNa-QA"
 AWS_REGION = "ap-northeast-2"
+AWS_UPLOAD_SCRIPT = Path("tools/aws/03-upload-run-evidence.ps1")
+AWS_VERIFY_SCRIPT = Path("tools/aws/04-verify-evidence.ps1")
+RUN_ID_PATTERN = re.compile(r"^RUN-[0-9]{8}-[0-9]{6}-[0-9]{6}-[0-9a-f]{4}$", re.IGNORECASE)
+REQUIRED_ACCEPTANCE_FILES = ("step10_acceptance.json", "step10_acceptance.md")
 AI_PROVIDER_KEYS = {
     "OpenAI": ("OPENAI_API_KEY",),
     "Anthropic": ("ANTHROPIC_API_KEY",),
@@ -167,6 +171,181 @@ def logout_aws_session(
     return {"ok": True, "message": "AWS 임시 로그인 세션을 종료했습니다."}
 
 
+def list_uploadable_evidence_runs(*, project_dir: Path = PROJECT_DIR) -> list[str]:
+    """Return newest-first Run IDs whose final acceptance evidence can be uploaded."""
+    runs_dir = Path(project_dir) / "reports" / "voc_quality_runs"
+    candidates: list[tuple[float, str]] = []
+    for run_dir in runs_dir.glob("RUN-*"):
+        evidence_dir = run_dir / "evidence"
+        required = [evidence_dir / name for name in REQUIRED_ACCEPTANCE_FILES]
+        if not all(path.is_file() for path in required):
+            continue
+        modified = max(path.stat().st_mtime for path in required)
+        candidates.append((modified, run_dir.name))
+    return [run_id for _, run_id in sorted(candidates, reverse=True)]
+
+
+def load_evidence_manifest(run_id: str, *, project_dir: Path = PROJECT_DIR) -> dict:
+    """Load a local S3 manifest, accepting PowerShell's UTF-8 BOM output."""
+    normalized_run_id = _validate_run_id(run_id)
+    manifest_path = (
+        Path(project_dir)
+        / "reports"
+        / "voc_quality_runs"
+        / normalized_run_id
+        / "evidence"
+        / "aws_s3_manifest.json"
+    )
+    payload = _read_json(manifest_path)
+    return _normalize_evidence_manifest(payload, normalized_run_id)
+
+
+def _normalize_evidence_manifest(payload: dict, fallback_run_id: str) -> dict:
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    return {
+        "run_id": str(payload.get("run_id") or fallback_run_id),
+        "generated_at_utc": str(payload.get("generated_at_utc") or ""),
+        "bucket": str(payload.get("bucket") or ""),
+        "prefix": str(payload.get("prefix") or ""),
+        "manifest_key": f"{str(payload.get('prefix') or '').rstrip('/')}/manifest.json".lstrip("/"),
+        "file_count": len(files),
+        "files": [
+            {
+                "name": str(item.get("name") or ""),
+                "key": str(item.get("key") or ""),
+                "size_bytes": int(item.get("size_bytes") or 0),
+                "sha256": str(item.get("sha256") or ""),
+            }
+            for item in files
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def upload_and_verify_run_evidence(
+    run_id: str,
+    *,
+    project_dir: Path = PROJECT_DIR,
+    timeout_seconds: int = 90,
+) -> dict:
+    """Upload the allow-listed acceptance files and verify their S3 hashes."""
+    normalized_run_id = _validate_run_id(run_id)
+    project_dir = Path(project_dir).resolve()
+    evidence_dir = project_dir / "reports" / "voc_quality_runs" / normalized_run_id / "evidence"
+    missing = [name for name in REQUIRED_ACCEPTANCE_FILES if not (evidence_dir / name).is_file()]
+    if missing:
+        return {
+            "ok": False,
+            "uploaded": False,
+            "verified": False,
+            "run_id": normalized_run_id,
+            "message": f"최종 인수 증적이 없습니다: {', '.join(missing)}",
+        }
+
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    upload_script = (project_dir / AWS_UPLOAD_SCRIPT).resolve()
+    verify_script = (project_dir / AWS_VERIFY_SCRIPT).resolve()
+    if not powershell or not upload_script.is_file() or not verify_script.is_file():
+        return {
+            "ok": False,
+            "uploaded": False,
+            "verified": False,
+            "run_id": normalized_run_id,
+            "message": "AWS 증적 업로드 도구를 찾을 수 없습니다.",
+        }
+
+    upload = _run_evidence_script(
+        powershell,
+        upload_script,
+        normalized_run_id,
+        project_dir=project_dir,
+        timeout_seconds=timeout_seconds,
+    )
+    if upload.returncode != 0:
+        return {
+            "ok": False,
+            "uploaded": False,
+            "verified": False,
+            "run_id": normalized_run_id,
+            "message": _safe_script_error(upload.stderr or upload.stdout, "S3 업로드에 실패했습니다."),
+        }
+
+    manifest = load_evidence_manifest(normalized_run_id, project_dir=project_dir)
+    verify = _run_evidence_script(
+        powershell,
+        verify_script,
+        normalized_run_id,
+        project_dir=project_dir,
+        timeout_seconds=timeout_seconds,
+    )
+    verified = verify.returncode == 0
+    return {
+        "ok": verified,
+        "uploaded": True,
+        "verified": verified,
+        "run_id": normalized_run_id,
+        "message": (
+            f"증적 {manifest['file_count']}개를 S3에 업로드하고 원격 SHA-256 검증을 완료했습니다."
+            if verified
+            else _safe_script_error(verify.stderr or verify.stdout, "업로드는 완료됐지만 원격 검증에 실패했습니다.")
+        ),
+        "manifest": manifest,
+    }
+
+
+def _run_evidence_script(
+    powershell: str,
+    script_path: Path,
+    run_id: str,
+    *,
+    project_dir: Path,
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess:
+    environment = dict(os.environ)
+    environment.update({"AWS_CLI_AUTO_PROMPT": "off", "AWS_EC2_METADATA_DISABLED": "true"})
+    try:
+        return subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-RunId",
+                run_id,
+            ],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess([], 1, "", str(exc))
+
+
+def _validate_run_id(run_id: str) -> str:
+    normalized = str(run_id or "").strip()
+    if not RUN_ID_PATTERN.fullmatch(normalized):
+        raise ValueError("유효하지 않은 Run ID입니다.")
+    return normalized
+
+
+def _safe_script_error(_output: str, fallback: str) -> str:
+    # AWS CLI errors can include account IDs or principal ARNs. Keep dashboard output secret-free.
+    return fallback
+
+
+def _read_json(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise json.JSONDecodeError("JSON object required", "", 0)
+    return payload
+
+
 def _configured_secret_names(project_dir: Path, environment: dict[str, str]) -> set[str]:
     configured = {
         name
@@ -319,12 +498,8 @@ def _evidence_status(project_dir: Path) -> dict:
     latest = {}
     if manifests:
         try:
-            payload = json.loads(manifests[0].read_text(encoding="utf-8"))
-            latest = {
-                "run_id": str(payload.get("run_id") or manifests[0].parents[1].name),
-                "generated_at_utc": str(payload.get("generated_at_utc") or ""),
-                "file_count": len(payload.get("files") or []),
-            }
+            payload = _read_json(manifests[0])
+            latest = _normalize_evidence_manifest(payload, manifests[0].parents[1].name)
         except (OSError, json.JSONDecodeError):
             latest = {"run_id": manifests[0].parents[1].name, "generated_at_utc": "", "file_count": 0}
     return {

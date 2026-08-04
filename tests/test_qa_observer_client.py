@@ -49,6 +49,27 @@ def test_get_json_retries_transient_startup_timeout(monkeypatch):
     assert len(attempts) == 2
 
 
+def test_get_json_does_not_retry_connection_refused(monkeypatch):
+    attempts = []
+
+    def fake_get(url, params, timeout):
+        attempts.append(timeout)
+        request = httpx.Request("GET", url)
+        raise httpx.ConnectError("observer is not running", request=request)
+
+    monkeypatch.setattr(qa_observer_client.httpx, "get", fake_get)
+    monkeypatch.setattr(qa_observer_client.time, "sleep", lambda _delay: None)
+
+    try:
+        qa_observer_client._get_json("http://127.0.0.1:8010", "/health")
+    except qa_observer_client.QAObserverClientError:
+        pass
+    else:
+        raise AssertionError("connection refusal must be surfaced")
+
+    assert len(attempts) == 1
+
+
 def test_request_timeout_can_be_overridden(monkeypatch):
     monkeypatch.setenv("QA_OBSERVER_REQUEST_TIMEOUT_SECONDS", "8.5")
 

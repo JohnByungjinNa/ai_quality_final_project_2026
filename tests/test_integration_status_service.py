@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
-from dashboard.services.integration_status_service import collect_integration_status
+from dashboard.services.integration_status_service import (
+    collect_integration_status,
+    list_uploadable_evidence_runs,
+    load_evidence_manifest,
+)
 
 
 def test_integration_snapshot_reports_configuration_without_exposing_secrets(tmp_path):
@@ -48,6 +52,7 @@ def test_integration_snapshot_reports_configuration_without_exposing_secrets(tmp
     assert snapshot["ai"]["configured_count"] == 2
     assert snapshot["evidence"]["configuration_ready"] is True
     assert snapshot["evidence"]["upload_count"] == 1
+    assert snapshot["evidence"]["latest"]["file_count"] == 2
     assert snapshot["voc"]["attention_count"] == 2
     assert snapshot["voc"]["deployment_decision"] == "REVISION_REQUIRED"
     assert snapshot["aws"]["profile_configured"] is True
@@ -73,3 +78,35 @@ def test_placeholder_ai_keys_are_not_treated_as_configured(tmp_path):
 
     assert snapshot["ai"]["configured_count"] == 0
     assert snapshot["voc"]["available"] is False
+
+
+def test_powershell_bom_manifest_reports_uploaded_files(tmp_path):
+    project_dir = tmp_path / "project"
+    run_id = "RUN-20260716-110130-319110-c8fe"
+    evidence_dir = project_dir / "reports" / "voc_quality_runs" / run_id / "evidence"
+    evidence_dir.mkdir(parents=True)
+    for name in ("step10_acceptance.json", "step10_acceptance.md"):
+        (evidence_dir / name).write_text("evidence", encoding="utf-8")
+    manifest = {
+        "run_id": run_id,
+        "generated_at_utc": "2026-08-03T03:55:39Z",
+        "bucket": "test-bucket",
+        "prefix": f"voc-quality-runs/{run_id}",
+        "files": [
+            {"name": "step10_acceptance.json", "key": "one", "size_bytes": 10, "sha256": "a"},
+            {"name": "step10_acceptance.md", "key": "two", "size_bytes": 20, "sha256": "b"},
+        ],
+    }
+    (evidence_dir / "aws_s3_manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8-sig",
+    )
+
+    loaded = load_evidence_manifest(run_id, project_dir=project_dir)
+
+    assert loaded["file_count"] == 2
+    assert [item["name"] for item in loaded["files"]] == [
+        "step10_acceptance.json",
+        "step10_acceptance.md",
+    ]
+    assert list_uploadable_evidence_runs(project_dir=project_dir) == [run_id]

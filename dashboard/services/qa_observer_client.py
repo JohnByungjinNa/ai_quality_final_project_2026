@@ -80,6 +80,12 @@ def _get_json(base_url, path, params=None):
             if not isinstance(value, dict):
                 raise QAObserverClientError("qa-observer returned a non-object response")
             return value
+        except httpx.ConnectError as exc:
+            # 연결 거부는 서비스가 실행 중이 아니라는 확정 신호다. 같은 요청을
+            # 즉시 반복해 화면 진입을 지연시키지 않고 다음 새로고침에서 재시도한다.
+            raise QAObserverClientError(
+                f"qa-observer request failed: {type(exc).__name__}"
+            ) from exc
         except httpx.TransportError as exc:
             if attempt >= len(TRANSIENT_RETRY_DELAYS_SECONDS):
                 raise QAObserverClientError(

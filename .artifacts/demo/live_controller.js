@@ -108,8 +108,25 @@ async function showDemoFinale(page, options = {}) {
       <div class="codex-finale-glow"></div>
       <div class="codex-finale-check">✓</div>
       <h1>VOC 품질진단 시연 완료</h1>
-      <p>Pipeline → 독립 평가 → AI_PASS → QA 검토 → 업무 승인</p>
-      <strong>${finalState}</strong>
+      <p class="codex-finale-flow">Pipeline → 독립 평가 → 타당성 검증 → QA 검토 → 업무 승인</p>
+      <strong class="codex-finale-state">${finalState}</strong>
+      <section class="codex-finale-purpose">
+        <span>WHY THIS PROCESS</span>
+        <h2>좋은 개선안을 넘어, 실행 가능한 개선안만 승인합니다.</h2>
+        <p>
+          VOC 분석 결과가 실제 업무 변화로 이어지려면 근거뿐 아니라 담당·일정·KPI·적용 범위와
+          리스크까지 검증되어야 합니다. 그래서 타당성 평가를 독립 Judge와 사람 승인 사이의 핵심 Gate로 설계했습니다.
+        </p>
+        <div class="codex-finale-goals">
+          <article><b>01 · 근거 연결</b><small>VOC 원문·Run·Trace로 판단을 재현</small></article>
+          <article><b>02 · 실행 가능성</b><small>담당·일정·KPI·리스크를 정량 검증</small></article>
+          <article><b>03 · 책임 있는 적용</b><small>QA와 업무 승인으로 운영 책임을 확정</small></article>
+        </div>
+        <blockquote>
+          이 프로젝트의 목표는 AI가 그럴듯한 답을 만드는 데서 끝내지 않고,<br>
+          실제로 실행하고 측정하며 책임질 수 있는 개선안만 운영으로 연결하는 것입니다.
+        </blockquote>
+      </section>
       <div class="codex-finale-confetti"></div>
     `;
     finale.style.cssText = [
@@ -132,11 +149,21 @@ async function showDemoFinale(page, options = {}) {
       @keyframes codexFinaleIn{from{opacity:0;transform:scale(1.04)}to{opacity:1;transform:scale(1)}}
       @keyframes codexFinalePulse{0%,100%{transform:scale(1);box-shadow:0 0 35px rgba(74,222,128,.45)}50%{transform:scale(1.08);box-shadow:0 0 85px rgba(74,222,128,.9)}}
       @keyframes codexConfettiFall{0%{transform:translateY(-15vh) rotate(0deg);opacity:1}100%{transform:translateY(115vh) rotate(720deg);opacity:.1}}
-      #codex-demo-finale .codex-finale-check{width:128px;height:128px;border:5px solid rgba(255,255,255,.9);border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#22c55e,#087f5b);font-size:82px;font-weight:900;line-height:1;animation:codexFinalePulse 1.4s ease-in-out infinite}
-      #codex-demo-finale h1{margin:28px 0 8px;font-size:54px;letter-spacing:-2px;text-shadow:0 6px 24px rgba(0,0,0,.35)}
-      #codex-demo-finale p{margin:0 0 22px;font-size:22px;color:#dbeafe;font-weight:650}
-      #codex-demo-finale strong{padding:11px 24px;border:1px solid rgba(255,255,255,.75);border-radius:999px;background:rgba(255,255,255,.14);font-size:24px;letter-spacing:1px;box-shadow:0 8px 30px rgba(0,0,0,.24)}
+      #codex-demo-finale .codex-finale-check{width:88px;height:88px;border:4px solid rgba(255,255,255,.9);border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#22c55e,#087f5b);font-size:56px;font-weight:900;line-height:1;animation:codexFinalePulse 1.4s ease-in-out infinite}
+      #codex-demo-finale h1{margin:18px 0 5px;font-size:43px;letter-spacing:-1.6px;text-shadow:0 6px 24px rgba(0,0,0,.35)}
+      #codex-demo-finale .codex-finale-flow{margin:0 0 12px;font-size:17px;color:#dbeafe;font-weight:650}
+      #codex-demo-finale .codex-finale-state{padding:7px 18px;border:1px solid rgba(255,255,255,.75);border-radius:999px;background:rgba(255,255,255,.14);font-size:17px;letter-spacing:1px;box-shadow:0 8px 30px rgba(0,0,0,.24)}
+      #codex-demo-finale .codex-finale-purpose{position:relative;width:min(980px,86vw);margin-top:20px;padding:19px 24px 17px;border:1px solid rgba(191,219,254,.34);border-radius:20px;background:linear-gradient(145deg,rgba(4,30,66,.82),rgba(6,78,78,.68));box-shadow:0 18px 48px rgba(0,0,0,.24);backdrop-filter:blur(10px)}
+      #codex-demo-finale .codex-finale-purpose>span{display:inline-block;color:#86efac;font-size:10px;font-weight:900;letter-spacing:2px}
+      #codex-demo-finale .codex-finale-purpose h2{margin:6px 0 7px;color:#fff;font-size:25px;letter-spacing:-.7px}
+      #codex-demo-finale .codex-finale-purpose>p{max-width:850px;margin:0 auto;color:#cfe3f8;font-size:13px;line-height:1.55;font-weight:500}
+      #codex-demo-finale .codex-finale-goals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0 12px}
+      #codex-demo-finale .codex-finale-goals article{padding:10px 12px;border:1px solid rgba(191,219,254,.24);border-radius:12px;background:rgba(255,255,255,.08);text-align:left}
+      #codex-demo-finale .codex-finale-goals b{display:block;color:#fff;font-size:12px}
+      #codex-demo-finale .codex-finale-goals small{display:block;margin-top:4px;color:#bfdbfe;font-size:10px;line-height:1.35}
+      #codex-demo-finale blockquote{margin:0;padding:10px 14px;border-left:4px solid #4ade80;border-radius:7px;background:rgba(5,46,22,.32);color:#ecfdf5;font-size:14px;font-weight:750;line-height:1.45}
       #codex-demo-finale .codex-finale-glow{position:absolute;width:520px;height:520px;border-radius:50%;border:2px solid rgba(255,255,255,.12);box-shadow:0 0 120px rgba(96,165,250,.38)}
+      @media(max-height:760px){#codex-demo-finale .codex-finale-check{width:68px;height:68px;font-size:43px}#codex-demo-finale h1{margin-top:10px;font-size:35px}#codex-demo-finale .codex-finale-purpose{margin-top:12px;padding:13px 18px}#codex-demo-finale .codex-finale-purpose h2{font-size:21px}#codex-demo-finale .codex-finale-goals{margin:9px 0}#codex-demo-finale blockquote{padding:7px 12px;font-size:12px}}
     `;
     finale.appendChild(style);
     const confetti = finale.querySelector('.codex-finale-confetti');
@@ -169,11 +196,12 @@ async function showScenarioOverview(page, holdMs = 18000) {
     ['04', 'TC-01 Pipeline', '실시간 화면을 완료까지 고정 관찰'],
     ['05', '독립성 보완', '다른 Provider로 동일 결과 재평가'],
     ['06', '최신 수행 이력', '방금 생성한 Run 상세 팝업'],
-    ['07', '보완 근거 입력', '담당·일정·KPI·Trace·리스크'],
+    ['07', '초안작성 마법사', 'Run·Case·Trace 기반 보완 초안 생성'],
     ['08', '타당성 평가', '실제 AI_PASS와 보류 규칙 확인'],
     ['09', 'QA 검토', 'QA_REVIEWED 감사 이력 저장'],
     ['10', '업무 승인', 'BUSINESS_APPROVED 정식 승인'],
     ['11', '시연 종료', '전체 화면 체크와 콘페티'],
+    ['12', '부가기능', 'Jira·GitHub·AWS 연동 소개'],
   ];
   await page.evaluate(({ steps }) => {
     document.getElementById('codex-scenario-overview')?.remove();
@@ -183,7 +211,8 @@ async function showScenarioOverview(page, holdMs = 18000) {
       <header>
         <span>VOC QUALITY DEMO</span>
         <h1>최종 녹화 시연 흐름</h1>
-        <p>실제 Run 생성부터 독립 평가·타당성 검증·정식 승인까지 하나의 증적 체인으로 연결합니다.</p>
+        <p><b>목적</b> · VOC 개선 판단을 객관적인 품질 기준과 추적 가능한 증적 체인으로 표준화합니다.</p>
+        <p><b>기대효과</b> · 판단 편차와 근거 누락을 줄이고, 실행 가능한 개선안·감사 이력·업무 연계를 확보합니다.</p>
       </header>
       <main>${steps.map(([number, title, detail]) => `
         <article>
@@ -215,7 +244,8 @@ async function showScenarioOverview(page, holdMs = 18000) {
       @keyframes codexScenarioGlow{0%,100%{opacity:.55}50%{opacity:1}}
       #codex-scenario-overview header span{display:inline-block;padding:5px 11px;border:1px solid rgba(147,197,253,.65);border-radius:999px;color:#bfdbfe;font-size:11px;font-weight:800;letter-spacing:1.5px}
       #codex-scenario-overview h1{margin:12px 0 5px;font-size:40px;line-height:1.05;letter-spacing:-1.6px}
-      #codex-scenario-overview header p{margin:0;color:#c8dcf5;font-size:15px}
+      #codex-scenario-overview header p{margin:4px 0 0;color:#c8dcf5;font-size:14px}
+      #codex-scenario-overview header p b{color:#86efac;margin-right:4px}
       #codex-scenario-overview main{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px;margin-top:25px}
       #codex-scenario-overview article{display:flex;align-items:center;gap:12px;min-height:78px;padding:12px 14px;border:1px solid rgba(191,219,254,.28);border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.12),rgba(255,255,255,.055));box-shadow:0 10px 28px rgba(0,0,0,.15);backdrop-filter:blur(8px)}
       #codex-scenario-overview article b{display:grid;place-items:center;flex:0 0 39px;width:39px;height:39px;border-radius:11px;background:#1d4ed8;color:white;font-size:14px;box-shadow:0 0 24px rgba(96,165,250,.45)}
@@ -231,6 +261,105 @@ async function showScenarioOverview(page, holdMs = 18000) {
   }, { steps });
   await page.waitForTimeout(holdMs);
   await page.evaluate(() => document.getElementById('codex-scenario-overview')?.remove());
+}
+
+async function ensureAllAgentsRunning(page) {
+  await showDemoStep(
+    page,
+    '1/7 · Agent 실행 사전 점검',
+    'Pipeline 시작 전에 6개 Agent 상태를 확인하고, 중지된 Agent가 있으면 전체 시작으로 복구합니다.'
+  );
+  const stoppedAgentButtons = page.locator('div[class*="st-key-start_agent_"] button');
+  if ((await stoppedAgentButtons.count()) > 0) {
+    const confirmation = page.getByRole('checkbox', { name: 'Agent 프로세스 상태 변경' });
+    if (!(await confirmation.isChecked())) {
+      await recordingClick(page, confirmation, 'Agent 상태 변경 확인', 1000);
+    }
+    await recordingClick(
+      page,
+      page.getByRole('button', { name: '전체 시작', exact: true }),
+      '6개 Agent 전체 시작',
+      1500
+    );
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 90000) {
+    const runningCount = await page.locator('div[class*="st-key-stop_agent_"] button').count();
+    const stoppedCount = await stoppedAgentButtons.count();
+    if (runningCount === 6 && stoppedCount === 0) {
+      await showDemoStep(
+        page,
+        '1/7 · Agent 준비 완료',
+        'Interpreter부터 Improver까지 6개 Agent가 모두 RUNNING입니다. 이제 Pipeline을 안전하게 실행합니다.'
+      );
+      await page.waitForTimeout(1800);
+      return;
+    }
+    await showDemoStep(
+      page,
+      `1/7 · Agent 기동 확인 중 · ${Math.round((Date.now() - startedAt) / 1000)}초`,
+      `현재 ${runningCount}/6 RUNNING · 모든 Agent가 준비될 때까지 Pipeline을 시작하지 않습니다.`
+    );
+    await page.waitForTimeout(1500);
+  }
+  throw new Error('Agent 사전 점검 실패: 90초 안에 6개 Agent가 모두 RUNNING 상태가 되지 않았습니다.');
+}
+
+async function showRubricDetailDialog(page, rubricType, stageLabel) {
+  const table = page.locator(`div[class*="st-key-rubric_edit_${rubricType}_widget_item_table"]`);
+  await pointAt(page, table, `${stageLabel} · 평가 항목 선택`, 1400);
+  const canvas = table.locator('[data-testid="stDataFrame"] canvas').first();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error(`${stageLabel} 세부 배점 표를 찾지 못했습니다.`);
+  await page.mouse.click(
+    box.x + Math.min(170, box.width * 0.35),
+    box.y + Math.min(65, box.height * 0.3)
+  );
+  const dialogTitle = page.getByText('세부 배점 설정', { exact: true }).last();
+  await dialogTitle.waitFor({ state: 'visible', timeout: 10000 });
+  await safePointAt(page, dialogTitle, `${stageLabel} · 세부 배점 설정`, 1600, 5000);
+  await safePointAt(
+    page,
+    page.locator(`div[class*="st-key-rubric_criteria_panel_${rubricType}_"]`).first(),
+    '세부 기준별 배점과 통과 하한',
+    2200,
+    5000
+  );
+  await recordingClick(
+    page,
+    page.locator(`div[class*="st-key-rubric_detail_done_${rubricType}_"] button`).first(),
+    '설정 완료',
+    1000
+  );
+  await dialogTitle.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(900);
+}
+
+async function selectRubricStage(page, index, rubricType, stageLabel) {
+  const optionText = {
+    internal_pipeline: '내부 파이프라인 품질',
+    independent_judge: '독립 LLM 평가',
+    improvement_validity: '개선안 타당성 평가',
+  }[rubricType];
+  const targetTable = page.locator(
+    `div[class*="st-key-rubric_edit_${rubricType}_widget_item_table"]`
+  );
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await recordingClick(
+      page,
+      page.getByText(optionText, { exact: true }).first(),
+      `${stageLabel} 탭`,
+      attempt === 1 ? 1200 : 500
+    );
+    const visible = await targetTable
+      .waitFor({ state: 'visible', timeout: 7000 })
+      .then(() => true)
+      .catch(() => false);
+    if (visible) return;
+    await page.waitForTimeout(900);
+  }
+  throw new Error(`${stageLabel} 탭 전환 후 평가 항목 표를 찾지 못했습니다.`);
 }
 
 async function pointAndClick(page, locator, label) {
@@ -265,9 +394,9 @@ async function pointAndClick(page, locator, label) {
   });
 }
 
-async function pointAt(page, locator, label, dwellMs = 2600) {
+async function pointAt(page, locator, label, dwellMs = 2600, timeoutMs = 15000) {
   locator = locator.first();
-  await locator.waitFor({ state: 'visible', timeout: 15000 });
+  await locator.waitFor({ state: 'visible', timeout: timeoutMs });
   await locator.evaluate((element) => {
     element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
   });
@@ -327,9 +456,9 @@ async function recordingScroll(page, deltaY, title, detail, dwellMs = 2200) {
   await page.waitForTimeout(dwellMs);
 }
 
-async function safePointAt(page, locator, label, dwellMs = 2200) {
+async function safePointAt(page, locator, label, dwellMs = 2200, timeoutMs = 15000) {
   try {
-    await pointAt(page, locator, label, dwellMs);
+    await pointAt(page, locator, label, dwellMs, timeoutMs);
     return true;
   } catch {
     return false;
@@ -348,7 +477,173 @@ async function runRecordingCountdown(page) {
   }
 }
 
-async function runFullRecordingDemo(page) {
+async function waitForStreamlitReady(page, anchor, options = {}) {
+  const timeoutMs = options.timeoutMs || 30000;
+  const stableMs = options.stableMs || 700;
+  const startedAt = Date.now();
+  await anchor.first().waitFor({ state: 'visible', timeout: timeoutMs });
+  await page.waitForTimeout(350);
+  let stableSince = 0;
+  while (Date.now() - startedAt < timeoutMs) {
+    const busy = await page.evaluate(() => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.visibility !== 'hidden' && style.display !== 'none' && box.width > 0 && box.height > 0;
+      };
+      return Array.from(document.querySelectorAll('[data-testid="stSpinner"]')).some(visible);
+    });
+    if (!busy) {
+      if (!stableSince) stableSince = Date.now();
+      if (Date.now() - stableSince >= stableMs) return Date.now() - startedAt;
+    } else {
+      stableSince = 0;
+    }
+    await page.waitForTimeout(150);
+  }
+  throw new Error(`Streamlit page readiness timeout after ${timeoutMs}ms`);
+}
+
+async function warmupRecordingPages(page) {
+  const timings = [];
+  const warm = async (menu, subMenu, anchor, label, timeoutMs = 30000) => {
+    const startedAt = Date.now();
+    await page.getByText(menu, { exact: true }).first().click();
+    if (subMenu) await page.getByText(subMenu, { exact: true }).first().click();
+    await waitForStreamlitReady(page, anchor, { timeoutMs });
+    timings.push({ label, elapsedMs: Date.now() - startedAt });
+  };
+
+  await showDemoStep(
+    page,
+    '시연 사전 준비 · 페이지 로딩',
+    '녹화 전 조회 화면과 외부 연동 상태를 미리 불러와 본 시연의 대기 시간을 줄입니다.'
+  );
+  await warm('Jira관리', 'Jira 현황', page.locator('div[class*="st-key-jira_list_filter_bar"]'), 'Jira', 35000);
+  await warm('GitHub 관리', '저장소 현황', page.locator('.gh-repo-hero'), 'GitHub 저장소');
+  await warm('GitHub 관리', '프로젝트 동기화', page.getByText('프로젝트 저장·다운로드', { exact: true }), 'GitHub 동기화');
+  await warm('종합 현황', 'AI QA 종합 현황', page.locator('.aqd-integration-row'), 'AWS·종합 현황');
+  await warm('VOC 품질진단', '최종 인수·시연', page.locator('div[class*="st-key-acceptance_aws_evidence_actions"]'), 'AWS 인수 증적', 45000);
+  await warm('VOC 품질진단', '개선안 타당성 검증', page.locator('div[class*="st-key-voc_validity_candidate_query"] input'), '타당성 검증');
+  await warm('VOC 품질진단', 'Dashboard', page.locator('.vqd-status-row'), 'VOC Dashboard');
+  await showDemoStep(
+    page,
+    '시연 사전 준비 완료',
+    timings.map((item) => `${item.label} ${(item.elapsedMs / 1000).toFixed(1)}초`).join(' · ')
+  );
+  await page.waitForTimeout(1800);
+  return timings;
+}
+
+async function runIntegrationShowcase(page, options = {}) {
+  const { returnToVocDashboard = true, performAwsUpload = false } = options;
+
+  await showDemoStep(
+    page,
+    '부가기능 1/3 · Jira 연동',
+    'JQL 기반 이슈 조회, 신규 이슈 등록과 앱 등록 이력을 한 화면 흐름으로 관리합니다.'
+  );
+  await recordingClick(page, page.getByText('Jira관리', { exact: true }), 'Jira 관리', 1400);
+  await waitForStreamlitReady(page, page.locator('div[class*="st-key-jira_list_filter_bar"]'));
+  await safePointAt(
+    page,
+    page.locator('div[class*="st-key-jira_list_filter_bar"]'),
+    'JQL 조회 · Search · Create',
+    2800,
+    5000
+  );
+  await recordingClick(page, page.getByText('등록 이력', { exact: true }), 'Jira 등록 이력', 1200);
+  await page.waitForTimeout(1600);
+  await safePointAt(page, page.getByText('앱 등록 이력', { exact: true }), 'Jira 감사 이력', 2400, 5000);
+
+  await showDemoStep(
+    page,
+    '부가기능 2/3 · GitHub 연동',
+    '저장소·브랜치·최근 커밋과 변경 파일을 확인하고 안전한 저장·다운로드 흐름을 제공합니다.'
+  );
+  await recordingClick(page, page.getByText('GitHub 관리', { exact: true }), 'GitHub 관리', 1400);
+  await waitForStreamlitReady(page, page.locator('.gh-repo-hero'));
+  await safePointAt(page, page.locator('.gh-repo-hero'), '저장소 · 브랜치 · 최근 커밋', 2800, 5000);
+  await recordingClick(page, page.getByText('프로젝트 동기화', { exact: true }), '프로젝트 동기화', 1200);
+  await waitForStreamlitReady(page, page.getByText('프로젝트 저장·다운로드', { exact: true }));
+  await safePointAt(page, page.getByText('프로젝트 저장·다운로드', { exact: true }), 'Git 저장 · 다운로드 · ZIP', 2600, 5000);
+  await safePointAt(page, page.getByText('동기화 사전 점검', { exact: true }), '충돌 방지 사전 점검', 2200, 5000);
+
+  await showDemoStep(
+    page,
+    '부가기능 3/3 · AWS 연동',
+    '임시 AWS 세션 상태와 Run별 S3 품질 증적 업로드 이력을 비밀값 노출 없이 확인합니다.'
+  );
+  await recordingClick(page, page.getByText('종합 현황', { exact: true }), '종합 현황', 1400);
+  await waitForStreamlitReady(page, page.locator('.aqd-integration-row'));
+  await safePointAt(
+    page,
+    page.locator('.aqd-integration-row article[aria-label^="AWS 증적."]'),
+    'AWS S3 증적 업로드 현황',
+    3000,
+    5000
+  );
+  const awsPopover = page.locator('div[class*="st-key-topbar_aws_action_"] button').first();
+  if (await awsPopover.isVisible().catch(() => false)) {
+    await recordingClick(page, awsPopover, 'AWS 임시 세션', 1200);
+    await page.waitForTimeout(900);
+    await safePointAt(page, page.getByText('AWS 연결 정보', { exact: true }), '프로필 · 리전 · 로그인 상태', 2200, 5000);
+    await page.keyboard.press('Escape');
+  }
+
+  await showDemoStep(
+    page,
+    'AWS 증적 보관 · 최종 인수 단계로 이동',
+    '종합 현황에서는 업로드 상태만 확인하고, 실제 보관 작업은 승인 증적이 생성되는 최종 인수 화면에서 수행합니다.'
+  );
+  await recordingClick(page, page.getByText('VOC 품질진단', { exact: true }), 'VOC 품질진단', 1200);
+  await recordingClick(page, page.getByText('최종 인수·시연', { exact: true }), '최종 인수·시연', 1400);
+  await waitForStreamlitReady(page, page.locator('div[class*="st-key-acceptance_aws_evidence_actions"]'), { timeoutMs: 45000 });
+  await safePointAt(
+    page,
+    page.locator('div[class*="st-key-acceptance_aws_evidence_actions"]'),
+    '최종 인수 Run · S3 업로드 · 파일 확인',
+    2600,
+    5000
+  );
+
+  if (performAwsUpload) {
+    const uploadButton = page.locator('div[class*="st-key-acceptance_aws_upload_evidence"] button').first();
+    if (!(await uploadButton.isEnabled().catch(() => false))) {
+      throw new Error('AWS 임시 로그인 또는 최종 인수 증적이 없어 S3 업로드 버튼이 비활성화되었습니다.');
+    }
+    await showDemoStep(
+      page,
+      'AWS 증적 업로드 · 명시적 실행',
+      '선택한 최종 인수 Run의 JSON·Markdown 2개 파일만 S3에 암호화 업로드하고 원격 SHA-256을 검증합니다.'
+    );
+    await recordingClick(page, uploadButton, 'S3 증적 업로드', 1800);
+    const uploadSuccess = page.getByText(/증적 2개를 S3에 업로드하고 원격 SHA-256 검증을 완료했습니다/).first();
+    await uploadSuccess.waitFor({ state: 'visible', timeout: 120000 });
+    await safePointAt(page, uploadSuccess, 'S3 업로드 · 원격 무결성 검증 완료', 3000, 5000);
+  }
+
+  const fileButton = page.locator('div[class*="st-key-acceptance_aws_files"] button').first();
+  await recordingClick(page, fileButton, '업로드 파일 확인', 1200);
+  await page.waitForTimeout(800);
+  const fileTable = page.locator('[data-testid="stPopoverBody"] div[data-testid="stDataFrame"]').first();
+  await fileTable.waitFor({ state: 'visible', timeout: 20000 });
+  await safePointAt(page, fileTable, '파일명 · 크기 · S3 객체 키 · SHA-256', 3400, 20000);
+  await page.keyboard.press('Escape');
+
+  if (returnToVocDashboard) {
+    await recordingClick(page, page.getByText('VOC 품질진단', { exact: true }), 'VOC 품질진단', 1200);
+    await recordingClick(page, page.getByText('Dashboard', { exact: true }), 'Dashboard', 1200);
+    await page.waitForTimeout(1600);
+  }
+}
+
+async function runFullRecordingDemo(page, options = {}) {
+  const { continueToApproval = false } = options;
+  let completedRunId = '';
+  let completedTraceId = '';
+  await showScenarioOverview(page, options.overviewHoldMs || 9000);
+  await warmupRecordingPages(page);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await runRecordingCountdown(page);
 
@@ -358,6 +653,7 @@ async function runFullRecordingDemo(page) {
   await page.waitForTimeout(1800);
 
   await showDemoStep(page, '1/7 · Agent 및 Provider 상태', '6개 Agent 실행 상태와 세 Provider 인증 상태를 차례로 확인합니다.');
+  await ensureAllAgentsRunning(page);
   await safePointAt(
     page,
     page.locator('div[class*="st-key-check_agent_gemini_credential"] button'),
@@ -394,19 +690,9 @@ async function runFullRecordingDemo(page) {
   await showDemoStep(page, '2/7 · 품질 평가 기준', '평가 단계 탭과 Rubric 관리 입력 항목을 확인합니다.');
   await recordingClick(page, page.getByText('품질 평가 기준', { exact: true }), '품질 평가 기준');
   await page.waitForTimeout(1600);
-  await safePointAt(
-    page,
-    page.locator('div[class*="st-key-voc_quality_rubric_stage"] label').nth(0),
-    '내부 Pipeline 품질 탭',
-    1800
-  );
-  await recordingClick(
-    page,
-    page.locator('div[class*="st-key-voc_quality_rubric_stage"] label').nth(1),
-    '독립 LLM Judge 탭',
-    1600
-  );
-  await page.waitForTimeout(1600);
+  await showRubricDetailDialog(page, 'internal_pipeline', '내부 Pipeline 품질');
+  await selectRubricStage(page, 1, 'independent_judge', '독립 LLM Judge');
+  await showRubricDetailDialog(page, 'independent_judge', '독립 LLM Judge');
   await safePointAt(
     page,
     page.locator('div[class*="st-key-rubric_edit_independent_judge_widget_version"] input'),
@@ -437,13 +723,8 @@ async function runFullRecordingDemo(page) {
     '평가기준 저장',
     2200
   );
-  await recordingClick(
-    page,
-    page.locator('div[class*="st-key-voc_quality_rubric_stage"] label').nth(2),
-    '개선안 타당성 탭',
-    1600
-  );
-  await page.waitForTimeout(1800);
+  await selectRubricStage(page, 2, 'improvement_validity', '개선안 타당성');
+  await showRubricDetailDialog(page, 'improvement_validity', '개선안 타당성');
   await recordingScroll(
     page,
     620,
@@ -493,9 +774,24 @@ async function runFullRecordingDemo(page) {
     await page.waitForTimeout(5000);
   }
 
+  if (!(await judgeButton.isVisible().catch(() => false))) {
+    const bodyText = await page.locator('body').innerText();
+    const pipelineError = bodyText.match(/(?:파이프라인|Pipeline)[^\n]{0,80}(?:실패|오류|ERROR)/i)?.[0];
+    throw new Error(
+      pipelineError
+        ? `Pipeline 실행 실패: ${pipelineError}`
+        : 'Pipeline 완료를 확인하지 못했습니다. Agent 상태와 실행 Trace를 확인하세요.'
+    );
+  }
+
   await showDemoStep(page, '3/7 · Pipeline 결과 확인', 'Run ID, Trace, Agent 성공·실패 건수와 최종 개선안을 확인합니다.');
   await recordingScroll(page, 900, '3/7 · 실행 결과', '실시간 Pipeline 아래의 수행 결과와 증적을 확인합니다.', 3000);
-  await safePointAt(page, page.getByText(/Run ID:/).first(), 'Run ID 및 증적 상태', 3000);
+  const runIdLabel = page.getByText(/Run ID:/).first();
+  await safePointAt(page, runIdLabel, 'Run ID 및 증적 상태', 3000);
+  const runIdText = await runIdLabel.innerText().catch(() => '');
+  const resultBody = await page.locator('body').innerText();
+  completedRunId = (runIdText.match(/RUN-[0-9]{8}-[0-9]{6}-[0-9]{6}-[0-9a-f]{4}/i) || [''])[0];
+  completedTraceId = (resultBody.match(/(?:Trace ID|Trace)\s*[:·]?\s*([A-Za-z0-9_-]{8,})/i) || ['', ''])[1];
   await recordingScroll(page, 900, '3/7 · 최종 개선안', '요약과 정책 개선안의 책임·일정·측정 지표를 확인합니다.', 3200);
 
   await safePointAt(
@@ -548,6 +844,17 @@ async function runFullRecordingDemo(page) {
     await recordingScroll(page, 520, '5/7 · Case 증적', 'Pipeline·Trace·규칙·Judge 원본 증적을 확인합니다.', 2800);
   }
 
+  if (continueToApproval) {
+    if (!completedRunId) throw new Error('Pipeline 결과에서 새 Run ID를 찾지 못했습니다.');
+    await showDemoStep(
+      page,
+      '핵심 진단 구간 완료 · 승인 흐름 계속',
+      `${completedRunId}의 독립성 보완, 초안작성 마법사, QA·업무 승인을 이어서 진행합니다.`
+    );
+    await page.waitForTimeout(2600);
+    return { runId: completedRunId, traceId: completedTraceId, caseId: 'TC-01' };
+  }
+
   await showDemoStep(page, '6/7 · 품질 보고서', '35건 정량 분석과 결함·잔여 위험·배포 판정을 확인합니다.');
   await recordingClick(page, page.getByText('품질 보고서', { exact: true }), '품질 보고서');
   await page.waitForTimeout(2200);
@@ -581,6 +888,13 @@ async function runFullRecordingDemo(page) {
     'Pipeline·Judge·Run 이력·품질 보고서·최종 HOLD 인수 증적까지 연속 확인했습니다.'
   );
   await page.waitForTimeout(10000);
+  await runIntegrationShowcase(page, { returnToVocDashboard: false, performAwsUpload: true });
+  await showDemoStep(
+    page,
+    '부가기능 시연 완료',
+    'Jira 이슈 관리 · GitHub 형상관리 · AWS S3 품질 증적 연동까지 확인했습니다.'
+  );
+  await page.waitForTimeout(7000);
 }
 
 async function recordingFill(page, locator, label, value, dwellMs = 1100) {
@@ -637,6 +951,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
     throw new Error('approval_recording_demo에는 대상 runId가 필요합니다.');
   }
 
+  if (!command.skipWarmup) await warmupRecordingPages(page);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await showDemoStep(
     page,
@@ -720,37 +1035,36 @@ async function runApprovalRecordingDemo(page, command = {}) {
     2500
   );
 
-  const supplement = {
-    owner: '[시연용 보완 근거] 모바일앱개발팀 QA 책임자, 고객경험팀 업무 승인자, 플랫폼운영팀 지원',
-    schedule: '[시연용] 2026-08-01 설계 완료, 08-15 QA 완료, 08-22 단계 배포, 09-05 효과 검증',
-    kpi: '[시연용] 모바일 갱신 오류율 2.1%→0.5% 이하, 성공률 99.5% 이상, P95 3초 이하, 상담 전환율 15% 감소',
-    priority: '[시연용] P1, 결제·본인인증·전자서명 갱신 오류 우선 개선',
-    evidence: `[시연용] Run ${runId}, Trace ${traceId || '화면 표시 Trace'}, ${caseId}, VOC 원문과 Agent 1~6 Trace 및 독립 Judge 결과`,
-    risk: '[시연용] 단계 배포 10%→50%→100%, 오류율 1% 초과 시 즉시 롤백, 개인정보·결제정보 미기록, QA·업무 승인 후 확대',
-  };
-  for (const [field, value] of Object.entries(supplement)) {
-    const fieldLabel = {
-      owner: '담당·오너',
-      schedule: '일정·마일스톤',
-      kpi: '정량 KPI',
-      priority: '우선순위',
-      evidence: 'VOC·Trace 근거',
-      risk: '리스크·회피방안',
-    }[field];
-    await recordingFill(
-      page,
-      page.locator(
-        `div[class*="st-key-validity_supplement_${runId}_${caseId}_${field}"] textarea`
-      ),
-      `${fieldLabel} 보완 입력`,
-      value,
-      850
-    );
+  const inputExpander = page.getByText('입력 열기', { exact: true }).first();
+  if (await inputExpander.isVisible().catch(() => false)) {
+    await recordingClick(page, inputExpander, '보완 입력 열기', 1200);
+    await page.waitForTimeout(700);
   }
+  const draftWizard = page.locator('div[class*="st-key-validity_supplement_draft_"] button').first();
+  await recordingClick(page, draftWizard, '초안작성 마법사 실행', 1800);
+  await waitForStreamlitReady(
+    page,
+    page.locator(`div[class*="st-key-validity_supplement_${runId}_${caseId}_owner"] textarea`),
+    { timeoutMs: 15000 }
+  );
+  await safePointAt(
+    page,
+    page.locator(`div[class*="st-key-validity_supplement_${runId}_${caseId}_owner"] textarea`),
+    '마법사 초안 · 담당/오너',
+    1800,
+    5000
+  );
+  await safePointAt(
+    page,
+    page.locator(`div[class*="st-key-validity_supplement_${runId}_${caseId}_evidence"] textarea`),
+    `마법사 초안 · Run ${runId} · Trace ${traceId || '자동 연결'}`,
+    1800,
+    5000
+  );
   await recordingClick(
     page,
-    page.getByRole('button', { name: '보완 입력 저장', exact: true }),
-    '보완 입력 저장',
+    page.getByText('사전 보완 입력 저장', { exact: true }).first(),
+    '마법사 초안 확인 후 저장',
     1800
   );
   await page.waitForTimeout(2500);
@@ -769,11 +1083,9 @@ async function runApprovalRecordingDemo(page, command = {}) {
     title: '승인 시연 4/6 · 타당성 평가 중',
     detail: '보완 근거와 Pipeline·Trace·독립 Judge 결과를 결합해 실제 AI 판정을 산출합니다.',
   });
-  const qaForm = page.locator(
-    `div[class*="st-key-validity_review_${runId}_${caseId}_QA"]`
-  );
-  const qaReady = await waitForRecordingState(page, qaForm, {
-    timeoutMs: 15000,
+  const qaApproveButton = page.getByRole('button', { name: /QA 승인 저장$/ }).first();
+  const qaReady = await waitForRecordingState(page, qaApproveButton, {
+    timeoutMs: command.validityTimeoutMs || 180000,
     title: '승인 시연 4/6 · AI 판정 확인',
     detail: 'AI_PASS와 즉시 보류 규칙 충족 여부를 확인합니다.',
   });
@@ -786,6 +1098,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
     await page.waitForTimeout(8000);
     return;
   }
+  const qaForm = qaApproveButton.locator('xpath=ancestor::div[@data-testid="stForm"][1]');
   await safePointAt(page, page.getByText('AI_PASS', { exact: true }).first(), '타당성 판정 · AI_PASS', 3000);
 
   await showDemoStep(
@@ -804,7 +1117,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
   );
   await recordingClick(
     page,
-    qaForm.getByRole('button', { name: '검토 결과 저장', exact: true }),
+    qaApproveButton,
     'QA 검토 결과 저장',
     1900
   );
@@ -816,10 +1129,8 @@ async function runApprovalRecordingDemo(page, command = {}) {
     '승인 시연 6/6 · 업무 승인',
     '같은 시연자가 수행하더라도 QA와 업무 역할·시각·의견은 별도 감사 이력으로 남깁니다.'
   );
-  const businessForm = page.locator(
-    `div[class*="st-key-validity_review_${runId}_${caseId}_BUSINESS"]`
-  );
-  const businessReady = await waitForRecordingState(page, businessForm, {
+  const businessApproveButton = page.getByRole('button', { name: /업무 승인 저장$/ }).first();
+  const businessReady = await waitForRecordingState(page, businessApproveButton, {
     timeoutMs: 30000,
     title: '승인 시연 6/6 · 업무 승인 준비',
     detail: 'QA_REVIEWED 상태를 확인하고 다음 승인 단계를 엽니다.',
@@ -827,6 +1138,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
   if (!businessReady) {
     throw new Error('QA 검토 후 업무 승인 양식을 찾지 못했습니다.');
   }
+  const businessForm = businessApproveButton.locator('xpath=ancestor::div[@data-testid="stForm"][1]');
   await recordingFill(page, businessForm.locator('input').first(), '업무 승인자', reviewer, 1000);
   await recordingFill(
     page,
@@ -837,14 +1149,21 @@ async function runApprovalRecordingDemo(page, command = {}) {
   );
   await recordingClick(
     page,
-    businessForm.getByRole('button', { name: '검토 결과 저장', exact: true }),
+    businessApproveButton,
     '업무 승인 결과 저장',
     1900
   );
   await page.waitForTimeout(2800);
   await safePointAt(page, page.getByText('정식 승인 완료', { exact: true }).first(), 'BUSINESS_APPROVED · 정식 승인 완료', 3200);
   await page.waitForTimeout(2500);
-  await showDemoFinale(page, { finalState: 'BUSINESS_APPROVED', holdMs: 8000 });
+  await showDemoFinale(page, { finalState: 'BUSINESS_APPROVED', holdMs: 15000 });
+  await runIntegrationShowcase(page, { returnToVocDashboard: false, performAwsUpload: true });
+  await showDemoStep(
+    page,
+    '부가기능 시연 완료',
+    '본 시연 종료 후 Jira · GitHub · AWS 연동 기능을 짧게 확인했습니다.'
+  );
+  await page.waitForTimeout(7000);
 }
 
 (async () => {
@@ -877,13 +1196,133 @@ async function runApprovalRecordingDemo(page, command = {}) {
       writeStatus({ state: 'running', commandId: command.id, action: command.action });
       if (command.action === 'full_recording_demo') {
         await runFullRecordingDemo(page);
+      } else if (command.action === 'full_approval_rehearsal') {
+        const identifiers = await runFullRecordingDemo(page, { continueToApproval: true });
+        await runApprovalRecordingDemo(page, {
+          ...command,
+          ...identifiers,
+          skipWarmup: true,
+        });
       } else if (command.action === 'approval_recording_demo') {
         await runApprovalRecordingDemo(page, command);
+      } else if (command.action === 'prewarm_recording_pages') {
+        const timings = await warmupRecordingPages(page);
+        writeStatus({
+          state: 'completed',
+          commandId: command.id,
+          action: command.action,
+          timings,
+          url: page.url(),
+        });
+        lastCommandId = command.id;
+        busy = false;
+        return;
+      } else if (command.action === 'integration_rehearsal_demo') {
+        await runIntegrationShowcase(page);
+        await showDemoStep(
+          page,
+          '연동 소개 리허설 완료',
+          '조회 화면만 사용했으며 Jira 등록, GitHub Push, S3 업로드 데이터는 변경하지 않았습니다.'
+        );
+        await page.waitForTimeout(command.holdMs || 7000);
+      } else if (command.action === 'rubric_agent_rehearsal') {
+        await recordingClick(page, page.getByText('VOC 품질진단', { exact: true }), 'VOC 품질진단', 1000);
+        await recordingClick(page, page.getByText('Agent 관리', { exact: true }), 'Agent 관리', 1000);
+        await waitForStreamlitReady(page, page.getByRole('checkbox', { name: 'Agent 프로세스 상태 변경' }));
+        await ensureAllAgentsRunning(page);
+        await recordingClick(page, page.getByText('품질 평가 기준', { exact: true }), '품질 평가 기준', 1000);
+        await waitForStreamlitReady(
+          page,
+          page.locator('div[class*="st-key-rubric_edit_internal_pipeline_widget_item_table"]')
+        );
+        await showRubricDetailDialog(page, 'internal_pipeline', '내부 Pipeline 품질');
+        await selectRubricStage(page, 1, 'independent_judge', '독립 LLM Judge');
+        await showRubricDetailDialog(page, 'independent_judge', '독립 LLM Judge');
+        await selectRubricStage(page, 2, 'improvement_validity', '개선안 타당성');
+        await showRubricDetailDialog(page, 'improvement_validity', '개선안 타당성');
+        await showDemoStep(
+          page,
+          '세부 배점·Agent 사전 점검 완료',
+          '세 평가 단계의 세부 배점 팝업과 6/6 Agent RUNNING 상태를 확인했습니다.'
+        );
+        await page.waitForTimeout(command.holdMs || 5000);
+      } else if (command.action === 'pipeline_smoke_rehearsal') {
+        await recordingClick(page, page.getByText('VOC 품질진단', { exact: true }), 'VOC 품질진단', 900);
+        await recordingClick(page, page.getByText('수동 TC 수행', { exact: true }), '수동 TC 수행', 900);
+        await waitForStreamlitReady(
+          page,
+          page.locator('div[class*="st-key-goal_testcase_table_"]'),
+          { timeoutMs: 30000 }
+        );
+        const runButton = page.locator('div[class*="st-key-goal_execute_"] button:not([disabled])').first();
+        await recordingClick(page, runButton, 'TC-01 Agent Pipeline 실행', 1200);
+        await page.waitForTimeout(1600);
+        await recordingClick(page, page.getByText('수동 TC 수행', { exact: true }), '실시간 상태 화면 갱신', 700);
+        const judgeButton = page.locator('div[class*="st-key-goal_judge_execute_"] button:not([disabled])').first();
+        const completed = await waitForRecordingState(page, judgeButton, {
+          timeoutMs: command.timeoutMs || 180000,
+          title: 'Pipeline 복구 검증 중',
+          detail: '6개 Agent와 A2A Trace가 완료되어 독립 Judge 실행 단계가 열리는지 확인합니다.',
+        });
+        if (!completed) {
+          const bodyText = await page.locator('body').innerText();
+          const pipelineError = bodyText.match(/(?:파이프라인|Pipeline)[^\n]{0,100}(?:실패|오류|ERROR)/i)?.[0];
+          throw new Error(pipelineError || 'Pipeline 복구 검증이 제한 시간 안에 완료되지 않았습니다.');
+        }
+        const bodyText = await page.locator('body').innerText();
+        const runId = (bodyText.match(/RUN-[0-9]{8}-[0-9]{6}-[0-9]{6}-[0-9a-f]{4}/i) || [''])[0];
+        await showDemoStep(
+          page,
+          'Pipeline 복구 검증 완료',
+          `${runId || '신규 Run'} · 6개 Agent 실행 완료 · 독립 Judge 실행 가능`
+        );
+        await page.waitForTimeout(command.holdMs || 3500);
+      } else if (command.action === 'human_approval_rehearsal') {
+        const runId = String(command.runId || '').trim();
+        const caseId = String(command.caseId || 'TC-01').trim();
+        const reviewer = String(command.reviewer || '시연 담당자').trim();
+        if (!runId) throw new Error('human_approval_rehearsal에는 runId가 필요합니다.');
+        await recordingClick(page, page.getByText('VOC 품질진단', { exact: true }), 'VOC 품질진단', 800);
+        await recordingClick(page, page.getByText('개선안 타당성 검증', { exact: true }), '개선안 타당성 검증', 800);
+        const queryInput = page.locator('div[class*="st-key-voc_validity_candidate_query"] input');
+        await queryInput.waitFor({ state: 'visible', timeout: 30000 });
+        await recordingFill(page, queryInput, '승인 대상 Run 검색', runId, 800);
+        await queryInput.press('Enter');
+        await page.waitForTimeout(1800);
+        const qaApproveButton = page.getByRole('button', { name: /QA 승인 저장$/ }).first();
+        const qaReady = await waitForRecordingState(page, qaApproveButton, {
+          timeoutMs: 30000,
+          title: 'QA 검토 준비',
+          detail: '대상 Run을 불러와 QA 검토 양식을 기다립니다.',
+        });
+        if (!qaReady) throw new Error('QA 검토 양식을 찾지 못했습니다.');
+        const qaForm = qaApproveButton.locator('xpath=ancestor::div[@data-testid="stForm"][1]');
+        await recordingFill(page, qaForm.locator('input').first(), 'QA 검토자', reviewer, 700);
+        await recordingFill(page, qaForm.locator('textarea').first(), 'QA 검토 의견', '독립성, 타당성, Run·Trace 증적을 확인하여 QA 승인합니다.', 800);
+        await recordingClick(page, qaApproveButton, 'QA 승인 저장', 1000);
+        const businessApproveButton = page.getByRole('button', { name: /업무 승인 저장$/ }).first();
+        const businessReady = await waitForRecordingState(page, businessApproveButton, {
+          timeoutMs: 30000,
+          title: '업무 승인 준비',
+          detail: 'QA 검토 저장 후 업무 승인 단계를 기다립니다.',
+        });
+        if (!businessReady) throw new Error('업무 승인 양식을 찾지 못했습니다.');
+        const businessForm = businessApproveButton.locator('xpath=ancestor::div[@data-testid="stForm"][1]');
+        await recordingFill(page, businessForm.locator('input').first(), '업무 승인자', reviewer, 700);
+        await recordingFill(page, businessForm.locator('textarea').first(), '업무 승인 의견', '적용 범위, KPI, 단계 배포와 롤백 기준을 확인하여 승인합니다.', 800);
+        await recordingClick(page, businessApproveButton, '업무 승인 저장', 1000);
+        const approved = await waitForRecordingState(page, page.getByText('정식 승인 완료', { exact: true }).first(), {
+          timeoutMs: 30000,
+          title: '정식 승인 확인',
+          detail: 'BUSINESS_APPROVED 감사 이력이 저장되는지 확인합니다.',
+        });
+        if (!approved) throw new Error('정식 승인 완료 상태를 확인하지 못했습니다.');
+        await showDemoFinale(page, { finalState: 'BUSINESS_APPROVED', holdMs: 5000 });
       } else if (command.action === 'preview_recording_scenario') {
         await showScenarioOverview(page, command.holdMs || 18000);
         await showDemoStep(
           page,
-          '미리보기 1/11 · Dashboard',
+          '미리보기 1/12 · Dashboard',
           '최종 녹화는 실행 환경, Agent, 최신 Run, 독립 Judge와 결함 현황을 짧게 설명하며 시작합니다.'
         );
         await pointAndClick(
@@ -912,7 +1351,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
         await showDemoStep(
           page,
           '새 시연 흐름 미리보기 완료',
-          '현재는 실행과 승인 데이터를 변경하지 않았습니다. 기능 완료 후 11단계를 하나의 연속 녹화로 수행합니다.'
+          '현재는 실행과 승인 데이터를 변경하지 않았습니다. 기능 완료 후 12단계를 하나의 연속 녹화로 수행합니다.'
         );
       } else if (command.action === 'open_agent_management') {
         await showDemoStep(page, '시연 1/5 · Agent 관리', 'Provider 인증 상태와 Agent 실행 상태를 확인합니다.');
@@ -952,6 +1391,14 @@ async function runApprovalRecordingDemo(page, command = {}) {
         await showDemoStep(page, '시연 2/5 · Case 선택', '읽기 전용 목록의 선택 Case와 실행 조건을 확인합니다.');
       } else if (command.action === 'inspect_page') {
         const bodyText = await page.locator('body').innerText();
+        const rubricTabs = await page
+          .locator('div[class*="st-key-voc_quality_rubric_stage"] label')
+          .evaluateAll((labels) => labels.map((label, index) => ({
+            index,
+            text: label.innerText,
+            html: label.outerHTML.slice(0, 500),
+          })))
+          .catch(() => []);
         lastCommandId = command.id;
         writeStatus({
           state: 'completed',
@@ -959,6 +1406,7 @@ async function runApprovalRecordingDemo(page, command = {}) {
           action: command.action,
           url: page.url(),
           bodyText: bodyText.slice(0, command.maxChars || 30000),
+          rubricTabs,
         });
         busy = false;
         return;
@@ -1073,6 +1521,11 @@ async function runApprovalRecordingDemo(page, command = {}) {
       } else if (command.action === 'show_step') {
         await ensureDemoCursor(page);
         await showDemoStep(page, command.title || 'VOC 품질진단 시연', command.detail || '');
+      } else if (command.action === 'preview_finale') {
+        await showDemoFinale(page, {
+          finalState: command.finalState || 'BUSINESS_APPROVED',
+          holdMs: command.holdMs || 15000,
+        });
       } else if (command.action === 'close') {
         clearInterval(timer);
         await browser.close();

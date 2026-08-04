@@ -17,7 +17,11 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from components.integration_status import load_integration_status, render_integration_status
+from components.integration_status import (
+    load_integration_status,
+    render_aws_evidence_management,
+    render_integration_status,
+)
 from components.quality_report_template import build_voc_quality_report_html
 from core.paths import JIRA_REGISTERED_ISSUES_FILE
 from core.storage import load_json_file, save_json_file
@@ -17414,6 +17418,14 @@ def render_acceptance():
                 file_name="step10_acceptance.md", mime="text/markdown",
                 icon=":material/download:",
             )
+
+    st.markdown("### AWS S3 최종 인수 증적")
+    st.caption("최종 판정 증적을 AWS S3에 보관하고 원격 파일 무결성을 확인합니다.")
+    render_aws_evidence_management(
+        load_integration_status(),
+        preferred_run_id=str(run_id),
+        key_prefix="acceptance",
+    )
 
 
 ROUTES = {
