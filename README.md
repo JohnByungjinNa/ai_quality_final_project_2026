@@ -19,6 +19,8 @@
 
 ## 2. 프로젝트 구조
 
+관측성 확장 구성과 시연 점검 방법은 [AI QA 관측성 센터 운영 가이드](docs/observability/AI_QA_OBSERVABILITY_GUIDE.md)를 참고합니다.
+
 ```text
 ai_quality_final_project_2026/
 ├─ dashboard/

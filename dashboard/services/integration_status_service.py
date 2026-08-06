@@ -5,10 +5,12 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
 from core.paths import PROJECT_DIR, VOC_QUALITY_RUNS_DIR
+from qa_observer.telemetry import emit
 
 
 AWS_PROFILE = "JohnNa-QA"
@@ -230,29 +232,49 @@ def upload_and_verify_run_evidence(
 ) -> dict:
     """Upload the allow-listed acceptance files and verify their S3 hashes."""
     normalized_run_id = _validate_run_id(run_id)
+    started = time.perf_counter()
+
+    def finish(result: dict, error_type: str | None = None) -> dict:
+        manifest = result.get("manifest") if isinstance(result.get("manifest"), dict) else {}
+        files = manifest.get("files") if isinstance(manifest.get("files"), list) else []
+        emit(
+            "evidence.upload.completed",
+            {
+                "status": "success" if result.get("ok") else "error",
+                "uploaded": bool(result.get("uploaded")),
+                "verified": bool(result.get("verified")),
+                "duration_ms": max(int(round((time.perf_counter() - started) * 1000)), 0),
+                "file_count": int(manifest.get("file_count") or 0),
+                "bytes_total": sum(int(item.get("size_bytes") or 0) for item in files if isinstance(item, dict)),
+                "error_type": None if result.get("ok") else (error_type or "evidence_operation_failed"),
+            },
+            "aws-evidence",
+            run_id=normalized_run_id,
+        )
+        return result
     project_dir = Path(project_dir).resolve()
     evidence_dir = project_dir / "reports" / "voc_quality_runs" / normalized_run_id / "evidence"
     missing = [name for name in REQUIRED_ACCEPTANCE_FILES if not (evidence_dir / name).is_file()]
     if missing:
-        return {
+        return finish({
             "ok": False,
             "uploaded": False,
             "verified": False,
             "run_id": normalized_run_id,
             "message": f"최종 인수 증적이 없습니다: {', '.join(missing)}",
-        }
+        }, "missing_evidence")
 
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     upload_script = (project_dir / AWS_UPLOAD_SCRIPT).resolve()
     verify_script = (project_dir / AWS_VERIFY_SCRIPT).resolve()
     if not powershell or not upload_script.is_file() or not verify_script.is_file():
-        return {
+        return finish({
             "ok": False,
             "uploaded": False,
             "verified": False,
             "run_id": normalized_run_id,
             "message": "AWS 증적 업로드 도구를 찾을 수 없습니다.",
-        }
+        }, "tool_missing")
 
     upload = _run_evidence_script(
         powershell,
@@ -262,13 +284,13 @@ def upload_and_verify_run_evidence(
         timeout_seconds=timeout_seconds,
     )
     if upload.returncode != 0:
-        return {
+        return finish({
             "ok": False,
             "uploaded": False,
             "verified": False,
             "run_id": normalized_run_id,
             "message": _safe_script_error(upload.stderr or upload.stdout, "S3 업로드에 실패했습니다."),
-        }
+        }, "upload_failed")
 
     manifest = load_evidence_manifest(normalized_run_id, project_dir=project_dir)
     verify = _run_evidence_script(
@@ -279,7 +301,7 @@ def upload_and_verify_run_evidence(
         timeout_seconds=timeout_seconds,
     )
     verified = verify.returncode == 0
-    return {
+    return finish({
         "ok": verified,
         "uploaded": True,
         "verified": verified,
@@ -290,7 +312,7 @@ def upload_and_verify_run_evidence(
             else _safe_script_error(verify.stderr or verify.stdout, "업로드는 완료됐지만 원격 검증에 실패했습니다.")
         ),
         "manifest": manifest,
-    }
+    }, None if verified else "hash_verification_failed")
 
 
 def _run_evidence_script(

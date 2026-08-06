@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse
 from qa_observer import __version__
 from qa_observer.collectors.outbox import OutboxCollector
 from qa_observer.collectors.test_reports import TestReportCollector
+from qa_observer.collectors.a2a_audit import A2AAuditCollector
 from qa_observer.logging_utils import configure_logging
 from qa_observer.grafana_webhook import events_from_grafana_webhook
 from qa_observer.metrics import ObserverMetrics
@@ -26,11 +27,12 @@ def create_app(settings=None):
     query_service = ObserverQueryService(store)
     test_report_collector = TestReportCollector(settings, contract, store, logger=logger)
     outbox_collector = OutboxCollector(settings, contract, store, logger=logger)
+    a2a_audit_collector = A2AAuditCollector(settings, metrics, logger=logger)
     scheduler = ObserverScheduler(
         settings,
         contract,
         store,
-        [outbox_collector, test_report_collector],
+        [outbox_collector, test_report_collector, a2a_audit_collector],
         metrics,
         logger,
     )
@@ -64,6 +66,7 @@ def create_app(settings=None):
     app.state.scheduler = scheduler
     app.state.test_report_collector = test_report_collector
     app.state.outbox_collector = outbox_collector
+    app.state.a2a_audit_collector = a2a_audit_collector
 
     @app.get("/health")
     async def health(request: Request):
@@ -83,12 +86,16 @@ def create_app(settings=None):
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def prometheus_metrics(request: Request):
+        aggregates = request.app.state.store.list_aggregates(
+            date_value=datetime.now(timezone.utc).date().isoformat()
+        )
+        if not aggregates:
+            available = request.app.state.store.list_aggregates()
+            if available:
+                latest_date = max(row["date"] for row in available)
+                aggregates = [row for row in available if row["date"] == latest_date]
         return PlainTextResponse(
-            request.app.state.metrics.render(
-                request.app.state.store.list_aggregates(
-                    date_value=datetime.now(timezone.utc).date().isoformat()
-                )
-            ),
+            request.app.state.metrics.render(aggregates),
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 

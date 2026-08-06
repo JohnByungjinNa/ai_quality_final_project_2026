@@ -339,6 +339,19 @@ class FileEventStore:
             )
         elif event_type == "defect.changed":
             samples.extend([("defects.changed", 1), (f"defects.status.{payload['status']}", 1)])
+        elif event_type == "evidence.upload.completed":
+            samples.extend(
+                [
+                    ("evidence.uploads", 1),
+                    ("evidence.upload.success", int(payload["uploaded"])),
+                    ("evidence.verify.success", int(payload["verified"])),
+                    ("evidence.duration_ms", payload["duration_ms"]),
+                    ("evidence.file_count", payload["file_count"]),
+                    ("evidence.bytes", payload["bytes_total"]),
+                ]
+            )
+            if payload["status"] == "error":
+                samples.append(("evidence.errors", 1))
         elif event_type == "collector.sync.completed":
             samples.extend(
                 [("collector.runs", 1), ("collector.items_processed", payload["items_processed"])]

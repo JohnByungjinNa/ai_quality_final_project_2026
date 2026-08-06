@@ -7,7 +7,7 @@ from core.constants import AWS_CONSOLE_ICON_URL, SYSTEM_NAME
 from services.integration_status_service import logout_aws_session, start_aws_browser_login
 
 
-MENU_OPTIONS = ["종합 현황", "성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "GitHub 관리", "VOC 품질진단"]
+MENU_OPTIONS = ["종합 현황", "성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "GitHub 관리", "VOC 품질진단", "관측성"]
 # MENU_OPTIONS = ["성능관리", "테스트 관리", "지식 파일 관리", "Jira관리", "Docker 관리"]
 AWS_LOGIN_POLL_INTERVAL_SECONDS = 2
 AWS_LOGIN_TIMEOUT_SECONDS = 300
@@ -33,6 +33,7 @@ SIDEBAR_MENU_OPTIONS = {
         "사용자 가이드",
         "최종 인수·시연",
     ],
+    "관측성": ["SLO·Error Budget", "Agent Pipeline", "Drift·FinOps", "관측 인프라"],
     # "Docker 관리": ["Docker 통합 실행"],
 }
 

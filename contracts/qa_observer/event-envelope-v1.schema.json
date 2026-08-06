@@ -29,6 +29,7 @@
         "test.run.completed",
         "safety.violation.detected",
         "defect.changed",
+        "evidence.upload.completed",
         "collector.sync.completed"
       ]
     },
@@ -82,6 +83,10 @@
     {
       "if": {"properties": {"event_type": {"const": "defect.changed"}}},
       "then": {"properties": {"payload": {"$ref": "#/$defs/defect_payload"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "evidence.upload.completed"}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/evidence_upload_payload"}}}
     },
     {
       "if": {"properties": {"event_type": {"const": "collector.sync.completed"}}},
@@ -288,6 +293,20 @@
         "status": {"type": "string", "enum": ["success", "error"]},
         "items_processed": {"type": "integer", "minimum": 0},
         "checkpoint": {"type": ["string", "null"], "maxLength": 512},
+        "error_type": {"type": ["string", "null"], "maxLength": 128}
+      }
+    },
+    "evidence_upload_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "uploaded", "verified", "duration_ms", "file_count", "bytes_total"],
+      "properties": {
+        "status": {"type": "string", "enum": ["success", "error"]},
+        "uploaded": {"type": "boolean"},
+        "verified": {"type": "boolean"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "file_count": {"type": "integer", "minimum": 0},
+        "bytes_total": {"type": "integer", "minimum": 0},
         "error_type": {"type": ["string", "null"], "maxLength": 128}
       }
     }

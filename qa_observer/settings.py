@@ -41,6 +41,7 @@ class ObserverSettings:
     defect_retention_days: int = 730
     aggregate_retention_days: int = 730
     grafana_webhook_token: str = ""
+    a2a_audit_path: Path | None = None
 
     @classmethod
     def from_env(cls):
@@ -66,4 +67,8 @@ class ObserverSettings:
             defect_retention_days=_positive_int("QA_OBSERVER_DEFECT_RETENTION_DAYS", 730),
             aggregate_retention_days=_positive_int("QA_OBSERVER_AGGREGATE_RETENTION_DAYS", 730),
             grafana_webhook_token=os.getenv("QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN", "").strip(),
+            a2a_audit_path=_path_from_env(
+                "QA_OBSERVER_A2A_AUDIT_PATH",
+                PROJECT_ROOT / "voc_quality_runtime" / ".runtime" / "audit" / "a2a_events.jsonl",
+            ),
         )

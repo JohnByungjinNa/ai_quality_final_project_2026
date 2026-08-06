@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -8,8 +9,9 @@ import win32com.client
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "docs" / "portfolio"
-PPTX_PATH = OUTPUT_DIR / "AWS_VOC_MULTI_AGENT_QA_PORTFOLIO.pptx"
-PDF_PATH = OUTPUT_DIR / "AWS_VOC_MULTI_AGENT_QA_PORTFOLIO.pdf"
+OUTPUT_STEM = os.getenv("PORTFOLIO_OUTPUT_STEM", "AWS_VOC_MULTI_AGENT_QA_PORTFOLIO").strip()
+PPTX_PATH = OUTPUT_DIR / f"{OUTPUT_STEM}.pptx"
+PDF_PATH = OUTPUT_DIR / f"{OUTPUT_STEM}.pdf"
 PREVIEW_DIR = ROOT / ".artifacts" / "portfolio_preview"
 AGENT_SCREENSHOT = ROOT / ".artifacts" / "demo" / "02-agent-management.png"
 
@@ -507,8 +509,68 @@ def slide_results(pres):
     add_footer(slide, 11)
 
 
-def slide_closing(pres):
+def slide_growth(pres):
     slide = pres.Slides.Add(12, 12)
+    add_title(
+        slide,
+        "프로젝트 회고 · 결과보다 남은 성장",
+        "완벽한 결과보다 끝까지 연결한 과정, 기술보다 함께 판단한 경험",
+        section="RETROSPECTIVE",
+    )
+    reflections = [
+        (
+            "01",
+            "완성도보다 완주",
+            "VOC → 6 Agent → 독립 Judge →\n타당성 검증 → 승인 → AWS 증적",
+            "오류와 미실행을 숨기지 않고\n끝까지 하나의 품질 흐름으로 연결",
+            BLUE,
+        ),
+        (
+            "02",
+            "기술보다 협업",
+            "AI · QA · 업무 담당자의\n역할과 최종 책임을 명확히 분리",
+            "Jira · GitHub · AWS로 판단과\n변경, 운영 증적을 함께 공유",
+            MINT,
+        ),
+        (
+            "03",
+            "발표보다 성장 과정",
+            "문제 발견 → 기록 → 보완 →\nRETEST의 반복을 프로젝트 자산화",
+            "정상 실행 확인에서 책임 있는\n품질 운영을 설계하는 관점으로 성장",
+            PURPLE,
+        ),
+    ]
+    for idx, (number, title, process, learning, accent) in enumerate(reflections):
+        x = 48 + idx * 294
+        add_card(slide, x, 142, 270, 286, fill=WHITE, line=LINE, accent=accent)
+        add_circle(slide, number, x + 24, 166, 46, fill=accent, font_size=12)
+        add_text(slide, title, x + 24, 228, 220, 30, size=18, bold=True, font_color=NAVY)
+        add_text(slide, process, x + 24, 278, 220, 58, size=11, bold=True, font_color=accent)
+        add_line(slide, x + 24, 350, x + 238, 350, line_color=LINE, weight=1)
+        add_text(slide, learning, x + 24, 365, 220, 46, size=10, font_color=MUTED)
+
+    add_text(
+        slide,
+        "완벽하게 시작하지는 않았지만, 끝까지 완주하며 함께 판단하는 방법을 배웠고\n발표 결과보다 문제를 해결하며 성장한 과정이 더 큰 자산으로 남았습니다.",
+        112,
+        452,
+        736,
+        44,
+        size=13,
+        bold=True,
+        font_color=NAVY,
+        align=2,
+        valign=3,
+        fill=LIGHT_BLUE,
+        line="C9DCF7",
+        radius=True,
+        margin=5,
+    )
+    add_footer(slide, 12)
+
+
+def slide_closing(pres):
+    slide = pres.Slides.Add(13, 12)
     add_background(slide, NAVY)
     add_text(slide, "PROJECT OUTCOME", 58, 46, 180, 22, size=9, bold=True, font_color="8FC1FF")
     add_text(slide, "AI가 답을 만드는 시스템에서,\nAI의 판단을 검증하고 책임 있게 운영하는 시스템으로.", 58, 98, 820, 94, size=30, bold=True, font_color=WHITE)
@@ -554,6 +616,7 @@ def build_deck():
         slide_audit(presentation)
         slide_integrations(presentation)
         slide_results(presentation)
+        slide_growth(presentation)
         slide_closing(presentation)
 
         presentation.SaveAs(str(PPTX_PATH), 24)

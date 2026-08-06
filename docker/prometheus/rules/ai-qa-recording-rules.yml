@@ -1,0 +1,56 @@
+groups:
+  - name: ai_qa_slo_recording
+    interval: 15s
+    rules:
+      - record: qa:sli_api_availability:ratio_5m
+        expr: 1 - (sum(rate(http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 0.001))
+      - record: qa:sli_api_latency_le_5s:ratio_5m
+        expr: sum(rate(agent_response_seconds_bucket{le="5"}[5m])) / clamp_min(sum(rate(agent_response_seconds_count[5m])), 0.001)
+      - record: qa:sli_test_pass:ratio_today
+        expr: sum(qa_dashboard_aggregate_value{metric="test.pass_count",aggregation="sum"}) / clamp_min(sum(qa_dashboard_aggregate_value{metric="test.total_count",aggregation="sum"}), 1)
+      - record: qa:sli_quality_pass:ratio_today
+        expr: sum(qa_dashboard_aggregate_value{metric="quality.decision.pass",aggregation="sum"}) / clamp_min(sum(qa_dashboard_aggregate_value{metric=~"quality.decision.(pass|review|fail|error)",aggregation="sum"}), 1)
+      - record: qa:error_budget_api:remaining_ratio
+        expr: clamp_max(clamp_min((qa:sli_api_availability:ratio_5m - 0.99) / 0.01, 1), 0)
+      - record: qa:error_budget_test:remaining_ratio
+        expr: clamp_max(clamp_min((qa:sli_test_pass:ratio_today - 0.95) / 0.05, 1), 0)
+      - record: qa:error_budget_quality:remaining_ratio
+        expr: clamp_max(clamp_min((qa:sli_quality_pass:ratio_today - 0.95) / 0.05, 1), 0)
+      - record: qa:agent_rpc_duration_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, source, target, operation) (rate(voc_agent_rpc_duration_seconds_bucket[5m])))
+      - record: qa:agent_rpc_failure:ratio_5m
+        expr: sum(rate(voc_agent_rpc_calls_total{status="failure"}[5m])) / clamp_min(sum(rate(voc_agent_rpc_calls_total[5m])), 0.001)
+      - record: qa:llm_cost_krw:today
+        expr: sum(qa_dashboard_aggregate_value{metric="llm.cost_micros_krw",aggregation="sum"}) / 1000000
+      - record: qa:llm_cost_per_quality_pass_krw:today
+        expr: qa:llm_cost_krw:today / clamp_min(sum(qa_dashboard_aggregate_value{metric="quality.decision.pass",aggregation="sum"}), 1)
+      - record: qa:quality_score:today
+        expr: 20 * avg(qa_dashboard_aggregate_value{metric=~"quality\\..*\\.score",aggregation="average"})
+
+  - name: ai_qa_slo_alerts
+    interval: 30s
+    rules:
+      - alert: AIQAErrorBudgetExhausted
+        expr: min({__name__=~"qa:error_budget_(api|test|quality):remaining_ratio"}) <= 0
+        for: 5m
+        labels:
+          severity: warning
+          service: ai-quality-chatbot
+        annotations:
+          summary: AI QA SLO error budget is exhausted
+      - alert: AIQAAgentPipelineFailureHigh
+        expr: qa:agent_rpc_failure:ratio_5m > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-quality-chatbot
+        annotations:
+          summary: A2A pipeline failure ratio exceeded 5 percent
+      - alert: AIQADemoReadinessFailed
+        expr: min(probe_success{job="blackbox-http"}) < 1
+        for: 1m
+        labels:
+          severity: warning
+          service: ai-quality-chatbot
+        annotations:
+          summary: One or more demo dependencies failed the blackbox probe

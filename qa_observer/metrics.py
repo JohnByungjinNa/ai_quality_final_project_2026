@@ -16,6 +16,7 @@ class ObserverMetrics:
         self._lock = threading.RLock()
         self._counters = defaultdict(float)
         self._gauges = {("qa_observer_start_time_seconds", ()): time.time()}
+        self._histograms = {}
 
     def increment(self, name, labels=None, value=1.0):
         labels = tuple(sorted((labels or {}).items()))
@@ -26,6 +27,31 @@ class ObserverMetrics:
         labels = tuple(sorted((labels or {}).items()))
         with self._lock:
             self._gauges[(name, labels)] = float(value)
+
+    def replace_a2a_snapshot(self, counters, gauges, histograms):
+        """Atomically replace the bounded A2A metric family from an audit snapshot."""
+        with self._lock:
+            self._counters = defaultdict(
+                float,
+                {
+                    key: value
+                    for key, value in self._counters.items()
+                    if not key[0].startswith("voc_agent_")
+                },
+            )
+            self._gauges = {
+                key: value
+                for key, value in self._gauges.items()
+                if not key[0].startswith("voc_agent_")
+            }
+            for name, labels, value in counters:
+                self._counters[(name, tuple(sorted(labels.items())))] = float(value)
+            for name, labels, value in gauges:
+                self._gauges[(name, tuple(sorted(labels.items())))] = float(value)
+            self._histograms = {
+                (name, tuple(sorted(labels.items()))): value
+                for name, labels, value in histograms
+            }
 
     def render(self, aggregate_rows=None):
         descriptions = {
@@ -45,6 +71,7 @@ class ObserverMetrics:
         }
         with self._lock:
             samples = list(self._counters.items()) + list(self._gauges.items())
+            histograms = dict(self._histograms)
         by_name = defaultdict(list)
         for (name, labels), value in samples:
             by_name[name].append((labels, value))
@@ -62,6 +89,24 @@ class ObserverMetrics:
                     ) + "}"
                 number = "0" if not math.isfinite(value) else f"{value:g}"
                 lines.append(f"{name}{label_text} {number}")
+        for (name, labels), snapshot in sorted(histograms.items()):
+            help_text = "A2A RPC duration in seconds."
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} histogram")
+            base_labels = dict(labels)
+            for boundary, count in snapshot["buckets"]:
+                metric_labels = dict(base_labels, le=boundary)
+                label_text = ",".join(
+                    f'{key}="{_escape_label(value)}"'
+                    for key, value in sorted(metric_labels.items())
+                )
+                lines.append(f"{name}_bucket{{{label_text}}} {count:g}")
+            label_text = ",".join(
+                f'{key}="{_escape_label(value)}"' for key, value in sorted(base_labels.items())
+            )
+            suffix = f"{{{label_text}}}" if label_text else ""
+            lines.append(f"{name}_count{suffix} {snapshot['count']:g}")
+            lines.append(f"{name}_sum{suffix} {snapshot['sum']:g}")
         if aggregate_rows:
             lines.extend(_render_dashboard_aggregates(aggregate_rows))
         return "\n".join(lines) + "\n"

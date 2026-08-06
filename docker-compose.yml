@@ -18,6 +18,7 @@ services:
       QA_OBSERVER_AGGREGATE_RETENTION_DAYS: ${QA_OBSERVER_AGGREGATE_RETENTION_DAYS:-730}
       QA_OBSERVER_DAILY_BUDGET_KRW: ${QA_OBSERVER_DAILY_BUDGET_KRW:-50000}
       QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN: ${QA_OBSERVER_GRAFANA_WEBHOOK_TOKEN:-local-grafana-token}
+      QA_OBSERVER_A2A_AUDIT_PATH: /app/voc_quality_runtime/.runtime/audit/a2a_events.jsonl
     command: python -m uvicorn qa_observer.app:app --host 0.0.0.0 --port 8010
     ports:
       - "127.0.0.1:8010:8010"
@@ -25,6 +26,7 @@ services:
       - ./data:/app/data
       - ./reports:/app/reports:ro
       - ./logs:/app/logs
+      - ./voc_quality_runtime/.runtime:/app/voc_quality_runtime/.runtime:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
       interval: 10s
@@ -64,6 +66,7 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       GRAFANA_URL: http://grafana:3000
       GRAFANA_DASHBOARD_URL: http://localhost:3000
+      TEMPO_URL: http://localhost:3200
       K6_SUMMARY_FILE: reports/k6_summary.json
     command: streamlit run dashboard/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
     ports:
@@ -78,11 +81,36 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.listen-address=:9090"
+      - "--web.enable-remote-write-receiver"
     ports:
       - "9090:9090"
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: ai-quality-2026-blackbox
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    ports:
+      - "127.0.0.1:9115:9115"
+    volumes:
+      - ./docker/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: ai-quality-2026-tempo
+    command:
+      - "-config.file=/etc/tempo/tempo.yml"
+    ports:
+      - "127.0.0.1:3200:3200"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./docker/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -104,3 +132,4 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  tempo-data:

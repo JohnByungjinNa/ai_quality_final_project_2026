@@ -1,8 +1,13 @@
 import base64
 import os
+import sys
 import threading
 import time
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
 
@@ -21,6 +26,7 @@ from pages_top.pytest_result_view import render_pytest_result_page
 from pages_top.testcase_upload_view import render_testcase_upload_page
 from pages_top.voc_quality import render_voc_quality_page
 from pages_top.overview_dashboard import render_overview_dashboard_page
+from pages_top.observability import render_observability_page
 from components.shutdown_overlay import render_shutdown_overlay
 from components.streamlit_shortcut_guard import render_streamlit_shortcut_guard
 from core.app_state import initialize_session_state
@@ -485,6 +491,8 @@ elif active_menu == "Docker 관리":
     handled = render_docker_page(sidebar_sub_menu)
 elif active_menu == "VOC 품질진단":
     handled = render_voc_quality_page(sidebar_sub_menu)
+elif active_menu == "관측성":
+    handled = render_observability_page(sidebar_sub_menu)
 else:
     handled = False
 

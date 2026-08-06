@@ -116,6 +116,15 @@ def _payloads():
             "external_system": None,
             "external_issue_key": None,
         },
+        "evidence.upload.completed": {
+            "status": "success",
+            "uploaded": True,
+            "verified": True,
+            "duration_ms": 123,
+            "file_count": 3,
+            "bytes_total": 4096,
+            "error_type": None,
+        },
         "collector.sync.completed": {
             "source_name": "test_reports",
             "status": "success",

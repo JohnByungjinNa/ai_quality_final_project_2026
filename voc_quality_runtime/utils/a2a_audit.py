@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -9,11 +10,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Iterable, TypeVar
+from contextlib import nullcontext
 
 T = TypeVar("T")
 
 AUDIT_DIR = Path(os.environ.get("A2A_AUDIT_DIR", ".runtime/audit"))
 AUDIT_FILE = AUDIT_DIR / "a2a_events.jsonl"
+_TRACER = None
+_TRACER_INITIALIZED = False
 
 _STOP_WORDS = {
     "그리고", "그러나", "대한", "관련", "고객", "내용", "있는", "없는", "합니다",
@@ -23,6 +27,64 @@ _STOP_WORDS = {
 
 def new_trace_id() -> str:
     return uuid.uuid4().hex
+
+
+def _tempo_tracer():
+    global _TRACER, _TRACER_INITIALIZED
+    if _TRACER_INITIALIZED:
+        return _TRACER
+    _TRACER_INITIALIZED = True
+    if os.environ.get("A2A_TEMPO_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318").rstrip("/")
+        provider = TracerProvider(
+            resource=Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME", "voc-a2a-agent")})
+        )
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces", timeout=2))
+        )
+        trace.set_tracer_provider(provider)
+        _TRACER = trace.get_tracer("voc.a2a.audit")
+    except Exception:
+        _TRACER = None
+    return _TRACER
+
+
+def _rpc_span(trace_id: str, source: str, target: str, operation: str):
+    tracer = _tempo_tracer()
+    if tracer is None:
+        return nullcontext(None)
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace import NonRecordingSpan, SpanContext, SpanKind, TraceFlags, TraceState
+
+        trace_value = int(trace_id, 16)
+        parent_value = int(hashlib.sha256(f"{trace_id}:{source}".encode()).hexdigest()[:16], 16) or 1
+        parent = NonRecordingSpan(
+            SpanContext(trace_value, parent_value, True, TraceFlags.SAMPLED, TraceState())
+        )
+        return tracer.start_as_current_span(
+            operation,
+            context=trace.set_span_in_context(parent),
+            kind=SpanKind.CLIENT,
+            attributes={
+                "rpc.system": "grpc",
+                "rpc.service": target,
+                "rpc.method": operation,
+                "a2a.source": source,
+                "a2a.target": target,
+                "trace_id": trace_id,
+            },
+        )
+    except Exception:
+        return nullcontext(None)
 
 
 def extract_keywords(values: Any, limit: int = 10) -> list[str]:
@@ -100,35 +162,41 @@ async def audited_rpc(
         keywords=input_keywords,
         input_keywords=input_keywords,
     )
-    try:
-        result = await call
-        output_keywords = extract_keywords(result)
-        record_event(
-            trace_id=trace_id,
-            source=source,
-            target=target,
-            operation=operation,
-            status="success",
-            duration_ms=(time.perf_counter() - started) * 1000,
-            keywords=input_keywords + output_keywords,
-            input_keywords=input_keywords,
-            output_keywords=output_keywords,
-        )
-        return result
-    except Exception as exc:
-        error_text = f"{type(exc).__name__}: {exc}"
-        known_agents = ("Interpreter", "Retriever", "Summarizer", "Evaluator", "Critic", "Improver")
-        observed_chain = [source, target] + [name for name in known_agents if name in error_text]
-        record_event(
-            trace_id=trace_id,
-            source=source,
-            target=target,
-            operation=operation,
-            status="failure",
-            duration_ms=(time.perf_counter() - started) * 1000,
-            keywords=input_keywords,
-            input_keywords=input_keywords,
-            error=error_text,
-            agent_chain=observed_chain,
-        )
-        raise
+    with _rpc_span(trace_id, source, target, operation) as span:
+        try:
+            result = await call
+            output_keywords = extract_keywords(result)
+            if span is not None:
+                span.set_attribute("a2a.status", "success")
+            record_event(
+                trace_id=trace_id,
+                source=source,
+                target=target,
+                operation=operation,
+                status="success",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                keywords=input_keywords + output_keywords,
+                input_keywords=input_keywords,
+                output_keywords=output_keywords,
+            )
+            return result
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            if span is not None:
+                span.set_attribute("a2a.status", "failure")
+                span.record_exception(exc)
+            known_agents = ("Interpreter", "Retriever", "Summarizer", "Evaluator", "Critic", "Improver")
+            observed_chain = [source, target] + [name for name in known_agents if name in error_text]
+            record_event(
+                trace_id=trace_id,
+                source=source,
+                target=target,
+                operation=operation,
+                status="failure",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                keywords=input_keywords,
+                input_keywords=input_keywords,
+                error=error_text,
+                agent_chain=observed_chain,
+            )
+            raise
