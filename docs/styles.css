@@ -211,7 +211,7 @@ button { font: inherit; }
 .role-grid p { margin: 0; color: var(--muted); font-size: 0.88rem; }
 
 .contact-block { display: grid; grid-template-columns: 130px 1fr 280px; gap: 40px; align-items: end; margin-bottom: 100px; padding: 60px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper); }
-.contact-block__rail { border-top-color: color-mix(in srgb, var(--paper) 35%, transparent); color: color-mix(in srgb, var(--paper) 65%, transparent); }
+.contact-block__rail { align-self: start; border-top-color: color-mix(in srgb, var(--paper) 35%, transparent); color: color-mix(in srgb, var(--paper) 65%, transparent); }
 .contact-block__rail span { color: var(--lime); }
 .contact-block h2 { margin: 10px 0 22px; font-size: clamp(2.8rem, 6vw, 6.6rem); font-weight: 900; line-height: 0.9; letter-spacing: -0.1em; }
 .contact-block h2 em { color: var(--lime); font-style: normal; }
