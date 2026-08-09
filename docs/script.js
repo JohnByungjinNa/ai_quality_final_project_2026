@@ -60,7 +60,9 @@ filterButtons.forEach((button) => {
 
 const navLinks = document.querySelectorAll(".site-nav a");
 const observedSections = [...navLinks]
-  .map((link) => document.querySelector(link.getAttribute("href")))
+  .map((link) => link.getAttribute("href"))
+  .filter((href) => href && href.startsWith("#"))
+  .map((href) => document.querySelector(href))
   .filter(Boolean);
 
 const sectionObserver = new IntersectionObserver(
