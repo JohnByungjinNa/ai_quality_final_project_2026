@@ -4,6 +4,8 @@
 
 프로젝트 문제 정의, 핵심 설계와 실제 시연 성과를 빠르게 확인하려면 [포트폴리오](PORTFOLIO.md)와 [12장 발표 구성안](docs/portfolio/VOC_AI_QUALITY_PORTFOLIO_SLIDES.md)을 참고하세요.
 
+> 🌐 **공개 포트폴리오:** [NBJ IT Specialist](https://johnbyungjinna.github.io/ai_quality_final_project_2026/)
+
 ## 1. 프로젝트 목적
 
 이 프로젝트는 프로그램이 실행되는지만 확인하지 않고, 사용자 질문이 실제 VOC를 근거로 정확하고 안전한 정책 개선안으로 만들어지는 전체 과정을 검증합니다.
