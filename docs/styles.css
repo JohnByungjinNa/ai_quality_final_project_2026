@@ -181,6 +181,10 @@ button { font: inherit; }
 .project--hero { background: var(--paper); }
 .project--hero .project__side strong { color: var(--blue); }
 .filter-empty { margin: 24px 0 0; color: var(--muted); }
+.related-portfolio { display: flex; justify-content: space-between; align-items: end; gap: 28px; margin-top: 28px; padding: 24px 28px; border: 1px solid var(--line); background: color-mix(in srgb, var(--blue) 8%, var(--paper)); }
+.related-portfolio h3 { margin: 8px 0 8px; font-size: 1.35rem; letter-spacing: -0.05em; }
+.related-portfolio p:not(.overline) { max-width: 560px; margin: 0; color: var(--muted); font-size: 0.88rem; }
+.related-portfolio .text-link { flex: 0 0 auto; }
 
 .capability-block { padding-top: 180px; }
 .capability-table { border-top: 1px solid var(--ink); }
@@ -268,6 +272,7 @@ button { font: inherit; }
   .project { padding: 24px 18px; }
   .project__number { font-size: 0.72rem; }
   .project__main h3 { font-size: 1.8rem; }
+  .related-portfolio { display: grid; align-items: start; gap: 20px; padding: 22px 18px; }
   .roles-block { padding-bottom: 110px; }
   .role-grid { grid-template-columns: 1fr; }
   .role-grid article, .role-grid article:nth-child(2) { border-right: 0; border-bottom: 1px solid var(--ink); }
