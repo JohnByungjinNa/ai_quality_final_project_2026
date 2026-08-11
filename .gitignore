@@ -56,3 +56,6 @@ voc_quality_runtime/**/__pycache__/
 voc_quality_runtime/quality_diagnosis/Reports/**
 !voc_quality_runtime/quality_diagnosis/Reports/README.md
 
+# portfolio
+/docs/portfolio/
+
